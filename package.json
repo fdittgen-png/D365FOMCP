@@ -1,0 +1,18 @@
+{
+  "name": "tis-mcpd365fo",
+  "version": "1.0.0",
+  "description": "D365FO MCP Services — Knowledge Base + Cross-Reference",
+  "type": "module",
+  "scripts": {
+    "build:kb": "node build/build-kb.js",
+    "build:xref": "node --max-old-space-size=8192 build/build-xref-db.js",
+    "start:kb": "node src/local/mcp-server-kb.js",
+    "start:xref": "node --max-old-space-size=8192 src/local/mcp-server-xref.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "fast-xml-parser": "^5.2.3",
+    "mssql": "^11.0.1",
+    "sql.js": "^1.12.0"
+  }
+}
