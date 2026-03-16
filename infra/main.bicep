@@ -13,6 +13,12 @@ param location string = 'westeurope'
 param workload string = 'mcpd365fo'
 param prefix string = 'tis'
 
+@description('Entra ID admin login name for SQL Server')
+param entraAdminLogin string = 'florian.dittgen@trelleborg.com'
+
+@description('Entra ID admin Object ID for SQL Server')
+param entraAdminSid string = '9495865f-c1c7-459f-87a6-4e9d8a20fb28'
+
 // ─── Naming ─────────────────────────────────────────────
 var rgName    = '${prefix}-${env}-${workload}-rg'
 var funcName  = '${prefix}-${env}-${workload}-func'
@@ -59,6 +65,8 @@ module sql 'modules/sqlDatabase.bicep' = {
     location: location
     sqlServerName: sqlName
     sqlDbName: sqlDbName
+    entraAdminLogin: entraAdminLogin
+    entraAdminSid: entraAdminSid
     tags: tags
   }
 }

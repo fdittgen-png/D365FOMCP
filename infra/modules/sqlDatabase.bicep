@@ -2,6 +2,8 @@ param location string
 param sqlServerName string
 param sqlDbName string
 param tags object
+param entraAdminLogin string
+param entraAdminSid string
 
 resource sqlServer 'Microsoft.Sql/servers@2023-05-01-preview' = {
   name: sqlServerName
@@ -10,21 +12,17 @@ resource sqlServer 'Microsoft.Sql/servers@2023-05-01-preview' = {
   properties: {
     minimalTlsVersion: '1.2'
     publicNetworkAccess: 'Enabled'
+    administrators: {
+      administratorType: 'ActiveDirectory'
+      principalType: 'User'
+      login: entraAdminLogin
+      sid: entraAdminSid
+      tenantId: subscription().tenantId
+      azureADOnlyAuthentication: true
+    }
   }
   identity: {
     type: 'SystemAssigned'
-  }
-}
-
-// Entra ID admin (configure post-deployment)
-resource entraAdmin 'Microsoft.Sql/servers/administrators@2023-05-01-preview' = {
-  parent: sqlServer
-  name: 'ActiveDirectory'
-  properties: {
-    administratorType: 'ActiveDirectory'
-    login: 'TIS-SQL-Admins'
-    sid: '00000000-0000-0000-0000-000000000000'  // Replace with actual Entra group ObjectId
-    tenantId: subscription().tenantId
   }
 }
 

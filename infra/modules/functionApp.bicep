@@ -109,16 +109,10 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
-// ─── Key Vault access for Function App ──────────────────
-resource kvRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, functionApp.id, 'KeyVaultSecretsUser')
-  scope: keyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6') // Key Vault Secrets User
-    principalId: functionApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
+// NOTE: Key Vault RBAC role assignment requires Owner/User Access Administrator.
+// Assign 'Key Vault Secrets User' role to the Function App managed identity post-deployment:
+//   az role assignment create --assignee <functionApp-principalId> \
+//     --role "Key Vault Secrets User" --scope <keyVault-resourceId>
 
 output functionAppUrl string = 'https://${functionApp.properties.defaultHostName}'
 output functionAppPrincipalId string = functionApp.identity.principalId
