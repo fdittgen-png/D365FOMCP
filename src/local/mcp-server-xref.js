@@ -1,7 +1,7 @@
 /**
  * xref-mcp-server.js
  * MCP server for D365FO cross-reference queries.
- * Loads SQLite database into memory for fast lookups.
+ * Uses better-sqlite3 for direct file access (no memory size limit).
  *
  * Usage:
  *   node xref-mcp-server.js [databasePath]
@@ -9,12 +9,14 @@
  * Default databasePath: %USERPROFILE%\.claude\d365fo_xref.sqlite
  */
 
-import { statSync, openSync, readSync, closeSync } from 'fs';
+import { createRequire } from 'module';
 import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import initSqlJs from 'sql.js';
 import { z } from 'zod';
+
+const require = createRequire(import.meta.url);
+const Database = require('better-sqlite3');
 
 // ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -28,41 +30,26 @@ const KIND_NAMES = {
 
 // ── Database Setup ─────────────────────────────────────────────────────────────
 
-// Read large file in chunks (avoids Node.js 2 GB Buffer limit)
-function readLargeFile(filePath) {
-  const { size } = statSync(filePath);
-  const buffer = new Uint8Array(size);
-  const fd = openSync(filePath, 'r');
-  const CHUNK = 256 * 1024 * 1024;  // 256 MB
-  let offset = 0;
-  while (offset < size) {
-    const len = Math.min(CHUNK, size - offset);
-    const tmp = new Uint8Array(len);
-    readSync(fd, tmp, 0, len, offset);
-    buffer.set(tmp, offset);
-    offset += len;
-  }
-  closeSync(fd);
-  return buffer;
-}
+const db = new Database(DB_PATH, { readonly: true });
 
-const SQL = await initSqlJs();
-const fileBuffer = readLargeFile(DB_PATH);
-const db = new SQL.Database(fileBuffer);
-
-// Enable WAL-like performance for reads
-db.run('PRAGMA journal_mode = OFF');
-db.run('PRAGMA cache_size = -200000');  // 200 MB cache
+// Performance tuning for read-only workloads
+db.pragma('journal_mode = OFF');
+db.pragma('cache_size = -200000');  // 200 MB cache
+db.pragma('mmap_size = 3221225472');  // 3 GB mmap for fast reads
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+// Statement cache for frequently-used queries
+const stmtCache = new Map();
+
 function query(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params);
-  const columns = stmt.getColumnNames();
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.get());
-  stmt.free();
+  let stmt = stmtCache.get(sql);
+  if (!stmt) {
+    stmt = db.prepare(sql).raw();
+    stmtCache.set(sql, stmt);
+  }
+  const rows = params.length ? stmt.all(...params) : stmt.all();
+  const columns = stmt.columns().map(c => c.name);
   return { columns, rows };
 }
 

@@ -1,104 +1,105 @@
 <#
 .SYNOPSIS
-    Deploy D365FO MCP data from local SQLite databases to Azure SQL.
+    Full deployment pipeline for D365FO MCP Services.
 
 .DESCRIPTION
-    Exports data from local SQLite KB and XRef databases (built by build-kb.js
-    and build-xref-db.js) and bulk-imports it into Azure SQL Database using bcp.
+    Master orchestrator that runs the complete post-deployment pipeline:
+      1. Set-RoleAssignments — RBAC roles for Function App
+      2. Deploy-FunctionApp  — Package code + SQLite databases and deploy
 
-    Trelleborg naming: tis-{env}-mcpd365fo-sqldb
+    Each step can also be run independently via its own script.
 
 .PARAMETER Environment
-    Target environment: 'd' (development) or 'p' (production).
+    'd' (development) or 'p' (production). Default: d
 
-.PARAMETER KbOnly
-    Only deploy KB data (skip XRef).
+.PARAMETER SkipRoles
+    Skip role assignment step.
 
-.PARAMETER XrefOnly
-    Only deploy XRef data (skip KB).
-
-.PARAMETER SqlServer
-    Override SQL server FQDN. Default: tis-{env}-mcpd365fo-sql.database.windows.net
+.PARAMETER SkipFunctionApp
+    Skip Function App deployment step.
 
 .EXAMPLE
-    .\Deploy-McpD365foData.ps1 -Environment p
-    .\Deploy-McpD365foData.ps1 -Environment d -KbOnly
+    .\Deploy-McpD365foData.ps1 -Environment d
+    .\Deploy-McpD365foData.ps1 -Environment d -SkipRoles
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('d', 'p')]
-    [string]$Environment = 'p',
+    [string]$Environment = 'd',
 
-    [switch]$KbOnly,
-    [switch]$XrefOnly,
-
-    [string]$SqlServer,
-    [string]$SqlDatabase
+    [switch]$SkipRoles,
+    [switch]$SkipFunctionApp
 )
 
-# ─── Configuration ───────────────────────────────────────
-$prefix   = 'tis'
-$workload = 'mcpd365fo'
+$ErrorActionPreference = 'Stop'
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-if (-not $SqlServer)   { $SqlServer   = "$prefix-$Environment-$workload-sql.database.windows.net" }
-if (-not $SqlDatabase) { $SqlDatabase = "$prefix-$Environment-$workload-sqldb" }
-
-$kbSqlitePath   = Join-Path $env:USERPROFILE '.claude\d365fo_kb.sqlite'
-$xrefSqlitePath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite'
-
-Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  D365FO MCP Data Deployment" -ForegroundColor Cyan
-Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  Target: $SqlServer / $SqlDatabase"
-Write-Host "  KB DB:  $kbSqlitePath"
-Write-Host "  XRef DB: $xrefSqlitePath"
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "  D365FO MCP Services — Full Deployment Pipeline" -ForegroundColor Cyan
+Write-Host "================================================================" -ForegroundColor Cyan
+Write-Host "  Environment: $Environment"
 Write-Host ""
 
-# ─── Prerequisite Checks ────────────────────────────────
-if (-not $XrefOnly) {
-    if (-not (Test-Path $kbSqlitePath)) {
-        Write-Error "KB database not found: $kbSqlitePath. Run 'npm run build:kb' first."
-        return
-    }
-    Write-Host "[OK] KB database found: $([math]::Round((Get-Item $kbSqlitePath).Length / 1MB)) MB" -ForegroundColor Green
-}
-
-if (-not $KbOnly) {
-    if (-not (Test-Path $xrefSqlitePath)) {
-        Write-Error "XRef database not found: $xrefSqlitePath. Run 'npm run build:xref' first."
-        return
-    }
-    Write-Host "[OK] XRef database found: $([math]::Round((Get-Item $xrefSqlitePath).Length / 1MB)) MB" -ForegroundColor Green
-}
-
-# ─── Azure Login Check ──────────────────────────────────
-Write-Host "`nSTEP 1: Checking Azure authentication..." -ForegroundColor Yellow
+# ─── Azure auth check ────────────────────────────────────
 $account = az account show 2>$null | ConvertFrom-Json
 if (-not $account) {
     Write-Host "Not logged in. Running az login..." -ForegroundColor Yellow
     az login
     $account = az account show | ConvertFrom-Json
 }
-Write-Host "  Logged in as: $($account.user.name)" -ForegroundColor Green
+Write-Host "  Account:      $($account.user.name)" -ForegroundColor Green
 Write-Host "  Subscription: $($account.name)" -ForegroundColor Green
+Write-Host ""
 
-# ─── Deploy Data ─────────────────────────────────────────
-# TODO: Implement SQLite export → CSV → bcp bulk import pipeline
-#
-# For each schema (kb, xref):
-#   1. Export SQLite tables to TSV files using node script
-#   2. Truncate Azure SQL target tables (within transaction)
-#   3. bcp bulk insert from TSV files
-#   4. Rebuild indexes
-#   5. Verify row counts
-#
-# The export step requires a small Node.js helper that reads the SQLite
-# database and writes TSV files. This avoids needing Python or sqlite3.exe.
+$startTime = Get-Date
+$steps = @()
 
-Write-Host "`n[TODO] Data deployment pipeline not yet implemented." -ForegroundColor Yellow
-Write-Host "  This script will be completed when Azure SQL resources are provisioned."
-Write-Host "  For now, the local SQLite databases serve the MCP servers directly."
+# ─── Step 1: Role Assignments ────────────────────────────
+if (-not $SkipRoles) {
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
+    Write-Host "║  STEP 1/2: Role Assignments                             ║" -ForegroundColor Yellow
+    Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+    try {
+        & (Join-Path $scriptDir 'Set-RoleAssignments.ps1') -Environment $Environment
+        $steps += @{ Step = 'Role Assignments'; Status = 'OK' }
+    } catch {
+        Write-Warning "Role assignments failed: $($_.Exception.Message)"
+        $steps += @{ Step = 'Role Assignments'; Status = 'FAILED' }
+    }
+} else {
+    $steps += @{ Step = 'Role Assignments'; Status = 'SKIPPED' }
+}
 
-Write-Host "`n═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  DONE" -ForegroundColor Cyan
-Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+# ─── Step 2: Function App ────────────────────────────────
+if (-not $SkipFunctionApp) {
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
+    Write-Host "║  STEP 2/2: Function App Deployment                      ║" -ForegroundColor Yellow
+    Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+    try {
+        & (Join-Path $scriptDir 'Deploy-FunctionApp.ps1') -Environment $Environment
+        $steps += @{ Step = 'Function App'; Status = 'OK' }
+    } catch {
+        Write-Warning "Function App deployment failed: $($_.Exception.Message)"
+        $steps += @{ Step = 'Function App'; Status = 'FAILED' }
+    }
+} else {
+    $steps += @{ Step = 'Function App'; Status = 'SKIPPED' }
+}
+
+# ─── Summary ─────────────────────────────────────────────
+$elapsed = ((Get-Date) - $startTime).ToString('hh\:mm\:ss')
+$allOk = ($steps | Where-Object { $_.Status -eq 'FAILED' }).Count -eq 0
+
+Write-Host ""
+$summaryColor = 'Yellow'
+if ($allOk) { $summaryColor = 'Green' }
+Write-Host "================================================================" -ForegroundColor $summaryColor
+Write-Host "  DEPLOYMENT PIPELINE COMPLETE ($elapsed)" -ForegroundColor $summaryColor
+Write-Host "================================================================" -ForegroundColor $summaryColor
+foreach ($step in $steps) {
+    $color = switch ($step.Status) { 'OK' { 'Green' } 'FAILED' { 'Red' } default { 'DarkGray' } }
+    Write-Host "  [$($step.Status)] $($step.Step)" -ForegroundColor $color
+}
+Write-Host "================================================================" -ForegroundColor $summaryColor

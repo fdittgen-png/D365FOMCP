@@ -1,23 +1,22 @@
 // ═══════════════════════════════════════════════════════════
-//  D365FO MCP Services — Azure Infrastructure
-//  Trelleborg Naming Convention v3.0
+//  D365FO MCP Services — Azure Infrastructure (RG-scoped)
+//  Deploy into an existing resource group
 // ═══════════════════════════════════════════════════════════
 
-targetScope = 'subscription'
+targetScope = 'resourceGroup'
 
 @description('Environment code (d=dev, p=prod)')
 @allowed(['d', 'p'])
-param env string = 'p'
+param env string = 'd'
 
-param location string = 'westeurope'
+param location string = resourceGroup().location
 param workload string = 'mcpd365fo'
 param prefix string = 'tis'
 
 // ─── Naming ─────────────────────────────────────────────
-var rgName    = '${prefix}-${env}-${workload}-rg'
 var funcName  = '${prefix}-${env}-${workload}-func'
 var aspName   = '${prefix}-${env}-${workload}-asp'
-var stName    = '${prefix}${env}${workload}st'        // slug format (max 24 chars)
+var stName    = '${prefix}${env}${workload}st'
 var kvName    = '${prefix}-${env}-${workload}-kv'
 var appiName  = '${prefix}-${env}-${workload}-appi'
 var logName   = '${prefix}-${env}-${workload}-log'
@@ -30,16 +29,8 @@ var tags = {
   ManagedBy: 'Florian Dittgen'
 }
 
-// ─── Resource Group ─────────────────────────────────────
-resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
-  name: rgName
-  location: location
-  tags: tags
-}
-
 // ─── Monitoring ─────────────────────────────────────────
 module monitoring 'modules/monitoring.bicep' = {
-  scope: rg
   name: 'monitoring'
   params: {
     location: location
@@ -51,7 +42,6 @@ module monitoring 'modules/monitoring.bicep' = {
 
 // ─── Function App ───────────────────────────────────────
 module func 'modules/functionApp.bicep' = {
-  scope: rg
   name: 'functionApp'
   params: {
     location: location
@@ -65,5 +55,4 @@ module func 'modules/functionApp.bicep' = {
 }
 
 // ─── Outputs ────────────────────────────────────────────
-output resourceGroupName string = rg.name
 output functionAppUrl string = func.outputs.functionAppUrl

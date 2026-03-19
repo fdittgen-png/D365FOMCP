@@ -1,3 +1,5 @@
+> **DEPRECATED**: This document describes the original Azure SQL-based design (v1.0). The architecture was migrated to SQLite in v2.0. See [Architecture.md](Architecture.md), [Implementation.md](Implementation.md), and [Administration.md](Administration.md) for current documentation.
+
 # Concept Document: D365FO MCP Services on Azure
 
 **Project**: tis-p-mcpd365fo

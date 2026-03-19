@@ -4,8 +4,6 @@ param aspName string
 param stName string
 param kvName string
 param appiConnectionString string
-param sqlServerFqdn string
-param sqlDbName string
 param tags object
 
 // ─── Storage Account ────────────────────────────────────
@@ -91,16 +89,16 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: appiConnectionString
         }
         {
-          name: 'SQL_SERVER'
-          value: sqlServerFqdn
-        }
-        {
-          name: 'SQL_DATABASE'
-          value: sqlDbName
-        }
-        {
           name: 'KEY_VAULT_URI'
           value: keyVault.properties.vaultUri
+        }
+        {
+          name: 'KB_DB_PATH'
+          value: '/home/data/d365fo_kb.sqlite'
+        }
+        {
+          name: 'XREF_DB_PATH'
+          value: '/home/data/d365fo_xref.sqlite'
         }
       ]
       minTlsVersion: '1.2'

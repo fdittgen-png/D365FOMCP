@@ -4,7 +4,9 @@
  * Parses D365FO XML metadata files from PackagesLocalDirectory and builds
  * a SQLite database optimized for AI consumption via MCP server.
  *
- * Usage: node build-kb.js [packagesPath] [outputPath]
+ * Usage: node build-kb.js [paths] [outputPath]
+ *   paths: Comma-separated list of package directories
+ *   Example: node build-kb.js "C:\path1,C:\path2" output.sqlite
  */
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
@@ -14,18 +16,19 @@ import initSqlJs from 'sql.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const DEFAULT_PACKAGES_PATH = join(
-  process.env.USERPROFILE || 'C:\\Users\\florian.dittgen',
-  'AppData', 'Local', 'Microsoft', 'Dynamics365',
-  '10.0.2263.202', 'PackagesLocalDirectory'
-);
+const DEFAULT_PACKAGES_PATHS = [
+  join(process.env.USERPROFILE || 'C:\\Users\\florian.dittgen', 'AppData', 'Local', 'Microsoft', 'Dynamics365', '10.0.2263.202', 'PackagesLocalDirectory'),
+  'C:\\Workspace\\DEV\\Metadata',
+];
 
 const DEFAULT_OUTPUT_PATH = join(
   process.env.USERPROFILE || 'C:\\Users\\florian.dittgen',
   '.claude', 'd365fo_kb.sqlite'
 );
 
-const packagesPath = process.argv[2] || DEFAULT_PACKAGES_PATH;
+const packagesPaths = process.argv[2]
+  ? process.argv[2].split(',').map(p => p.trim())
+  : DEFAULT_PACKAGES_PATHS;
 const outputPath = process.argv[3] || DEFAULT_OUTPUT_PATH;
 
 // XML parser options
@@ -48,6 +51,10 @@ const xmlParser = new XMLParser({
 });
 
 // ─── Stats tracking ──────────────────────────────────────────────────────────
+
+// In-memory maps for FTS index enrichment (avoid slow GROUP_CONCAT in sql.js)
+const classMethodNames = new Map();  // className → 'method1, method2, ...'
+const entityFieldNamesMap = new Map(); // entityName → 'field1, field2, ...'
 
 const stats = {
   modules: 0, tables: 0, fields: 0, indexes: 0, relations: 0,
@@ -173,9 +180,19 @@ function findAxDirs(basePath, dirName) {
  * Path pattern: PackagesLocalDirectory/ModuleName/SubModel/AxType/File.xml
  */
 function getModuleFromPath(filePath) {
-  const rel = filePath.substring(packagesPath.length + 1);
-  const parts = rel.split(/[/\\]/);
-  return parts[0] || 'Unknown';
+  for (const basePath of packagesPaths) {
+    if (filePath.startsWith(basePath)) {
+      const rel = filePath.substring(basePath.length + 1);
+      const parts = rel.split(/[/\\]/);
+      return parts[0] || 'Unknown';
+    }
+  }
+  // Fallback: use last directory component before AxType
+  const parts = filePath.split(/[/\\]/);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].startsWith('Ax') && i > 0) return parts[i - 2] || parts[i - 1] || 'Unknown';
+  }
+  return 'Unknown';
 }
 
 /**
@@ -192,6 +209,105 @@ function readXmlFiles(dirPath) {
   } catch {
     return [];
   }
+}
+
+// ─── Label resolution ────────────────────────────────────────────────────────
+
+/**
+ * In-memory label map: '@SYS12345' → 'Label text', 'ModuleName:Key' → 'text'
+ * Populated during Phase 0 by scanning all en-US .label.txt files.
+ */
+const labelMap = new Map();
+
+/**
+ * Scan all AxLabelFile/LabelResources/en-US/*.label.txt files and load into labelMap.
+ */
+function loadLabels() {
+  let fileCount = 0;
+  let labelCount = 0;
+
+  for (const basePath of packagesPaths) {
+    if (!existsSync(basePath)) continue;
+
+    // Find all en-US label.txt files
+    const labelFiles = [];
+    function findLabelFiles(dir, depth) {
+      if (depth > 6) return;
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) {
+            if (entry.name.endsWith('.label.txt') &&
+                (dir.includes('en-US') || dir.includes('en-us'))) {
+              labelFiles.push(join(dir, entry.name));
+            }
+            continue;
+          }
+          if (entry.name === 'bin' || entry.name === 'node_modules') continue;
+          // Only descend into paths that lead to label files
+          if (entry.name === 'AxLabelFile' || entry.name === 'LabelResources' ||
+              entry.name === 'en-US' || entry.name === 'en-us' ||
+              depth < 3) {
+            findLabelFiles(join(dir, entry.name), depth + 1);
+          }
+        }
+      } catch { /* ignore permission errors */ }
+    }
+    findLabelFiles(basePath, 0);
+
+    for (const filePath of labelFiles) {
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        // Extract the label file prefix (e.g., "SYS" from "SYS.en-us.label.txt")
+        const fileName = basename(filePath);
+        const prefix = fileName.split('.')[0];
+
+        const lines = content.split('\n');
+        for (const rawLine of lines) {
+          const line = rawLine.trimEnd();
+          // Skip empty lines and comment lines (start with space + semicolon)
+          if (!line || line.startsWith(' ;') || line.startsWith('\t;')) continue;
+
+          const eqIdx = line.indexOf('=');
+          if (eqIdx < 1) continue;
+
+          const key = line.substring(0, eqIdx).trim();
+          const value = line.substring(eqIdx + 1);
+
+          if (!key || !value) continue;
+
+          // Store with @ prefix if it looks like @SYS12345
+          if (key.startsWith('@')) {
+            labelMap.set(key, value);
+          } else {
+            // Store as both "Key" and "@Prefix:Key" for module-qualified lookups
+            labelMap.set(key, value);
+            labelMap.set(`@${prefix}:${key}`, value);
+          }
+          labelCount++;
+        }
+        fileCount++;
+      } catch { /* ignore read errors */ }
+    }
+  }
+
+  console.log(`  Loaded ${labelCount.toLocaleString()} labels from ${fileCount} files`);
+}
+
+/**
+ * Resolve a label ID to human-readable text.
+ * Handles: '@SYS12345', '@Module:Key', or plain text (returned as-is).
+ * Returns resolved text or the original value if not found.
+ */
+function resolveLabel(labelId) {
+  if (!labelId || typeof labelId !== 'string') return labelId;
+  // Not a label reference — return as-is
+  if (!labelId.startsWith('@')) return labelId;
+  // Direct lookup
+  const resolved = labelMap.get(labelId);
+  if (resolved) return resolved;
+  // Try without the @ prefix for module-qualified labels
+  return labelId;
 }
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -435,6 +551,12 @@ CREATE TABLE IF NOT EXISTS object_paths (
   PRIMARY KEY (object_type, object_name)
 );
 
+-- Labels (resolved @SYS / @Module label IDs to text)
+CREATE TABLE IF NOT EXISTS labels (
+  label_id TEXT PRIMARY KEY,
+  text TEXT NOT NULL
+);
+
 -- Indexes for efficient querying
 CREATE INDEX IF NOT EXISTS idx_fields_table ON fields(table_name);
 CREATE INDEX IF NOT EXISTS idx_indexes_table ON indexes_tbl(table_name);
@@ -475,12 +597,12 @@ function extractTable(parsed, filePath) {
   const fieldList = ensureArray(t.Fields?.AxTableField);
 
   stmts.insertTable.run(
-    tableName, moduleId, t.Label || null, t.TableGroup || null,
+    tableName, moduleId, resolveLabel(t.Label) || null, t.TableGroup || null,
     t.SaveDataPerCompany || 'Yes', t.CacheLookup || null,
     t.ClusteredIndex || null, t.ReplacementKey || null,
     t.ConfigurationKey || null, fieldList.length,
     (t.SourceCode?.Methods?.Method) ? 1 : 0,
-    t.DeveloperDocumentation || null, filePath
+    resolveLabel(t.DeveloperDocumentation) || null, filePath
   );
   stats.tables++;
 
@@ -490,7 +612,7 @@ function extractTable(parsed, filePath) {
     stmts.insertField.run(
       tableName, f.Name, fieldType || null, f.ExtendedDataType || null,
       f.EnumType || null, f.Mandatory || 'No', f.AllowEdit || 'Yes',
-      f.Label || null
+      resolveLabel(f.Label) || null
     );
     stats.fields++;
   }
@@ -566,10 +688,10 @@ function extractEnum(parsed, filePath) {
   const values = rawValues.map(v => ({
     name: v.Name,
     value: v.Value !== undefined ? Number(v.Value) : null,
-    label: v.Label || null,
+    label: resolveLabel(v.Label) || null,
   }));
 
-  stmts.insertEnum.run(e.Name, moduleId, e.Label || null, JSON.stringify(values));
+  stmts.insertEnum.run(e.Name, moduleId, resolveLabel(e.Label) || null, JSON.stringify(values));
   stats.enums++;
   stats.enumValues += values.length;
 
@@ -586,7 +708,7 @@ function extractEdt(parsed, filePath) {
   const baseType = (e['@_i:type'] || '').replace('AxEdt', '') || null;
 
   stmts.insertEdt.run(
-    e.Name, baseType, e.Extends || null, e.Label || null,
+    e.Name, baseType, e.Extends || null, resolveLabel(e.Label) || null,
     e.StringSize ? Number(e.StringSize) : null,
     e.ReferenceTable || null, moduleId
   );
@@ -612,6 +734,11 @@ function extractClass(parsed, filePath) {
     isAbstract ? 1 : 0, methods.length, filePath
   );
   stats.classes++;
+
+  // Collect method names for FTS enrichment
+  if (methods.length > 0) {
+    classMethodNames.set(c.Name, methods.map(m => m.Name).join(', '));
+  }
 
   // Extract method signatures + full source code
   for (const m of methods) {
@@ -654,7 +781,7 @@ function extractDataEntity(parsed, filePath) {
   }
 
   stmts.insertEntity.run(
-    e.Name, moduleId, e.Label || null,
+    e.Name, moduleId, resolveLabel(e.Label) || null,
     e.PublicEntityName || null, e.PublicCollectionName || null,
     e.IsPublic === 'Yes' ? 1 : 0, primaryTable,
     e.StagingTable || null, e.ConfigurationKey || null, filePath
@@ -663,6 +790,12 @@ function extractDataEntity(parsed, filePath) {
 
   // Entity fields
   const fieldList = ensureArray(e.Fields?.AxDataEntityViewField);
+
+  // Collect field names for FTS enrichment
+  if (fieldList.length > 0) {
+    entityFieldNamesMap.set(e.Name, fieldList.map(f => f.Name).join(', '));
+  }
+
   for (const f of fieldList) {
     try {
       stmts.insertEntityField.run(
@@ -701,15 +834,15 @@ function extractForm(parsed, filePath) {
     }
   }
   try {
-    collectDataSources(f.Design?.DataSources || f.DataSources);
-    // Also try FormDesign path
-    if (dataSources.length === 0 && f.FormDesign?.DataSources) {
-      collectDataSources(f.FormDesign.DataSources);
-    }
+    // Try all known form data source XML paths
+    collectDataSources(f.DataSources);
+    if (dataSources.length === 0) collectDataSources(f.Design?.DataSources);
+    if (dataSources.length === 0) collectDataSources(f.Design?.AxFormDesign?.DataSources);
+    if (dataSources.length === 0) collectDataSources(f.FormDesign?.DataSources);
   } catch {}
 
   stmts.insertForm.run(
-    f.Name, moduleId, f.Label || null,
+    f.Name, moduleId, resolveLabel(f.Label) || null,
     JSON.stringify(dataSources), filePath
   );
   stats.forms++;
@@ -727,7 +860,7 @@ function extractView(parsed, filePath) {
   const fieldList = ensureArray(v.Fields?.AxViewField);
 
   stmts.insertView.run(
-    v.Name, moduleId, v.Label || null,
+    v.Name, moduleId, resolveLabel(v.Label) || null,
     v.ConfigurationKey || null, fieldList.length, filePath
   );
   stats.views++;
@@ -745,7 +878,7 @@ function extractSecurityRole(parsed, filePath) {
   const duties = ensureArray(r.Duties?.AxSecurityDutyReference).map(d => d.Name);
 
   stmts.insertSecRole.run(
-    r.Name, moduleId, r.Label || null, r.Description || null,
+    r.Name, moduleId, resolveLabel(r.Label) || null, resolveLabel(r.Description) || null,
     JSON.stringify(duties)
   );
   stats.securityRoles++;
@@ -759,7 +892,7 @@ function extractSecurityDuty(parsed, filePath) {
   const privs = ensureArray(d.Privileges?.AxSecurityPrivilegeReference).map(p => p.Name);
 
   stmts.insertSecDuty.run(
-    d.Name, moduleId, d.Label || null, d.Description || null,
+    d.Name, moduleId, resolveLabel(d.Label) || null, resolveLabel(d.Description) || null,
     JSON.stringify(privs)
   );
   stats.securityDuties++;
@@ -778,7 +911,7 @@ function extractSecurityPrivilege(parsed, filePath) {
   }));
 
   stmts.insertSecPriv.run(
-    p.Name, moduleId, p.Label || null, JSON.stringify(eps)
+    p.Name, moduleId, resolveLabel(p.Label) || null, JSON.stringify(eps)
   );
   stats.securityPrivileges++;
 }
@@ -793,7 +926,7 @@ function extractMenuItem(parsed, filePath, menuType) {
   const moduleId = getModuleFromPath(filePath);
 
   stmts.insertMenuItem.run(
-    mi.Name, menuType, moduleId, mi.Label || null,
+    mi.Name, menuType, moduleId, resolveLabel(mi.Label) || null,
     mi.ObjectName || mi.Object || null, mi.ObjectType || null,
     mi.ConfigurationKey || null
   );
@@ -829,6 +962,7 @@ function prepareStatements() {
   stmts.insertHallTrap = db.prepare(`INSERT INTO hallucination_traps (object_name,trap_type,wrong_value,correct_value,explanation) VALUES (?,?,?,?,?)`);
   stmts.insertFieldRename = db.prepare(`INSERT OR REPLACE INTO field_renames VALUES (?,?,?)`);
   stmts.insertQueryTemplate = db.prepare(`INSERT INTO query_templates (title,description,sql_template,tables_used) VALUES (?,?,?,?)`);
+  stmts.insertLabel = db.prepare(`INSERT OR IGNORE INTO labels VALUES (?,?)`);
 }
 
 // sql.js uses a different API - we need a wrapper
@@ -867,12 +1001,13 @@ function prepareStatementsForSqlJs() {
   stmts.insertHallTrap = wrap(`INSERT INTO hallucination_traps (object_name,trap_type,wrong_value,correct_value,explanation) VALUES (?,?,?,?,?)`);
   stmts.insertFieldRename = wrap(`INSERT OR REPLACE INTO field_renames VALUES (?,?,?)`);
   stmts.insertQueryTemplate = wrap(`INSERT INTO query_templates (title,description,sql_template,tables_used) VALUES (?,?,?,?)`);
+  stmts.insertLabel = wrap(`INSERT OR IGNORE INTO labels VALUES (?,?)`);
 }
 
 // ─── Processing Pipeline ─────────────────────────────────────────────────────
 
 function processAxType(axTypeName, extractFn, extraArg) {
-  const dirs = findAxDirs(packagesPath, axTypeName);
+  const dirs = packagesPaths.flatMap(p => existsSync(p) ? findAxDirs(p, axTypeName) : []);
   let count = 0;
   for (const dir of dirs) {
     const files = readXmlFiles(dir);
@@ -930,21 +1065,28 @@ function buildModuleSummaries() {
 function buildFtsIndex() {
   console.log('Building FTS5 search index...');
 
-  // Index tables
+  // Index tables — include field names, field labels, EDTs for better search
   const tables = db.exec(`SELECT table_name, module_id, label, developer_doc FROM tables`);
   if (tables.length > 0) {
     for (const row of tables[0].values) {
-      const fields = db.exec(`SELECT GROUP_CONCAT(field_name, ', ') FROM fields WHERE table_name='${row[0]}'`);
-      const fieldNames = fields[0]?.values[0][0] || '';
-      stmts.insertFts.run('table', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''} ${fieldNames}`);
+      const fieldsResult = db.exec(`SELECT field_name, label, edt FROM fields WHERE table_name='${row[0].replace(/'/g, "''")}'`);
+      let fieldContent = '';
+      if (fieldsResult.length > 0) {
+        const fieldNames = fieldsResult[0].values.map(f => f[0]).join(', ');
+        const fieldLabels = fieldsResult[0].values.map(f => f[1]).filter(Boolean).join(', ');
+        const fieldEdts = fieldsResult[0].values.map(f => f[2]).filter(Boolean).join(', ');
+        fieldContent = `${fieldNames} ${fieldLabels} ${fieldEdts}`;
+      }
+      stmts.insertFts.run('table', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''} ${fieldContent}`);
     }
   }
 
-  // Index classes
+  // Index classes — include extends, implements, method names (from in-memory map)
   const classes = db.exec(`SELECT class_name, module_id, extends_class, implements_list FROM classes`);
   if (classes.length > 0) {
     for (const row of classes[0].values) {
-      stmts.insertFts.run('class', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''}`);
+      const methodNames = classMethodNames.get(row[0]) || '';
+      stmts.insertFts.run('class', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''} ${methodNames}`);
     }
   }
 
@@ -958,11 +1100,22 @@ function buildFtsIndex() {
     }
   }
 
-  // Index entities
+  // Index entities — include labels, public name, field names (from in-memory map)
   const entities = db.exec(`SELECT entity_name, module_id, label, public_name FROM data_entities`);
   if (entities.length > 0) {
     for (const row of entities[0].values) {
-      stmts.insertFts.run('entity', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''}`);
+      const entityFieldNames = entityFieldNamesMap.get(row[0]) || '';
+      stmts.insertFts.run('entity', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''} ${entityFieldNames}`);
+    }
+  }
+
+  // Index forms — include label, data source tables
+  const formsForFts = db.exec(`SELECT form_name, module_id, label, data_sources_json FROM forms`);
+  if (formsForFts.length > 0) {
+    for (const row of formsForFts[0].values) {
+      let dsTables = '';
+      try { dsTables = JSON.parse(row[3] || '[]').join(', '); } catch {}
+      stmts.insertFts.run('form', row[0], row[1] || '', `${row[2] || ''} ${dsTables}`);
     }
   }
 
@@ -1098,13 +1251,18 @@ async function main() {
   console.log('═══════════════════════════════════════════════════════════');
   console.log('  D365FO Knowledge Base Builder');
   console.log('═══════════════════════════════════════════════════════════');
-  console.log(`Source: ${packagesPath}`);
+  console.log(`Sources: ${packagesPaths.join(', ')}`);
   console.log(`Output: ${outputPath}`);
   console.log('');
 
-  if (!existsSync(packagesPath)) {
-    console.error(`ERROR: Packages path not found: ${packagesPath}`);
+  const validPaths = packagesPaths.filter(p => existsSync(p));
+  if (validPaths.length === 0) {
+    console.error(`ERROR: No valid package paths found: ${packagesPaths.join(', ')}`);
     process.exit(1);
+  }
+  const missingPaths = packagesPaths.filter(p => !existsSync(p));
+  if (missingPaths.length > 0) {
+    console.log(`WARNING: Skipping missing paths: ${missingPaths.join(', ')}`);
   }
 
   // Initialize sql.js
@@ -1124,6 +1282,24 @@ async function main() {
 
   // Prepare statements
   prepareStatementsForSqlJs();
+
+  // ── Phase 0: Load labels ──
+  console.log('');
+  console.log('Phase 0: Loading label files (en-US)...');
+  const tLabels = Date.now();
+  loadLabels();
+  console.log(`Phase 0 complete: ${((Date.now() - tLabels) / 1000).toFixed(1)}s`);
+
+  // Persist labels to database for MCP tool access
+  console.log('Writing labels to database...');
+  db.run('BEGIN TRANSACTION');
+  let labelDbCount = 0;
+  for (const [key, value] of labelMap) {
+    stmts.insertLabel.run(key, value);
+    labelDbCount++;
+  }
+  db.run('COMMIT');
+  console.log(`  ${labelDbCount.toLocaleString()} labels stored`);
 
   // ── Phase 1: Extract metadata ──
   console.log('');
@@ -1181,7 +1357,7 @@ async function main() {
   // KB metadata
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('d365fo_version', '10.0.2263.172')`);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('build_date', '${new Date().toISOString()}')`);
-  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('packages_path', '${packagesPath.replace(/\\/g, '\\\\')}')`);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('packages_path', '${packagesPaths.join(';').replace(/\\/g, '\\\\')}')`);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.0')`);
 
   db.run('COMMIT');

@@ -3,3 +3,14 @@ node_modules/
 local.settings.json
 .env
 *.log
+
+# Bicep build artifacts
+infra/*.json
+!infra/dev.parameters.json
+
+# Deployment artifacts
+.deploy/
+.deploy.zip
+
+# Temporary / diagnostic scripts
+diag*.ps1
