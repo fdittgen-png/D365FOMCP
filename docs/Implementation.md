@@ -98,7 +98,7 @@ node build/build-kb.js "C:\path\PackagesLocalDirectory,C:\Workspace\DEV\Metadata
 
 **Multi-directory support:** The builder accepts a comma-separated list of package directories. All directories are scanned sequentially. This supports both Microsoft standard packages and ISV/custom model metadata from separate paths.
 
-**Build technology:** Uses `sql.js` (WebAssembly SQLite) during the build phase because it allows in-memory database construction and single-file export without requiring a native binary on the build machine.
+**Build technology:** The KB builder uses `sql.js` (WebAssembly SQLite) during the build phase because it allows in-memory database construction and single-file export without requiring a native binary on the build machine. The XRef builder uses `better-sqlite3` (native, file-based) because the ~3.3 GB database exceeds the WASM in-memory ArrayBuffer limit.
 
 ### 2.2 XRef Build (`build/build-xref-db.js`)
 
@@ -312,7 +312,7 @@ The deployment disables server-side build (`SCM_DO_BUILD_DURING_DEPLOYMENT=false
 | `@modelcontextprotocol/sdk` | ^1.27.0 | MCP server SDK -- McpServer, transports (stdio + Streamable HTTP) |
 | `better-sqlite3` | ^12.8.0 | Native SQLite3 binding for Node.js -- used at runtime (Azure + local XRef) |
 | `fast-xml-parser` | ^5.2.3 | XML parser for D365FO metadata files during KB build |
-| `sql.js` | ^1.12.0 | WebAssembly SQLite -- used during build (KB + XRef) and local KB server |
+| `sql.js` | ^1.12.0 | WebAssembly SQLite -- used during KB build and local KB server (not XRef build) |
 
 ### 7.2 Build-Time Dependencies (not in package.json)
 

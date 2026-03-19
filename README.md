@@ -189,7 +189,7 @@ Health check: `GET` to any endpoint returns `{ name, version, status }`.
 | Runtime | Node.js 20 LTS (ES Modules) |
 | MCP SDK | @modelcontextprotocol/sdk ^1.27.0 |
 | Database (runtime) | better-sqlite3 ^12.8.0 (native, read-only) |
-| Database (build) | sql.js ^1.12.0 (WebAssembly SQLite) |
+| Database (KB build) | sql.js ^1.12.0 (WebAssembly SQLite) |
 | XML parsing | fast-xml-parser ^5.2.3 |
 | Azure Functions | @azure/functions ^4.9.0 (v4 programming model) |
 | Infrastructure | Azure Bicep |

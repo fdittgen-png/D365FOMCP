@@ -111,7 +111,7 @@ The system supports two deployment modes with shared tool implementations:
 | Aspect | Local Mode | Azure Mode |
 |--------|-----------|------------|
 | Transport | MCP stdio (JSON-RPC over stdin/stdout) | MCP Streamable HTTP (POST/SSE) |
-| Database engine | sql.js (KB), better-sqlite3 (XRef) | better-sqlite3 (both) |
+| Database engine | sql.js (KB only), better-sqlite3 (XRef) | better-sqlite3 (both) |
 | DB location | `%USERPROFILE%\.claude\` | `/home/data/` on Function App |
 | Entry points | `src/local/mcp-server-kb.js`, `src/local/mcp-server-xref.js` | `src/functions/d365kb.js`, `src/functions/d365xref.js` |
 | Consumers | Single developer (Claude Code, Claude Desktop) | Multiple concurrent (any MCP client over HTTPS) |
@@ -162,8 +162,8 @@ AxMenuItemDisplay/* ──┘
 ### 4.2 XRef Build Pipeline
 
 ```
-LocalDB SQL Server                   build-xref-db.js (mssql + sql.js WASM)
-──────────────────                   ──────────────────────────────────────
+LocalDB SQL Server                   build-xref-db.js (mssql + better-sqlite3)
+──────────────────                   ────────────────────────────────────────
 dbo.Names (5.8M rows)   ──┐         Stream all rows → SQLite names table
 dbo.References (26.6M)  ──┤ ────►   Stream all rows → SQLite refs table
 dbo.Modules (390+)      ──┤         Copy modules + providers
