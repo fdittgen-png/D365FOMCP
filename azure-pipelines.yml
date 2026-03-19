@@ -1,0 +1,531 @@
+# ═══════════════════════════════════════════════════════════════════
+#  D365FO MCP Services — Azure DevOps Pipeline
+#  Deploys infrastructure, configures RBAC, deploys code + databases,
+#  and validates the endpoints.
+# ═══════════════════════════════════════════════════════════════════
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - docs/**
+      - '*.md'
+
+pr:
+  branches:
+    include:
+      - main
+
+parameters:
+  - name: environment
+    displayName: 'Target Environment'
+    type: string
+    default: 'd'
+    values:
+      - d
+      - p
+
+  - name: deployInfrastructure
+    displayName: 'Deploy Infrastructure (Bicep)'
+    type: boolean
+    default: false
+
+  - name: uploadDatabases
+    displayName: 'Upload SQLite databases'
+    type: boolean
+    default: true
+
+  - name: dbStorageAccount
+    displayName: 'Storage account holding pre-built SQLite databases'
+    type: string
+    default: 'tisdmcpd365fost'
+
+  - name: dbStorageContainer
+    displayName: 'Blob container with databases'
+    type: string
+    default: 'databases'
+
+variables:
+  prefix: 'tis'
+  workload: 'mcpd365fo'
+  env: ${{ parameters.environment }}
+  resourceGroup: '$(prefix)-$(env)-$(workload)-rg'
+  functionAppName: '$(prefix)-$(env)-$(workload)-func'
+  kvName: '$(prefix)-$(env)-$(workload)-kv'
+  nodeVersion: '20.x'
+  # Service connection name — update to match your DevOps project
+  azureServiceConnection: 'azure-mcpd365fo'
+
+stages:
+  # ═══════════════════════════════════════════════════════════════
+  #  Stage 1: Build — prepare deployment package
+  # ═══════════════════════════════════════════════════════════════
+  - stage: Build
+    displayName: 'Build Deployment Package'
+    jobs:
+      - job: Package
+        displayName: 'npm install + Linux prebuild'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - checkout: self
+
+          - task: NodeTool@0
+            displayName: 'Use Node.js $(nodeVersion)'
+            inputs:
+              versionSpec: '$(nodeVersion)'
+
+          - script: |
+              echo "── Preparing deployment directory ──"
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy
+
+              # Copy runtime files
+              cp host.json $(Build.ArtifactStagingDirectory)/deploy/
+              cp package.json $(Build.ArtifactStagingDirectory)/deploy/
+              cp package-lock.json $(Build.ArtifactStagingDirectory)/deploy/
+
+              # Copy Azure source (not local stdio servers)
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/src/azure
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/src/functions
+              cp src/azure/*.js $(Build.ArtifactStagingDirectory)/deploy/src/azure/
+              cp src/functions/*.js $(Build.ArtifactStagingDirectory)/deploy/src/functions/
+            displayName: 'Copy source files'
+
+          - script: |
+              cd $(Build.ArtifactStagingDirectory)/deploy
+              echo "── npm install (production) ──"
+              npm install --omit=dev
+
+              echo "── Installing Linux prebuild for better-sqlite3 ──"
+              cd node_modules/better-sqlite3
+              npx --yes prebuild-install --platform linux --arch x64 --target 20.20.0 --runtime node
+            displayName: 'Install dependencies + Linux binary'
+
+          - task: ArchiveFiles@2
+            displayName: 'Create deployment zip'
+            inputs:
+              rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/deploy'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/deploy.zip'
+
+          - publish: $(Build.ArtifactStagingDirectory)/deploy.zip
+            artifact: app-package
+            displayName: 'Publish deployment artifact'
+
+          # Also publish infra + scripts for later stages
+          - publish: $(Build.SourcesDirectory)/infra
+            artifact: infra
+            displayName: 'Publish Bicep templates'
+
+          - publish: $(Build.SourcesDirectory)/scripts
+            artifact: scripts
+            displayName: 'Publish deployment scripts'
+
+  # ═══════════════════════════════════════════════════════════════
+  #  Stage 2: Infrastructure (optional) — Bicep deployment
+  # ═══════════════════════════════════════════════════════════════
+  - stage: Infrastructure
+    displayName: 'Deploy Infrastructure'
+    dependsOn: Build
+    condition: and(succeeded(), eq('${{ parameters.deployInfrastructure }}', true))
+    jobs:
+      - job: Bicep
+        displayName: 'Deploy Bicep templates'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - download: current
+            artifact: infra
+
+          - task: AzureCLI@2
+            displayName: 'Verify resource group exists'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Checking resource group: $(resourceGroup)"
+                az group show --name "$(resourceGroup)" --output table
+                if [ $? -ne 0 ]; then
+                  echo "##vso[task.logissue type=error]Resource group '$(resourceGroup)' not found. Create it in the Azure portal first."
+                  exit 1
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Deploy Bicep template'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                DEPLOYMENT_NAME="mcpd365fo-$(env)-$(Build.BuildId)"
+                echo "Deploying: $DEPLOYMENT_NAME"
+
+                az deployment group create \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$DEPLOYMENT_NAME" \
+                  --template-file "$(Pipeline.Workspace)/infra/main-rg.bicep" \
+                  --parameters env="$(env)" \
+                  --output table
+
+                echo "── Deployment outputs ──"
+                az deployment group show \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$DEPLOYMENT_NAME" \
+                  --query "properties.outputs" \
+                  --output table
+
+  # ═══════════════════════════════════════════════════════════════
+  #  Stage 3: Configure — RBAC role assignments
+  # ═══════════════════════════════════════════════════════════════
+  - stage: Configure
+    displayName: 'Configure RBAC'
+    dependsOn:
+      - Build
+      - Infrastructure
+    condition: |
+      and(
+        succeeded('Build'),
+        or(succeeded('Infrastructure'), eq('${{ parameters.deployInfrastructure }}', false))
+      )
+    jobs:
+      - job: Roles
+        displayName: 'Assign RBAC roles'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Assign Key Vault Secrets User role'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "── Getting Function App managed identity ──"
+                PRINCIPAL_ID=$(az functionapp identity show \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$(functionAppName)" \
+                  --query principalId -o tsv)
+
+                if [ -z "$PRINCIPAL_ID" ]; then
+                  echo "##vso[task.logissue type=error]No managed identity on $(functionAppName). Deploy infrastructure first."
+                  exit 1
+                fi
+                echo "Principal ID: $PRINCIPAL_ID"
+
+                echo "── Checking Key Vault ──"
+                KV_ID=$(az keyvault show \
+                  --name "$(kvName)" \
+                  --resource-group "$(resourceGroup)" \
+                  --query id -o tsv)
+
+                echo "── Assigning Key Vault Secrets User ──"
+                EXISTING=$(az role assignment list \
+                  --assignee "$PRINCIPAL_ID" \
+                  --role "Key Vault Secrets User" \
+                  --scope "$KV_ID" \
+                  --query "length(@)")
+
+                if [ "$EXISTING" -gt 0 ]; then
+                  echo "Role already assigned — skipping."
+                else
+                  az role assignment create \
+                    --assignee-object-id "$PRINCIPAL_ID" \
+                    --assignee-principal-type ServicePrincipal \
+                    --role "Key Vault Secrets User" \
+                    --scope "$KV_ID" \
+                    --output table
+                  echo "Role assigned successfully."
+                fi
+
+  # ═══════════════════════════════════════════════════════════════
+  #  Stage 4: Deploy — upload databases + deploy code
+  # ═══════════════════════════════════════════════════════════════
+  - stage: Deploy
+    displayName: 'Deploy Function App'
+    dependsOn: Configure
+    condition: succeeded('Configure')
+    jobs:
+      - job: UploadDatabases
+        displayName: 'Upload SQLite databases'
+        condition: eq('${{ parameters.uploadDatabases }}', true)
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: 60
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Download databases from Storage & upload to Function App'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "══════════════════════════════════════════════════"
+                echo "  Downloading pre-built databases from Azure Storage"
+                echo "══════════════════════════════════════════════════"
+
+                STORAGE="${{ parameters.dbStorageAccount }}"
+                CONTAINER="${{ parameters.dbStorageContainer }}"
+                WORK_DIR="$(Agent.TempDirectory)/databases"
+                mkdir -p "$WORK_DIR"
+
+                # Download databases from blob storage
+                echo "── Downloading KB database ──"
+                az storage blob download \
+                  --account-name "$STORAGE" \
+                  --container-name "$CONTAINER" \
+                  --name "d365fo_kb.sqlite" \
+                  --file "$WORK_DIR/d365fo_kb.sqlite" \
+                  --auth-mode login \
+                  --no-progress
+
+                echo "── Downloading XRef database ──"
+                az storage blob download \
+                  --account-name "$STORAGE" \
+                  --container-name "$CONTAINER" \
+                  --name "d365fo_xref.sqlite" \
+                  --file "$WORK_DIR/d365fo_xref.sqlite" \
+                  --auth-mode login \
+                  --no-progress
+
+                ls -lh "$WORK_DIR/"
+
+                echo "══════════════════════════════════════════════════"
+                echo "  Uploading databases to Function App /home/data/"
+                echo "══════════════════════════════════════════════════"
+
+                # Get Kudu credentials
+                CREDS=$(az functionapp deployment list-publishing-credentials \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$(functionAppName)" \
+                  --query "{user:publishingUserName, pass:publishingPassword}" -o json)
+
+                KUDU_USER=$(echo "$CREDS" | jq -r '.user')
+                KUDU_PASS=$(echo "$CREDS" | jq -r '.pass')
+                KUDU_BASE="https://$(functionAppName).scm.azurewebsites.net"
+
+                # Create /home/data/ directory
+                curl -s -X PUT "$KUDU_BASE/api/vfs/data/" \
+                  -u "$KUDU_USER:$KUDU_PASS" \
+                  -H "Content-Type: application/json" || true
+
+                # Upload KB database
+                echo "── Uploading KB database ──"
+                curl -X PUT "$KUDU_BASE/api/vfs/data/d365fo_kb.sqlite" \
+                  -u "$KUDU_USER:$KUDU_PASS" \
+                  -H "If-Match: *" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary "@$WORK_DIR/d365fo_kb.sqlite" \
+                  --max-time 600
+                echo ""
+                echo "KB database uploaded."
+
+                # Upload XRef database
+                echo "── Uploading XRef database (may take several minutes) ──"
+                curl -X PUT "$KUDU_BASE/api/vfs/data/d365fo_xref.sqlite" \
+                  -u "$KUDU_USER:$KUDU_PASS" \
+                  -H "If-Match: *" \
+                  -H "Content-Type: application/octet-stream" \
+                  --data-binary "@$WORK_DIR/d365fo_xref.sqlite" \
+                  --max-time 1800
+                echo ""
+                echo "XRef database uploaded."
+
+      - job: DeployCode
+        displayName: 'Deploy application code'
+        dependsOn: UploadDatabases
+        condition: |
+          or(
+            succeeded('UploadDatabases'),
+            eq('${{ parameters.uploadDatabases }}', false)
+          )
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - download: current
+            artifact: app-package
+
+          - task: AzureCLI@2
+            displayName: 'Disable remote build'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az functionapp config appsettings set \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$(functionAppName)" \
+                  --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+                  --output none
+
+          - task: AzureFunctionApp@2
+            displayName: 'Deploy zip to Function App'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              appType: 'functionAppLinux'
+              appName: '$(functionAppName)'
+              resourceGroupName: '$(resourceGroup)'
+              package: '$(Pipeline.Workspace)/app-package/deploy.zip'
+              runtimeStack: 'NODE|20'
+              deploymentMethod: 'zipDeploy'
+
+          - task: AzureCLI@2
+            displayName: 'Restart Function App'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Restarting Function App to load new databases..."
+                az functionapp restart \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$(functionAppName)"
+                echo "Waiting 30s for cold start..."
+                sleep 30
+
+  # ═══════════════════════════════════════════════════════════════
+  #  Stage 5: Validate — health checks and smoke tests
+  # ═══════════════════════════════════════════════════════════════
+  - stage: Validate
+    displayName: 'Validate Deployment'
+    dependsOn: Deploy
+    condition: succeeded('Deploy')
+    jobs:
+      - job: HealthCheck
+        displayName: 'Health checks & smoke tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Validate MCP endpoints'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                FUNC_URL="https://$(functionAppName).azurewebsites.net"
+                PASS=true
+
+                echo "══════════════════════════════════════════════════"
+                echo "  Validating D365FO MCP Services"
+                echo "  $FUNC_URL"
+                echo "══════════════════════════════════════════════════"
+
+                # ── Test 1: KB Health Check ──
+                echo ""
+                echo "── Test 1: KB endpoint health check ──"
+                KB_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$FUNC_URL/api/d365kb")
+                KB_BODY=$(curl -s "$FUNC_URL/api/d365kb")
+                echo "  HTTP: $KB_RESPONSE"
+                echo "  Body: $KB_BODY"
+                if [ "$KB_RESPONSE" = "200" ]; then
+                  echo "  ✅ KB health check PASSED"
+                else
+                  echo "  ❌ KB health check FAILED (expected 200, got $KB_RESPONSE)"
+                  PASS=false
+                fi
+
+                # ── Test 2: XRef Health Check ──
+                echo ""
+                echo "── Test 2: XRef endpoint health check ──"
+                XREF_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$FUNC_URL/api/d365xref")
+                XREF_BODY=$(curl -s "$FUNC_URL/api/d365xref")
+                echo "  HTTP: $XREF_RESPONSE"
+                echo "  Body: $XREF_BODY"
+                if [ "$XREF_RESPONSE" = "200" ]; then
+                  echo "  ✅ XRef health check PASSED"
+                else
+                  echo "  ❌ XRef health check FAILED (expected 200, got $XREF_RESPONSE)"
+                  PASS=false
+                fi
+
+                # ── Test 3: KB tool invocation (d365_list_modules) ──
+                echo ""
+                echo "── Test 3: KB smoke test — d365_list_modules ──"
+                KB_TOOL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -X POST "$FUNC_URL/api/d365kb" \
+                  -H "Content-Type: application/json" \
+                  -H "Accept: application/json" \
+                  -d '{
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                      "name": "d365_list_modules",
+                      "arguments": {}
+                    }
+                  }')
+                echo "  HTTP: $KB_TOOL_RESPONSE"
+                if [ "$KB_TOOL_RESPONSE" = "200" ]; then
+                  echo "  ✅ KB tool invocation PASSED"
+                else
+                  echo "  ❌ KB tool invocation FAILED (expected 200, got $KB_TOOL_RESPONSE)"
+                  PASS=false
+                fi
+
+                # ── Test 4: XRef tool invocation (xref_list_modules) ──
+                echo ""
+                echo "── Test 4: XRef smoke test — xref_list_modules ──"
+                XREF_TOOL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -X POST "$FUNC_URL/api/d365xref" \
+                  -H "Content-Type: application/json" \
+                  -H "Accept: application/json" \
+                  -d '{
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                      "name": "xref_list_modules",
+                      "arguments": {}
+                    }
+                  }')
+                echo "  HTTP: $XREF_TOOL_RESPONSE"
+                if [ "$XREF_TOOL_RESPONSE" = "200" ]; then
+                  echo "  ✅ XRef tool invocation PASSED"
+                else
+                  echo "  ❌ XRef tool invocation FAILED (expected 200, got $XREF_TOOL_RESPONSE)"
+                  PASS=false
+                fi
+
+                # ── Test 5: Verify databases are mounted ──
+                echo ""
+                echo "── Test 5: Verify databases on /home/data/ ──"
+                CREDS=$(az functionapp deployment list-publishing-credentials \
+                  --resource-group "$(resourceGroup)" \
+                  --name "$(functionAppName)" \
+                  --query "{user:publishingUserName, pass:publishingPassword}" -o json)
+                KUDU_USER=$(echo "$CREDS" | jq -r '.user')
+                KUDU_PASS=$(echo "$CREDS" | jq -r '.pass')
+                KUDU_BASE="https://$(functionAppName).scm.azurewebsites.net"
+
+                FILES=$(curl -s -u "$KUDU_USER:$KUDU_PASS" "$KUDU_BASE/api/vfs/data/")
+                echo "  Files in /home/data/:"
+                echo "$FILES" | jq -r '.[] | "    \(.name)  \(.size) bytes"' 2>/dev/null || echo "    (could not list)"
+
+                KB_EXISTS=$(echo "$FILES" | jq -r '.[] | select(.name=="d365fo_kb.sqlite") | .name' 2>/dev/null)
+                XREF_EXISTS=$(echo "$FILES" | jq -r '.[] | select(.name=="d365fo_xref.sqlite") | .name' 2>/dev/null)
+
+                if [ -n "$KB_EXISTS" ] && [ -n "$XREF_EXISTS" ]; then
+                  echo "  ✅ Both databases present"
+                else
+                  echo "  ❌ Missing database files"
+                  PASS=false
+                fi
+
+                # ── Summary ──
+                echo ""
+                echo "══════════════════════════════════════════════════"
+                if [ "$PASS" = true ]; then
+                  echo "  ✅ ALL VALIDATION CHECKS PASSED"
+                  echo "══════════════════════════════════════════════════"
+                  echo ""
+                  echo "  KB MCP:   $FUNC_URL/api/d365kb"
+                  echo "  XRef MCP: $FUNC_URL/api/d365xref"
+                else
+                  echo "  ❌ SOME VALIDATION CHECKS FAILED"
+                  echo "══════════════════════════════════════════════════"
+                  exit 1
+                fi

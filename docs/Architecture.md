@@ -137,6 +137,8 @@ The tool implementation layer (`kb-tools.js`, `xref-tools.js`, `shared.js`) is s
 |--------|------------|----------|
 | Visual Studio XRef LocalDB | Cross-reference database populated by VS D365FO tools | `(LocalDB)\MSSQLLocalDB` database `XRef_tbg-dev3651002263172` |
 
+**Important:** The cross-reference database is initially provided by Microsoft and only contains references for standard Microsoft models. To include ISV and custom model references, a full cross-reference build must be performed in Visual Studio (Dynamics 365 > Build Cross Reference Data). Until that build completes, XRef queries will only return results for Microsoft standard objects.
+
 ---
 
 ## 4. Data Flow

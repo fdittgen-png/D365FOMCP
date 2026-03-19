@@ -31,11 +31,14 @@ C:\working\MCP\
 │       ├── functionApp.bicep     # Function App + ASP + Storage + KV
 │       └── monitoring.bicep      # Log Analytics + App Insights
 ├── scripts/
-│   ├── Build-Databases.ps1       # Build orchestrator (KB + XRef)
-│   ├── Deploy-Infrastructure.ps1 # Bicep deployment
-│   ├── Deploy-FunctionApp.ps1    # Code + DB deployment to Azure
-│   ├── Deploy-McpD365foData.ps1  # Master pipeline (roles + deploy)
-│   └── Set-RoleAssignments.ps1   # RBAC role assignment
+│   ├── Get-D365Configurations.ps1  # Export D365FO XPP configurations to XML
+│   ├── Update-Databases.ps1        # Rebuild DBs from D365FO config (recommended)
+│   ├── Deploy-Databases.ps1        # Upload DBs to Azure + restart services
+│   ├── Build-Databases.ps1         # Low-level build orchestrator (manual paths)
+│   ├── Deploy-Infrastructure.ps1   # Bicep deployment
+│   ├── Deploy-FunctionApp.ps1      # Code + DB deployment to Azure
+│   ├── Deploy-McpD365foData.ps1    # Master pipeline (roles + deploy)
+│   └── Set-RoleAssignments.ps1     # RBAC role assignment
 ├── src/
 │   ├── azure/
 │   │   ├── shared.js             # DB singletons, query helper, formatting
@@ -100,6 +103,8 @@ node build/build-kb.js "C:\path\PackagesLocalDirectory,C:\Workspace\DEV\Metadata
 ### 2.2 XRef Build (`build/build-xref-db.js`)
 
 The XRef builder extracts cross-reference data from Visual Studio's LocalDB into a SQLite database.
+
+**Important:** The LocalDB cross-reference database is initially delivered by Microsoft and only contains references for standard Microsoft models. ISV and custom model references are only included after a full cross-reference build in Visual Studio (Dynamics 365 > Build Cross Reference Data). The `build-xref-db.js` script exports whatever data is in LocalDB at the time -- it does not generate cross-references itself.
 
 **Invocation:**
 

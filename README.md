@@ -25,16 +25,27 @@ npm run start:kb       # Start KB MCP server on stdio
 npm run start:xref     # Start XRef MCP server on stdio
 ```
 
-### Azure Deployment
+### Build & Deploy (recommended)
 
 ```powershell
-# 1. Build databases (requires D365FO dev environment)
-scripts\Build-Databases.ps1
+# 1. List available D365FO configurations
+scripts\Update-Databases.ps1 -ListConfigs
 
-# 2. Deploy infrastructure (one-time)
+# 2. Rebuild databases from current (or named) configuration
+scripts\Update-Databases.ps1
+scripts\Update-Databases.ps1 -ConfigName "tis-d365fo-dev-02"
+
+# 3. Deploy databases to Azure and restart MCP services
+scripts\Deploy-Databases.ps1 -Environment d
+```
+
+### First-Time Azure Setup
+
+```powershell
+# 1. Deploy infrastructure (one-time)
 scripts\Deploy-Infrastructure.ps1 -Environment d
 
-# 3. Deploy code + databases
+# 2. Deploy code + databases
 scripts\Deploy-McpD365foData.ps1 -Environment d
 ```
 
@@ -58,11 +69,14 @@ docs/                   Documentation
 infra/                  Infrastructure as Code (Bicep)
   main-rg.bicep           Main template (resource group scope)
   modules/                Bicep modules (Function App, monitoring)
-scripts/                PowerShell deployment automation
-  Build-Databases.ps1     Database build orchestrator
-  Deploy-Infrastructure.ps1   Bicep deployment
+scripts/                PowerShell automation
+  Get-D365Configurations.ps1  Export D365FO XPP configs to XML
+  Update-Databases.ps1        Rebuild DBs from D365FO config (recommended)
+  Deploy-Databases.ps1        Upload DBs to Azure + restart
+  Build-Databases.ps1         Low-level DB build (manual paths)
+  Deploy-Infrastructure.ps1   Bicep deployment (one-time)
   Deploy-FunctionApp.ps1      Code + DB deployment
-  Deploy-McpD365foData.ps1    Master pipeline
+  Deploy-McpD365foData.ps1    Master pipeline (roles + deploy)
   Set-RoleAssignments.ps1     RBAC setup
 src/
   azure/                Shared tool implementations

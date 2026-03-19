@@ -33,13 +33,83 @@
 
 ## 2. Building Databases
 
-### 2.1 Full Build (KB + XRef)
+### 2.1 Configuration-Based Build (Recommended)
 
-The orchestrator script builds both databases from scratch:
+The recommended approach reads build parameters directly from your D365FO Visual Studio configuration, so you don't need to manually specify paths or database names.
+
+**Step 1: List available configurations**
 
 ```powershell
-cd C:\working\MCP\scripts
+.\Update-Databases.ps1 -ListConfigs
+```
+
+Output:
+
+```
+  [CURRENT] tis-d365fo-dev-02  v10.0.2263.202  Packages:OK  XRef:XRef_tis-d365fo-dev-021002263202
+  [       ] tbg-dev365          v10.0.2263.172  Packages:OK  XRef:DYNAMICSXREFDB1
+  [       ] tis-d365fo-dev-02  v10.0.2527.42   Packages:OK  XRef:XRef_tis-d365fo-dev-02100252742
+```
+
+**Step 2: Rebuild databases**
+
+```powershell
+# Rebuild from the current (active) configuration
+.\Update-Databases.ps1
+
+# Rebuild from a specific configuration by name
+.\Update-Databases.ps1 -ConfigName "tis-d365fo-dev-02"
+
+# KB only / XRef only
+.\Update-Databases.ps1 -KbOnly
+.\Update-Databases.ps1 -XrefOnly
+```
+
+The script automatically extracts from the selected D365FO configuration:
+
+| Config Field | Used For |
+|-------------|----------|
+| `FrameworkDirectory` | Microsoft packages path (PackagesLocalDirectory) |
+| `ModelStoreFolder` | Custom/ISV metadata path |
+| `CrossReferencesDbServerName` | XRef SQL Server instance |
+| `CrossReferencesDatabaseName` | XRef database name |
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-ConfigName` | (current config) | D365FO configuration name |
+| `-OutputDir` | `%USERPROFILE%\.claude` | Output directory for SQLite files |
+| `-KbOnly` | (switch) | Only rebuild KB database |
+| `-XrefOnly` | (switch) | Only rebuild XRef database |
+| `-ListConfigs` | (switch) | List available configs and exit |
+
+### 2.2 Export D365FO Configurations
+
+To inspect or export all D365FO XPP configurations as XML:
+
+```powershell
+# Display XML to console
+.\Get-D365Configurations.ps1
+
+# Save to file
+.\Get-D365Configurations.ps1 -OutputPath C:\temp\d365-configs.xml
+```
+
+This reads from `%LOCALAPPDATA%\Microsoft\Dynamics365\XPPConfig\` (JSON config files) and the registry (`HKCU:\SOFTWARE\Microsoft\Dynamics\AX7\Development\Configurations`).
+
+### 2.3 Manual Build (Advanced)
+
+For cases where you need to specify paths manually (e.g., paths not in any D365FO configuration):
+
+```powershell
 .\Build-Databases.ps1
+
+# KB only, custom paths
+.\Build-Databases.ps1 -KbOnly -MsPackagesPath "D:\Packages\PackagesLocalDirectory"
+
+# XRef only, different database
+.\Build-Databases.ps1 -XrefOnly -XrefDatabase "XRef_myenv"
 ```
 
 **Parameters:**
@@ -54,39 +124,25 @@ cd C:\working\MCP\scripts
 | `-KbOnly` | (switch) | Only rebuild KB database, skip XRef |
 | `-XrefOnly` | (switch) | Only rebuild XRef database, skip KB |
 
-**Examples:**
-
-```powershell
-# Full rebuild (both databases)
-.\Build-Databases.ps1
-
-# KB only, custom paths
-.\Build-Databases.ps1 -KbOnly -MsPackagesPath "D:\Packages\PackagesLocalDirectory"
-
-# XRef only, different database
-.\Build-Databases.ps1 -XrefOnly -XrefDatabase "XRef_myenv"
-
-# Custom ISV path
-.\Build-Databases.ps1 -MsPackagesPath "D:\Packages" -IsvMetadataPath "D:\MyModels"
-```
-
-### 2.2 Individual Builds
+Or use the Node.js scripts directly:
 
 ```bash
-# KB database (using npm script)
-npm run build:kb
-
-# KB database (direct, with custom paths)
+# KB database
 node build/build-kb.js "C:\path1,C:\path2" "C:\output\d365fo_kb.sqlite"
 
-# XRef database (using npm script -- includes --max-old-space-size=8192)
-npm run build:xref
-
-# XRef database (direct)
+# XRef database (--max-old-space-size=8192 is required)
 node --max-old-space-size=8192 build/build-xref-db.js "(LocalDB)\MSSQLLocalDB" "XRef_dbname" "C:\output\d365fo_xref.sqlite"
 ```
 
-### 2.3 Build Requirements
+### 2.4 Cross-Reference Data Coverage
+
+The LocalDB cross-reference database is **initially delivered by Microsoft** and only contains references for standard Microsoft models. ISV and custom model references are **not included** until a full cross-reference build is performed in Visual Studio:
+
+**Dynamics 365 > Build Cross Reference Data** (in Visual Studio)
+
+Until this build completes, XRef queries will only return results for Microsoft standard objects. The `build-xref-db.js` script exports whatever data is in LocalDB at the time -- it does not generate cross-references itself.
+
+### 2.5 Build Requirements
 
 | Database | Memory Flag | Build Time | Output Size |
 |----------|------------|------------|-------------|
@@ -95,7 +151,7 @@ node --max-old-space-size=8192 build/build-xref-db.js "(LocalDB)\MSSQLLocalDB" "
 
 The XRef build streams 26.6M reference rows from LocalDB and must hold intermediate data in memory. Without the 8 GB heap flag, the build will fail with "JavaScript heap out of memory".
 
-### 2.4 Build Output
+### 2.6 Build Output
 
 After a successful build, the output directory contains:
 
@@ -207,16 +263,38 @@ The `--target 20.20.0` must match the Node.js version running on the Azure Funct
 
 ## 5. Full Pipeline
 
-### 5.1 Master Orchestrator
+### 5.1 Recommended Workflow (Update + Deploy)
 
-The master pipeline script runs role assignments + Function App deployment:
+The simplest way to update the MCP services after a D365FO version change or code update:
 
 ```powershell
-cd C:\working\MCP\scripts
+# 1. Rebuild databases from current D365FO configuration
+.\Update-Databases.ps1
+
+# 2. Upload databases to Azure and restart
+.\Deploy-Databases.ps1 -Environment d
+```
+
+### 5.2 First-Time Setup (Complete End-to-End)
+
+```powershell
+# 1. Deploy infrastructure (one-time)
+.\Deploy-Infrastructure.ps1 -Environment d
+
+# 2. Build databases from D365FO configuration
+.\Update-Databases.ps1
+
+# 3. Deploy code + data + RBAC roles
 .\Deploy-McpD365foData.ps1 -Environment d
 ```
 
-**Parameters:**
+### 5.3 Master Orchestrator (Code + Data)
+
+For full code redeployment (including `node_modules` and databases):
+
+```powershell
+.\Deploy-McpD365foData.ps1 -Environment d
+```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -224,75 +302,73 @@ cd C:\working\MCP\scripts
 | `-SkipRoles` | (switch) | Skip role assignment step |
 | `-SkipFunctionApp` | (switch) | Skip Function App deployment step |
 
-### 5.2 Complete End-to-End Workflow
-
-```powershell
-# 1. Build databases (on dev machine with D365FO environment)
-.\Build-Databases.ps1
-
-# 2. Deploy infrastructure (one-time)
-.\Deploy-Infrastructure.ps1 -Environment d
-
-# 3. Deploy code + data
-.\Deploy-McpD365foData.ps1 -Environment d
-```
-
 ---
 
 ## 6. Updating Data
 
-### 6.1 Rebuild KB Database Only
+### 6.1 Update Both Databases (Recommended)
+
+When the D365FO version changes or metadata is updated:
+
+```powershell
+# Rebuild from current config and deploy
+.\Update-Databases.ps1
+.\Deploy-Databases.ps1 -Environment d
+```
+
+### 6.2 Update KB Database Only
 
 When metadata sources change (new D365FO version, ISV model updates):
 
 ```powershell
-# 1. Rebuild KB database
-.\Build-Databases.ps1 -KbOnly
-
-# 2. Upload new database to Azure
-.\Deploy-FunctionApp.ps1 -Environment d -SkipNpmInstall
+.\Update-Databases.ps1 -KbOnly
+.\Deploy-Databases.ps1 -Environment d -KbOnly
 ```
 
-Or upload just the database manually via Kudu:
-
-```powershell
-# Get Kudu credentials
-$creds = az functionapp deployment list-publishing-credentials `
-    --resource-group tis-d-mcpd365fo-rg --name tis-d-mcpd365fo-func `
-    --query "{user:publishingUserName, pass:publishingPassword}" -o json | ConvertFrom-Json
-$auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($creds.user):$($creds.pass)"))
-
-# Upload KB database
-Invoke-RestMethod -Uri "https://tis-d-mcpd365fo-func.scm.azurewebsites.net/api/vfs/data/d365fo_kb.sqlite" `
-    -Method PUT -Headers @{ Authorization = "Basic $auth"; 'If-Match' = '*' } `
-    -InFile "$env:USERPROFILE\.claude\d365fo_kb.sqlite" -ContentType 'application/octet-stream'
-
-# Restart Function App to pick up new database
-az functionapp restart --resource-group tis-d-mcpd365fo-rg --name tis-d-mcpd365fo-func
-```
-
-### 6.2 Rebuild XRef Database Only
+### 6.3 Update XRef Database Only
 
 When cross-reference data changes (new builds, code changes in Visual Studio):
 
 ```powershell
-# 1. Ensure LocalDB is running
-SqlLocalDB start MSSQLLocalDB
-
-# 2. Rebuild XRef database
-.\Build-Databases.ps1 -XrefOnly
-
-# 3. Upload (same process as KB)
-.\Deploy-FunctionApp.ps1 -Environment d -SkipNpmInstall
+.\Update-Databases.ps1 -XrefOnly
+.\Deploy-Databases.ps1 -Environment d -XrefOnly
 ```
 
-### 6.3 Code-Only Deployment
+### 6.4 Deploy-Databases.ps1 Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-Environment` | `d` | `d` (development) or `p` (production) |
+| `-KbDbPath` | `%USERPROFILE%\.claude\d365fo_kb.sqlite` | Path to KB database |
+| `-XrefDbPath` | `%USERPROFILE%\.claude\d365fo_xref.sqlite` | Path to XRef database |
+| `-KbOnly` | (switch) | Only upload KB database |
+| `-XrefOnly` | (switch) | Only upload XRef database |
+| `-SkipRestart` | (switch) | Skip Function App restart |
+
+The script uploads databases via the Kudu VFS API, restarts the Function App, and validates both MCP endpoints with health checks.
+
+### 6.5 Code-Only Deployment
 
 When only the tool implementation changes (no database rebuild):
 
 ```powershell
 .\Deploy-FunctionApp.ps1 -Environment d -SkipDbUpload
 ```
+
+### 6.6 Script Reference
+
+| Script | Purpose | When to Use |
+|--------|---------|-------------|
+| `Get-D365Configurations.ps1` | Export D365FO XPP configurations to XML | Inspect available configurations |
+| `Update-Databases.ps1` | Rebuild KB/XRef from D365FO config | D365FO version update, metadata change |
+| `Deploy-Databases.ps1` | Upload databases to Azure + restart | After rebuilding databases |
+| `Build-Databases.ps1` | Low-level build with manual paths | When config-based build is not possible |
+| `Deploy-Infrastructure.ps1` | Deploy Bicep templates | First-time Azure setup |
+| `Deploy-FunctionApp.ps1` | Deploy code + databases | Code changes, full redeployment |
+| `Deploy-McpD365foData.ps1` | Master pipeline (roles + deploy) | First-time or full redeployment |
+| `Set-RoleAssignments.ps1` | RBAC role assignment | After infrastructure deployment |
+
+All scripts use relative paths internally and can be run from any directory.
 
 ---
 
