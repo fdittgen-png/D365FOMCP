@@ -14,3 +14,4 @@ infra/*.json
 
 # Temporary / diagnostic scripts
 diag*.ps1
+.claude/
