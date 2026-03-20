@@ -547,4 +547,5 @@ For configuration of Cursor, GitHub Copilot, ChatGPT, Google Gemini, and other M
 | [Architecture](Architecture.md) | System design, data flow, Azure resources, security model |
 | [Implementation](Implementation.md) | Build pipeline, database schemas, tool catalog, dependencies |
 | [AI Configuration](AI-Configuration.md) | MCP client setup for Claude, Copilot, ChatGPT, Gemini, Cursor |
+| [VS Code Guide](VS-Code-Guide.md) | VS Code setup, debugging, workflow, extensions |
 | [README](../README.md) | Project overview and quick start |

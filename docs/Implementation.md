@@ -21,6 +21,7 @@ C:\working\MCP\
 │   ├── Implementation.md         # Implementation details (this document)
 │   ├── Administration.md         # Operations and deployment (Azure admins)
 │   ├── AI-Configuration.md       # MCP client setup (AI administrators)
+│   ├── VS-Code-Guide.md           # VS Code setup and development workflow
 │   └── TIS-P-MCPD365FO-Concept.md  # Original concept v1.0 (deprecated)
 ├── infra/
 │   ├── main-rg.bicep             # Main Bicep template (resource group scope)
@@ -216,14 +217,14 @@ node --max-old-space-size=8192 build/build-xref-db.js [server] [database] [outpu
 | 1 | `xref_find_references` | Find all objects that reference a given object ("Used By" / incoming) | `object_name`, `kind?`, `limit?` |
 | 2 | `xref_find_usages` | Find all objects that a given object references ("Uses" / outgoing) | `object_name`, `kind?`, `limit?` |
 | 3 | `xref_find_method_callers` | Find all callers of a specific method with line numbers | `object_name`, `method_name`, `limit?` |
-| 4 | `xref_class_hierarchy` | Full class inheritance: all subclasses (recursive) or parent chain | `class_name`, `direction?`, `max_depth?` |
-| 5 | `xref_interface_implementors` | Find all classes implementing an interface (direct + through inheritance) | `interface_name`, `limit?` |
+| 4 | `xref_class_hierarchy` | Full class inheritance: all subclasses (recursive) or parent chain | `class_name`, `direction?` |
+| 5 | `xref_interface_implementors` | Find all classes implementing an interface (direct + through inheritance) | `interface_name` |
 | 6 | `xref_search_names` | Search for objects by name pattern in XRef database | `pattern`, `object_type?`, `limit?` |
 | 7 | `xref_method_references` | Find all outgoing references from a specific method | `object_name`, `method_name`, `kind?`, `limit?` |
 | 8 | `xref_module_objects` | List all top-level objects in a module | `module_name`, `object_type?`, `limit?` |
 | 9 | `xref_cross_module_deps` | Analyze cross-module dependencies (depends-on or depended-by) | `module_name`, `direction?`, `limit?` |
 | 10 | `xref_raw_sql` | Execute read-only SQL against the XRef database | `sql` |
-| 11 | `xref_impact_analysis` | Analyze impact of changing an object: direct + indirect dependents by type/module | `object_name`, `max_depth?`, `limit?` |
+| 11 | `xref_impact_analysis` | Analyze impact of changing an object: direct + indirect dependents by type/module | `object_name`, `depth?` |
 | 12 | `xref_list_modules` | List all modules in XRef database with object counts | (none) |
 | 13 | `xref_object_summary` | Compact object summary: reference counts by kind, methods, sub-objects | `object_name` |
 | 14 | `xref_find_extensions` | Find Chain of Command extension classes and table/form extensions | `object_name`, `object_type?`, `limit?` |
@@ -341,4 +342,5 @@ The deployment disables server-side build (`SCM_DO_BUILD_DURING_DEPLOYMENT=false
 | [Architecture](Architecture.md) | System design, data flow, Azure resources, security model |
 | [Administration](Administration.md) | Build/deploy procedures, monitoring, troubleshooting |
 | [AI Configuration](AI-Configuration.md) | MCP client setup for Claude, Copilot, ChatGPT, Gemini, Cursor |
+| [VS Code Guide](VS-Code-Guide.md) | VS Code setup, debugging, workflow, extensions |
 | [README](../README.md) | Project overview and quick start |

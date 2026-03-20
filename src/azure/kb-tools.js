@@ -1,7 +1,7 @@
 /**
  * D365FO Knowledge Base – SQLite MCP Tools
  *
- * Registers all 16 KB tools on an McpServer instance, querying
+ * Registers all 17 KB tools on an McpServer instance, querying
  * the knowledge base stored in a SQLite database.
  *
  * Usage:
@@ -12,7 +12,7 @@
 import { query, formatMarkdownTable, textResult } from './shared.js';
 import { z } from 'zod';
 
-// ── Register all 16 KB tools ────────────────────────────────────────────────
+// ── Register all 17 KB tools ────────────────────────────────────────────────
 
 export function registerKbTools(server, db) {
 

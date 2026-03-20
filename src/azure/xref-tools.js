@@ -2,7 +2,7 @@
  * xref-tools.js
  * SQLite version of D365FO cross-reference MCP tools.
  *
- * Registers all 13 XRef tools on a McpServer instance using a
+ * Registers all 16 XRef tools on a McpServer instance using a
  * better-sqlite3 database.
  */
 

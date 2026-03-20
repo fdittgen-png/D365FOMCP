@@ -454,14 +454,14 @@ After configuring any client, verify the connection:
 | `xref_find_references` | `object_name`, `kind?`, `limit?` | Who references this (incoming) |
 | `xref_find_usages` | `object_name`, `kind?`, `limit?` | What this references (outgoing) |
 | `xref_find_method_callers` | `object_name`, `method_name`, `limit?` | Method callers |
-| `xref_class_hierarchy` | `class_name`, `direction?`, `max_depth?` | Inheritance tree |
-| `xref_interface_implementors` | `interface_name`, `limit?` | Interface implementations |
+| `xref_class_hierarchy` | `class_name`, `direction?` | Inheritance tree |
+| `xref_interface_implementors` | `interface_name` | Interface implementations |
 | `xref_search_names` | `pattern`, `object_type?`, `limit?` | Name pattern search |
 | `xref_method_references` | `object_name`, `method_name`, `kind?`, `limit?` | Method outgoing refs |
 | `xref_module_objects` | `module_name`, `object_type?`, `limit?` | Module contents |
 | `xref_cross_module_deps` | `module_name`, `direction?`, `limit?` | Module dependencies |
 | `xref_raw_sql` | `sql` | Ad-hoc SQL (read-only) |
-| `xref_impact_analysis` | `object_name`, `max_depth?`, `limit?` | Change impact |
+| `xref_impact_analysis` | `object_name`, `depth?` | Change impact |
 | `xref_list_modules` | (none) | All modules |
 | `xref_object_summary` | `object_name` | Object overview |
 | `xref_find_extensions` | `object_name`, `object_type?`, `limit?` | CoC extensions |

@@ -51,7 +51,7 @@ Both services expose tools via the **Model Context Protocol (MCP)** using Stream
 │  ┌──────────────────┐              ┌──────────────────────┐       │
 │  │  build-kb.js     │              │  build-xref-db.js    │       │
 │  │  (fast-xml-parser │              │  (mssql/tedious      │       │
-│  │   + sql.js)      │              │   + sql.js)           │       │
+│  │   + sql.js)      │              │   + better-sqlite3)   │       │
 │  └────────┬─────────┘              └──────────┬───────────┘       │
 │           │                                    │                   │
 │           ▼                                    ▼                   │
@@ -294,4 +294,5 @@ The paths are configured via app settings `KB_DB_PATH` and `XREF_DB_PATH` in the
 | [Implementation](Implementation.md) | Build pipeline, database schemas, tool catalog, dependencies |
 | [Administration](Administration.md) | Build/deploy procedures, monitoring, troubleshooting |
 | [AI Configuration](AI-Configuration.md) | MCP client setup for Claude, Copilot, ChatGPT, Gemini, Cursor |
+| [VS Code Guide](VS-Code-Guide.md) | VS Code setup, debugging, workflow, extensions |
 | [README](../README.md) | Project overview and quick start |

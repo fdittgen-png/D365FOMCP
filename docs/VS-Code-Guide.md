@@ -298,6 +298,15 @@ Each tool is defined as an object with `name`, `description`, `inputSchema`, and
 2. The tool is automatically registered — no separate registration step needed
 3. Test locally via the stdio server before deploying
 
+**Important: Local vs Azure tool parity.** The local stdio servers (`src/local/`) have their own independent tool implementations. Currently they have fewer tools than the Azure version:
+
+| Server | Azure (shared) | Local (stdio) | Missing locally |
+|--------|---------------|---------------|-----------------|
+| KB | 17 tools | 16 tools | `d365_resolve_label` |
+| XRef | 16 tools | 13 tools | `xref_find_extensions`, `xref_find_field_usages`, `xref_find_event_handlers` |
+
+When adding new tools, ensure you update both `src/azure/` (shared implementation) and the corresponding `src/local/` server.
+
 ### 6.2 Transport Layer
 
 | File | What it does | When to edit |

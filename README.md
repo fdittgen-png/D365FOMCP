@@ -66,6 +66,7 @@ docs/                   Documentation
   Implementation.md       Implementation details (developers)
   Administration.md       Operations & deployment (Azure admins)
   AI-Configuration.md     MCP client setup (AI administrators)
+  VS-Code-Guide.md        VS Code setup & development workflow
 infra/                  Infrastructure as Code (Bicep)
   main-rg.bicep           Main template (resource group scope)
   modules/                Bicep modules (Function App, monitoring)
