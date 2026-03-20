@@ -102,6 +102,7 @@ src/
 | [Implementation](docs/Implementation.md) | Developers | Build pipeline, database schemas, tool catalog, query patterns, dependencies |
 | [Administration](docs/Administration.md) | Azure Administrators | Prerequisites, build/deploy procedures, monitoring, troubleshooting |
 | [AI Configuration](docs/AI-Configuration.md) | AI Administrators | MCP client setup for Claude, Copilot, ChatGPT, Gemini, Cursor |
+| [VS Code Guide](docs/VS-Code-Guide.md) | Developers | VS Code setup, debugging, workflow, extensions |
 
 ---
 
