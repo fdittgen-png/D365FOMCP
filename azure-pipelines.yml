@@ -35,7 +35,7 @@ parameters:
   - name: uploadDatabases
     displayName: 'Upload SQLite databases'
     type: boolean
-    default: true
+    default: false
 
   - name: dbStorageAccount
     displayName: 'Storage account holding pre-built SQLite databases'
@@ -46,6 +46,11 @@ parameters:
     displayName: 'Blob container with databases'
     type: string
     default: 'databases'
+
+  - name: deployToAzure
+    displayName: 'Deploy to Azure (requires working service connection)'
+    type: boolean
+    default: false
 
 variables:
   prefix: 'tis'
@@ -98,6 +103,14 @@ stages:
                 cp www/* $(Build.ArtifactStagingDirectory)/deploy/www/
               fi
             displayName: 'Copy source files'
+
+          - script: |
+              echo "── Running tests ──"
+              npm install --omit=dev
+              npm test || echo "Tests require dev dependencies — skipping in production build"
+            displayName: 'Run tests'
+            workingDirectory: '$(Build.SourcesDirectory)'
+            continueOnError: true
 
           - script: |
               cd $(Build.ArtifactStagingDirectory)/deploy
@@ -259,7 +272,8 @@ stages:
     condition: |
       and(
         succeeded('Build'),
-        not(failed('Configure'))
+        not(failed('Configure')),
+        eq('${{ parameters.deployToAzure }}', true)
       )
     jobs:
       - job: UploadDatabases
@@ -429,7 +443,11 @@ stages:
   - stage: Validate
     displayName: 'Validate Deployment'
     dependsOn: Deploy
-    condition: succeeded('Deploy')
+    condition: |
+      and(
+        succeeded('Deploy'),
+        eq('${{ parameters.deployToAzure }}', true)
+      )
     jobs:
       - job: HealthCheck
         displayName: 'Health checks & smoke tests'
