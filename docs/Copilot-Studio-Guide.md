@@ -24,8 +24,12 @@ This guide explains how to connect the D365FO MCP Services to a **Microsoft Copi
 |-------------|---------|-----|
 | Development | KB | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Development | XRef | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Development | Security | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Development | Task Recorder | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 | Production | KB | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Production | XRef | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Production | Security | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Production | Task Recorder | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 
 ---
 
@@ -40,6 +44,8 @@ In your Copilot Studio agent:
 |-----------------|--------------|
 | D365-KB | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | D365-Reference | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| D365-Security | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| D365-TaskRecorder | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 
 3. Save both connections
 
@@ -102,6 +108,35 @@ xref_find_field_usages
 xref_find_event_handlers
 ```
 
+#### D365-Security Connection -- 15 tools
+
+```
+sec_lookup_role
+sec_lookup_duty
+sec_lookup_privilege
+sec_find_roles_by_duty
+sec_find_duties_by_privilege
+sec_lookup_user
+sec_find_users_by_role
+sec_find_users_by_duty
+sec_find_users_by_privilege
+sec_lookup_entity_permissions
+sec_permission_trace
+sec_find_role_conflicts
+sec_check_permission
+sec_effective_permissions
+sec_raw_sql
+sec_stats
+```
+
+#### D365-TaskRecorder Connection -- 1 tool
+
+```
+taskrecorder_to_markdown
+```
+
+> **Tip:** For role-specific agents that don't need all tools, see `skills/copilot-studio/` for minimal `knownTools` lists per role.
+
 ### 3.3 How to Edit `knownTools`
 
 There are two approaches to populate the `knownTools` property.
@@ -151,17 +186,34 @@ If you still see `InvokeServer` calls, double-check that:
 
 ---
 
-## 5. Keeping Tools in Sync
+## 5. Role-Based Agent Configurations
 
-When new tools are added to the MCP servers (in `src/azure/kb-tools.js` or `src/azure/xref-tools.js`), the `knownTools` list in Copilot Studio must be updated to include the new tool names. Otherwise, the new tools will not be available to the agent.
+Pre-built agent configurations are available in `skills/copilot-studio/`. Each includes system instructions, `knownTools` lists, and sample prompts tailored to a specific role:
 
-Check the current tool count:
-- **KB tools**: see comment at top of `src/azure/kb-tools.js` (currently 17)
-- **XRef tools**: see comment at top of `src/azure/xref-tools.js` (currently 16)
+| Configuration | Role | Services | Tools |
+|--------------|------|----------|-------|
+| `agent-business.md` | Business User | KB + Sec + TaskRecorder | 7 tools |
+| `agent-support.md` | 1st-Level Support | KB + Sec + TaskRecorder | 10 tools |
+| `agent-functional.md` | Functional Consultant | KB + Sec + TaskRecorder | 15 tools |
+| `agent-technical.md` | Technical Expert | KB + XRef + Sec | 25 tools |
+| `agent-architect.md` | Solution Architect | All 4 services | 49 tools |
+| `agent-full.md` | All Roles (auto-detect) | All 4 services | 49 tools |
+
+**To use:** Open the configuration file, add the listed MCP connections, populate `knownTools` with the listed tool names, and paste the System Instructions into the agent's Instructions field.
 
 ---
 
-## 6. Troubleshooting
+## 6. Keeping Tools in Sync
+
+When new tools are added to the MCP servers, the `knownTools` list in Copilot Studio must be updated. Check the current tool count:
+- **KB tools**: `src/azure/kb-tools.js` (currently 17)
+- **XRef tools**: `src/azure/xref-tools.js` (currently 16)
+- **Sec tools**: `src/azure/sec-tools.js` (currently 15)
+- **TaskRecorder tools**: `src/azure/taskrecorder-tools.js` (currently 1)
+
+---
+
+## 7. Troubleshooting
 
 | Issue | Resolution |
 |-------|-----------|
@@ -173,6 +225,6 @@ Check the current tool count:
 
 ---
 
-## 7. Reference: Tool Descriptions
+## 8. Reference: Tool Descriptions
 
 For full tool documentation including parameters and descriptions, see [AI Configuration Guide -- Available Tools Reference](AI-Configuration.md#10-available-tools-reference).
