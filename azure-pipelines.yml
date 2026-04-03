@@ -55,8 +55,8 @@ variables:
   functionAppName: '$(prefix)-$(env)-$(workload)-func'
   kvName: '$(prefix)-$(env)-$(workload)-kv'
   nodeVersion: '20.x'
-  # Service connection name — update to match your DevOps project
-  azureServiceConnection: 'azure-mcpd365fo'
+  # Service connection name — uses existing subscription-scoped ARM connection
+  azureServiceConnection: 'Test service principal'
 
 stages:
   # ═══════════════════════════════════════════════════════════════
