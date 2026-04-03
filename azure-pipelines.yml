@@ -195,7 +195,8 @@ stages:
     condition: |
       and(
         succeeded('Build'),
-        or(succeeded('Infrastructure'), eq('${{ parameters.deployInfrastructure }}', false))
+        eq('${{ parameters.deployInfrastructure }}', true),
+        succeeded('Infrastructure')
       )
     jobs:
       - job: Roles
@@ -252,8 +253,14 @@ stages:
   # ═══════════════════════════════════════════════════════════════
   - stage: Deploy
     displayName: 'Deploy Function App'
-    dependsOn: Configure
-    condition: succeeded('Configure')
+    dependsOn:
+      - Build
+      - Configure
+    condition: |
+      and(
+        succeeded('Build'),
+        not(failed('Configure'))
+      )
     jobs:
       - job: UploadDatabases
         displayName: 'Upload SQLite databases'
