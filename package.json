@@ -1,21 +1,29 @@
 {
   "name": "tis-mcpd365fo",
   "version": "1.0.0",
-  "description": "D365FO MCP Services — Knowledge Base + Cross-Reference",
+  "description": "D365FO MCP Services — Knowledge Base + Cross-Reference + Security + Task Recorder",
   "type": "module",
   "main": "src/functions/index.js",
   "scripts": {
     "build:kb": "node build/build-kb.js",
     "build:xref": "node --max-old-space-size=8192 build/build-xref-db.js",
+    "build:sec": "node build/build-sec.js",
     "start:kb": "node src/local/mcp-server-kb.js",
     "start:xref": "node src/local/mcp-server-xref.js",
+    "start:sec": "node src/local/mcp-server-sec.js",
+    "start:taskrecorder": "node src/local/mcp-server-taskrecorder.js",
+    "test": "node --test test/*.test.js",
+    "test:sec": "node --test test/sec-tools.test.js",
+    "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
     "start:azure": "func start"
   },
   "dependencies": {
     "@azure/functions": "^4.9.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
+    "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.8.0",
     "fast-xml-parser": "^5.2.3",
+    "zod": "^4.0.0",
     "sql.js": "^1.12.0"
   }
 }

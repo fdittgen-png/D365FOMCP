@@ -43,9 +43,11 @@ param(
 
     [string]$KbDbPath,
     [string]$XrefDbPath,
+    [string]$SecDbPath,
 
     [switch]$KbOnly,
     [switch]$XrefOnly,
+    [switch]$SecOnly,
     [switch]$SkipRestart
 )
 
@@ -58,6 +60,7 @@ $funcName = "$prefix-$Environment-$workload-func"
 # Default database paths
 if (-not $KbDbPath)   { $KbDbPath   = Join-Path $env:USERPROFILE '.claude\d365fo_kb.sqlite' }
 if (-not $XrefDbPath) { $XrefDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite' }
+if (-not $SecDbPath)  { $SecDbPath  = Join-Path $env:USERPROFILE '.claude\d365fo_sec.sqlite' }
 
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "  D365FO MCP Services - Database Deployment" -ForegroundColor Cyan
@@ -87,7 +90,7 @@ Write-Host "  [OK] Function App: $($funcApp.defaultHostName)" -ForegroundColor G
 # ─── Verify database files ────────────────────────────────────────────────────
 $uploads = @()
 
-if (-not $XrefOnly) {
+if (-not $XrefOnly -and -not $SecOnly) {
     if (-not (Test-Path $KbDbPath)) {
         Write-Error "KB database not found: $KbDbPath`nRun Update-Databases.ps1 first."
         return
@@ -97,7 +100,7 @@ if (-not $XrefOnly) {
     $uploads += @{ Name = 'KB'; LocalPath = $KbDbPath; RemoteName = 'd365fo_kb.sqlite'; SizeMB = $kbSize }
 }
 
-if (-not $KbOnly) {
+if (-not $KbOnly -and -not $SecOnly) {
     if (-not (Test-Path $XrefDbPath)) {
         Write-Error "XRef database not found: $XrefDbPath`nRun Update-Databases.ps1 first."
         return
@@ -105,6 +108,19 @@ if (-not $KbOnly) {
     $xrefSize = [math]::Round((Get-Item $XrefDbPath).Length / 1MB)
     Write-Host "  XRef database: $xrefSize MB  ($XrefDbPath)" -ForegroundColor DarkGray
     $uploads += @{ Name = 'XRef'; LocalPath = $XrefDbPath; RemoteName = 'd365fo_xref.sqlite'; SizeMB = $xrefSize }
+}
+
+if ($SecOnly -or (-not $KbOnly -and -not $XrefOnly)) {
+    if (Test-Path $SecDbPath) {
+        $secSize = [math]::Round((Get-Item $SecDbPath).Length / 1MB)
+        Write-Host "  Sec database:  $secSize MB  ($SecDbPath)" -ForegroundColor DarkGray
+        $uploads += @{ Name = 'Sec'; LocalPath = $SecDbPath; RemoteName = 'd365fo_sec.sqlite'; SizeMB = $secSize }
+    } elseif ($SecOnly) {
+        Write-Error "Security database not found: $SecDbPath`nRun build-sec.js first."
+        return
+    } else {
+        Write-Host "  Sec database:  (not found — skipping)" -ForegroundColor DarkGray
+    }
 }
 
 Write-Host ""
@@ -170,7 +186,7 @@ if (-not $SkipRestart) {
     Write-Host "Validating endpoints..." -ForegroundColor Yellow
     $funcUrl = "https://$($funcApp.defaultHostName)"
 
-    if (-not $XrefOnly) {
+    if (-not $XrefOnly -and -not $SecOnly) {
         try {
             $kbHealth = Invoke-RestMethod -Uri "$funcUrl/api/d365kb" -Method GET -TimeoutSec 30
             Write-Host "  [OK] KB:   $($kbHealth.status)" -ForegroundColor Green
@@ -181,7 +197,7 @@ if (-not $SkipRestart) {
         }
     }
 
-    if (-not $KbOnly) {
+    if (-not $KbOnly -and -not $SecOnly) {
         try {
             $xrefHealth = Invoke-RestMethod -Uri "$funcUrl/api/d365xref" -Method GET -TimeoutSec 30
             Write-Host "  [OK] XRef: $($xrefHealth.status)" -ForegroundColor Green
@@ -189,6 +205,17 @@ if (-not $SkipRestart) {
         } catch {
             Write-Warning "XRef health check failed: $($_.Exception.Message)"
             $steps += @{ Step = 'XRef Health Check'; Status = 'FAILED' }
+        }
+    }
+
+    if ($SecOnly -or (-not $KbOnly -and -not $XrefOnly)) {
+        try {
+            $secHealth = Invoke-RestMethod -Uri "$funcUrl/api/d365sec" -Method GET -TimeoutSec 30
+            Write-Host "  [OK] Sec:  $($secHealth.status)" -ForegroundColor Green
+            $steps += @{ Step = 'Sec Health Check'; Status = 'OK' }
+        } catch {
+            Write-Warning "Sec health check failed: $($_.Exception.Message)"
+            $steps += @{ Step = 'Sec Health Check'; Status = 'FAILED' }
         }
     }
 } else {
@@ -213,4 +240,5 @@ foreach ($step in $steps) {
 $funcUrl = "https://$($funcApp.defaultHostName)"
 Write-Host "  KB MCP:   $funcUrl/api/d365kb"
 Write-Host "  XRef MCP: $funcUrl/api/d365xref"
+Write-Host "  Sec MCP:  $funcUrl/api/d365sec"
 Write-Host "================================================================" -ForegroundColor $summaryColor

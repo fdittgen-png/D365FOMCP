@@ -91,6 +91,12 @@ stages:
               mkdir -p $(Build.ArtifactStagingDirectory)/deploy/src/functions
               cp src/azure/*.js $(Build.ArtifactStagingDirectory)/deploy/src/azure/
               cp src/functions/*.js $(Build.ArtifactStagingDirectory)/deploy/src/functions/
+
+              # Copy www/ (test UIs for Task Recorder etc.)
+              if [ -d "www" ]; then
+                mkdir -p $(Build.ArtifactStagingDirectory)/deploy/www
+                cp www/* $(Build.ArtifactStagingDirectory)/deploy/www/
+              fi
             displayName: 'Copy source files'
 
           - script: |
@@ -291,6 +297,15 @@ stages:
                   --auth-mode login \
                   --no-progress
 
+                echo "── Downloading Security database ──"
+                az storage blob download \
+                  --account-name "$STORAGE" \
+                  --container-name "$CONTAINER" \
+                  --name "d365fo_sec.sqlite" \
+                  --file "$WORK_DIR/d365fo_sec.sqlite" \
+                  --auth-mode login \
+                  --no-progress || echo "Security database not found (optional)"
+
                 ls -lh "$WORK_DIR/"
 
                 echo "══════════════════════════════════════════════════"
@@ -333,6 +348,21 @@ stages:
                   --max-time 1800
                 echo ""
                 echo "XRef database uploaded."
+
+                # Upload Security database (if it exists)
+                if [ -f "$WORK_DIR/d365fo_sec.sqlite" ]; then
+                  echo "── Uploading Security database ──"
+                  curl -X PUT "$KUDU_BASE/api/vfs/data/d365fo_sec.sqlite" \
+                    -u "$KUDU_USER:$KUDU_PASS" \
+                    -H "If-Match: *" \
+                    -H "Content-Type: application/octet-stream" \
+                    --data-binary "@$WORK_DIR/d365fo_sec.sqlite" \
+                    --max-time 600
+                  echo ""
+                  echo "Security database uploaded."
+                else
+                  echo "── Security database not found in storage — skipping upload ──"
+                fi
 
       - job: DeployCode
         displayName: 'Deploy application code'
@@ -442,9 +472,36 @@ stages:
                   PASS=false
                 fi
 
-                # ── Test 3: KB tool invocation (d365_list_modules) ──
+                # ── Test 3: Security endpoint health check ──
                 echo ""
-                echo "── Test 3: KB smoke test — d365_list_modules ──"
+                echo "── Test 3: Security endpoint health check ──"
+                SEC_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$FUNC_URL/api/d365sec")
+                SEC_BODY=$(curl -s "$FUNC_URL/api/d365sec")
+                echo "  HTTP: $SEC_RESPONSE"
+                echo "  Body: $SEC_BODY"
+                if [ "$SEC_RESPONSE" = "200" ]; then
+                  echo "  ✅ Security health check PASSED"
+                else
+                  echo "  ⚠️ Security health check returned $SEC_RESPONSE (database may not be deployed yet)"
+                fi
+
+                # ── Test 4: Task Recorder endpoint health check ──
+                echo ""
+                echo "── Test 4: Task Recorder endpoint health check ──"
+                TR_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$FUNC_URL/api/d365taskrecorder")
+                TR_BODY=$(curl -s "$FUNC_URL/api/d365taskrecorder")
+                echo "  HTTP: $TR_RESPONSE"
+                echo "  Body: $TR_BODY"
+                if [ "$TR_RESPONSE" = "200" ]; then
+                  echo "  ✅ Task Recorder health check PASSED"
+                else
+                  echo "  ❌ Task Recorder health check FAILED (expected 200, got $TR_RESPONSE)"
+                  PASS=false
+                fi
+
+                # ── Test 5: KB tool invocation (d365_list_modules) ──
+                echo ""
+                echo "── Test 5: KB smoke test — d365_list_modules ──"
                 KB_TOOL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
                   -X POST "$FUNC_URL/api/d365kb" \
                   -H "Content-Type: application/json" \
@@ -466,9 +523,9 @@ stages:
                   PASS=false
                 fi
 
-                # ── Test 4: XRef tool invocation (xref_list_modules) ──
+                # ── Test 6: XRef tool invocation (xref_list_modules) ──
                 echo ""
-                echo "── Test 4: XRef smoke test — xref_list_modules ──"
+                echo "── Test 6: XRef smoke test — xref_list_modules ──"
                 XREF_TOOL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
                   -X POST "$FUNC_URL/api/d365xref" \
                   -H "Content-Type: application/json" \
@@ -490,9 +547,43 @@ stages:
                   PASS=false
                 fi
 
-                # ── Test 5: Verify databases are mounted ──
+                # ── Test 7: Sec tool invocation (sec_stats) ──
                 echo ""
-                echo "── Test 5: Verify databases on /home/data/ ──"
+                echo "── Test 7: Security smoke test — sec_stats ──"
+                SEC_TOOL_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+                  -X POST "$FUNC_URL/api/d365sec" \
+                  -H "Content-Type: application/json" \
+                  -H "Accept: application/json" \
+                  -d '{
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                      "name": "sec_stats",
+                      "arguments": {}
+                    }
+                  }')
+                echo "  HTTP: $SEC_TOOL_RESPONSE"
+                if [ "$SEC_TOOL_RESPONSE" = "200" ]; then
+                  echo "  ✅ Sec tool invocation PASSED"
+                else
+                  echo "  ⚠️ Sec tool invocation returned $SEC_TOOL_RESPONSE (database may not be deployed yet)"
+                fi
+
+                # ── Test 8: Security upload page ──
+                echo ""
+                echo "── Test 8: Security upload page ──"
+                SEC_UPLOAD_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "$FUNC_URL/api/d365sec/upload")
+                echo "  HTTP: $SEC_UPLOAD_RESPONSE"
+                if [ "$SEC_UPLOAD_RESPONSE" = "200" ]; then
+                  echo "  ✅ Security upload page PASSED"
+                else
+                  echo "  ⚠️ Security upload page returned $SEC_UPLOAD_RESPONSE"
+                fi
+
+                # ── Test 9: Verify databases are mounted ──
+                echo ""
+                echo "── Test 9: Verify databases on /home/data/ ──"
                 CREDS=$(az functionapp deployment list-publishing-credentials \
                   --resource-group "$(resourceGroup)" \
                   --name "$(functionAppName)" \
@@ -507,12 +598,18 @@ stages:
 
                 KB_EXISTS=$(echo "$FILES" | jq -r '.[] | select(.name=="d365fo_kb.sqlite") | .name' 2>/dev/null)
                 XREF_EXISTS=$(echo "$FILES" | jq -r '.[] | select(.name=="d365fo_xref.sqlite") | .name' 2>/dev/null)
+                SEC_EXISTS=$(echo "$FILES" | jq -r '.[] | select(.name=="d365fo_sec.sqlite") | .name' 2>/dev/null)
 
                 if [ -n "$KB_EXISTS" ] && [ -n "$XREF_EXISTS" ]; then
-                  echo "  ✅ Both databases present"
+                  echo "  ✅ KB + XRef databases present"
                 else
-                  echo "  ❌ Missing database files"
+                  echo "  ❌ Missing KB or XRef database files"
                   PASS=false
+                fi
+                if [ -n "$SEC_EXISTS" ]; then
+                  echo "  ✅ Security database present"
+                else
+                  echo "  ⚠️ Security database not found (optional — upload via /api/d365sec/upload)"
                 fi
 
                 # ── Summary ──
@@ -522,8 +619,12 @@ stages:
                   echo "  ✅ ALL VALIDATION CHECKS PASSED"
                   echo "══════════════════════════════════════════════════"
                   echo ""
-                  echo "  KB MCP:   $FUNC_URL/api/d365kb"
-                  echo "  XRef MCP: $FUNC_URL/api/d365xref"
+                  echo "  KB MCP:            $FUNC_URL/api/d365kb"
+                  echo "  XRef MCP:          $FUNC_URL/api/d365xref"
+                  echo "  Sec MCP:           $FUNC_URL/api/d365sec"
+                  echo "  Sec Upload:        $FUNC_URL/api/d365sec/upload"
+                  echo "  Task Recorder MCP: $FUNC_URL/api/d365taskrecorder"
+                  echo "  Task Recorder UI:  $FUNC_URL/api/d365taskrecorder/upload"
                 else
                   echo "  ❌ SOME VALIDATION CHECKS FAILED"
                   echo "══════════════════════════════════════════════════"

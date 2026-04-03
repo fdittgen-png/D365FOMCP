@@ -60,13 +60,13 @@ if (-not $KbDbPath)   { $KbDbPath   = Join-Path $env:USERPROFILE '.claude\d365fo
 if (-not $XrefDbPath) { $XrefDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite' }
 
 Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  D365FO MCP Services — Function App Deployment" -ForegroundColor Cyan
+Write-Host "  D365FO MCP Services - Function App Deployment" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "  Function App: $funcName"
 Write-Host "  Resource Group: $rg"
 Write-Host ""
 
-# ─── Verify Function App exists ──────────────────────────
+# --- Verify Function App exists --------------------------
 $funcApp = az functionapp show --resource-group $rg --name $funcName 2>$null | ConvertFrom-Json
 if (-not $funcApp) {
     Write-Error "Function App '$funcName' not found. Run Deploy-Infrastructure.ps1 first."
@@ -74,9 +74,9 @@ if (-not $funcApp) {
 }
 Write-Host "  [OK] Function App exists: $($funcApp.defaultHostName)" -ForegroundColor Green
 
-# ─── Upload SQLite databases ────────────────────────────
+# --- Upload SQLite databases ----------------------------
 if (-not $SkipDbUpload) {
-    Write-Host "`n─── Uploading SQLite databases to /home/data/ ───" -ForegroundColor Yellow
+    Write-Host "`n--- Uploading SQLite databases to /home/data/ ---" -ForegroundColor Yellow
 
     # Verify databases exist
     if (-not (Test-Path $KbDbPath)) {
@@ -118,7 +118,7 @@ if (-not $SkipDbUpload) {
     Write-Host "  [OK] KB database uploaded." -ForegroundColor Green
 
     # Upload XRef database
-    Write-Host "  Uploading XRef database ($xrefSize MB) — this may take several minutes..." -ForegroundColor Yellow
+    Write-Host "  Uploading XRef database ($xrefSize MB) - this may take several minutes..." -ForegroundColor Yellow
     Invoke-RestMethod -Uri "$kuduBase/api/vfs/data/d365fo_xref.sqlite" -Method PUT `
         -Headers @{ Authorization = "Basic $kuduAuth"; 'If-Match' = '*' } `
         -InFile $XrefDbPath -ContentType 'application/octet-stream'
@@ -127,29 +127,30 @@ if (-not $SkipDbUpload) {
     Write-Host "`n  [SKIP] Database upload skipped." -ForegroundColor DarkGray
 }
 
-# ─── Create host.json if missing ─────────────────────────
+# --- Create host.json if missing -------------------------
 $hostJsonPath = Join-Path $projectDir 'host.json'
 if (-not (Test-Path $hostJsonPath)) {
     Write-Host "`nCreating default host.json..." -ForegroundColor Yellow
-    @{
-        version = "2.0"
+    $hostJsonContent = @{
+        version = '2.0'
         extensionBundle = @{
-            id      = "Microsoft.Azure.Functions.ExtensionBundle"
-            version = "[4.*, 5.0.0)"
+            id      = 'Microsoft.Azure.Functions.ExtensionBundle'
+            version = '[4.*, 5.0.0' + ')'
         }
         logging = @{
             applicationInsights = @{
                 samplingSettings = @{
                     isEnabled = $true
-                    excludedTypes = "Request"
+                    excludedTypes = 'Request'
                 }
             }
         }
-    } | ConvertTo-Json -Depth 4 | Set-Content $hostJsonPath -Encoding utf8
+    }
+    $hostJsonContent | ConvertTo-Json -Depth 4 | Set-Content $hostJsonPath -Encoding utf8
     Write-Host "  [OK] host.json created." -ForegroundColor Green
 }
 
-# ─── Prepare deployment package (code + node_modules) ────
+# --- Prepare deployment package (code + node_modules) ----
 Write-Host "`nPreparing deployment package..." -ForegroundColor Yellow
 
 # Clean previous deploy artifacts
@@ -176,6 +177,14 @@ if (Test-Path $azureDir) {
 if (Test-Path $funcDir) {
     New-Item -ItemType Directory -Path (Join-Path $deployDir 'src\functions') -Force | Out-Null
     Copy-Item "$funcDir\*" (Join-Path $deployDir 'src\functions') -Recurse
+}
+
+# Copy www/ directory (test UIs for Task Recorder etc.)
+$wwwDir = Join-Path $projectDir 'www'
+if (Test-Path $wwwDir) {
+    New-Item -ItemType Directory -Path (Join-Path $deployDir 'www') -Force | Out-Null
+    Copy-Item "$wwwDir\*" (Join-Path $deployDir 'www') -Recurse
+    Write-Host "  [OK] www/ directory copied." -ForegroundColor Green
 }
 
 # npm install + cross-install Linux better-sqlite3 binary
@@ -225,7 +234,7 @@ try {
 $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  [OK] Package created: $zipSize MB" -ForegroundColor Green
 
-# ─── Deploy code ─────────────────────────────────────────
+# --- Deploy code -----------------------------------------
 Write-Host "`nDeploying to Azure Function App..." -ForegroundColor Yellow
 
 $deployOutput = az functionapp deployment source config-zip `
@@ -243,17 +252,58 @@ if ($LASTEXITCODE -ne 0) {
     }
 }
 
-# ─── Clean up ────────────────────────────────────────────
+# --- Clean up --------------------------------------------
 Remove-Item $deployDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
-# ─── Verify ──────────────────────────────────────────────
-Write-Host ""
+# --- Restart and validate --------------------------------
 $funcUrl = "https://$($funcApp.defaultHostName)"
+
+# Stop then start for a clean cold start (avoids restart-loop issues)
+Write-Host "`nRestarting Function App..." -ForegroundColor Yellow
+az functionapp stop --resource-group $rg --name $funcName --output none 2>&1
+Start-Sleep -Seconds 3
+az functionapp start --resource-group $rg --name $funcName --output none 2>&1
+Write-Host "  Waiting for cold start..." -ForegroundColor DarkGray
+Start-Sleep -Seconds 30
+
+# Health check with retry (cold start can take 30-60s)
+function Test-Endpoint {
+    param([string]$Url, [string]$Label, [int]$Retries = 3, [int]$DelaySec = 10)
+    for ($i = 1; $i -le $Retries; $i++) {
+        try {
+            $resp = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec 30 -UseBasicParsing
+            if ($resp.StatusCode -eq 200) {
+                Write-Host "  [OK] $Label" -ForegroundColor Green
+                return
+            }
+        } catch {
+            if ($i -lt $Retries) {
+                Write-Host "  [..] $Label - retry $i/$Retries in ${DelaySec}s..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds $DelaySec
+            }
+        }
+    }
+    Write-Warning "$Label failed after $Retries attempts"
+}
+
+Write-Host ""
+foreach ($svc in @('d365kb', 'd365xref', 'd365sec')) {
+    Test-Endpoint -Url "$funcUrl/api/$svc" -Label "$svc health"
+}
+foreach ($page in @('d365sec/upload', 'd365taskrecorder/upload')) {
+    Test-Endpoint -Url "$funcUrl/api/$page" -Label "$page page"
+}
+
+Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green
 Write-Host "  FUNCTION APP DEPLOYMENT COMPLETE" -ForegroundColor Green
 Write-Host "================================================================" -ForegroundColor Green
-Write-Host "  KB MCP:   $funcUrl/api/d365kb"
-Write-Host "  XRef MCP: $funcUrl/api/d365xref"
-Write-Host "  Data:     /home/data/ (persistent storage)"
+Write-Host "  KB MCP:            $funcUrl/api/d365kb"
+Write-Host "  XRef MCP:          $funcUrl/api/d365xref"
+Write-Host "  Sec MCP:           $funcUrl/api/d365sec"
+Write-Host "  Sec Upload:        $funcUrl/api/d365sec/upload"
+Write-Host "  Task Recorder MCP: $funcUrl/api/d365taskrecorder"
+Write-Host "  Task Recorder UI:  $funcUrl/api/d365taskrecorder/upload"
+Write-Host "  Data:              /home/data/ (persistent storage)"
 Write-Host "================================================================" -ForegroundColor Green

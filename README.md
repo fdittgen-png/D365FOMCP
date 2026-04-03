@@ -2,14 +2,17 @@
 
 **MCP-based metadata intelligence for Microsoft Dynamics 365 Finance & Operations.**
 
-Exposes D365FO metadata (tables, classes, enums, methods, entities, security objects) and cross-reference data (code dependencies, call graphs, inheritance) as **33 tools** via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Designed for AI coding assistants (Claude, Copilot, ChatGPT, Gemini, Cursor) and any MCP-compatible client.
+Exposes D365FO metadata (tables, classes, enums, methods, entities, security objects), cross-reference data (code dependencies, call graphs, inheritance), security configuration (roles, users, duties, privileges, permissions), and Task Recorder parsing as **49 tools** via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Designed for AI coding assistants (Claude, Copilot, ChatGPT, Gemini, Cursor) and any MCP-compatible client.
 
 | Dimension | Value |
 |-----------|-------|
 | KB tools | 17 (table lookup, field check, join keys, search, X++ source, ...) |
 | XRef tools | 16 (find references, call hierarchy, impact analysis, ...) |
+| Security tools | 15 (role/duty/privilege lookup, permission trace, user assignments, ...) |
+| Task Recorder tools | 1 (parse .axtr recordings to structured Markdown) |
 | KB database | ~1,063 MB SQLite (17K tables, 63K classes, 820K methods with full source) |
 | XRef database | ~3,300 MB SQLite (5.8M objects, 26.6M cross-references) |
+| Security database | ~30-60 MB SQLite (roles, duties, privileges, users, CRUD permissions) |
 | Runtime | Node.js 20, Azure Functions v4 (Linux) |
 | Transport | MCP Streamable HTTP (Azure) / MCP stdio (local) |
 
@@ -21,8 +24,10 @@ Exposes D365FO metadata (tables, classes, enums, methods, entities, security obj
 
 ```bash
 npm install
-npm run start:kb       # Start KB MCP server on stdio
-npm run start:xref     # Start XRef MCP server on stdio
+npm run start:kb             # Start KB MCP server on stdio
+npm run start:xref           # Start XRef MCP server on stdio
+npm run start:sec            # Start Security MCP server on stdio
+npm run start:taskrecorder   # Start Task Recorder MCP server on stdio
 ```
 
 ### Build & Deploy (recommended)
@@ -61,6 +66,7 @@ See [AI Configuration Guide](docs/AI-Configuration.md) for setup instructions fo
 build/                  Build scripts (XML/LocalDB -> SQLite)
   build-kb.js             KB database builder
   build-xref-db.js        XRef database builder
+  build-sec.js            Security database builder (AOT + DMF)
 docs/                   Documentation
   Architecture.md         System architecture (architects)
   Implementation.md       Implementation details (developers)
@@ -84,13 +90,25 @@ src/
     shared.js             DB singletons, query helpers
     kb-tools.js           17 KB tool implementations
     xref-tools.js         16 XRef tool implementations
+    sec-tools.js          15 Security tool implementations
+    taskrecorder-parser.js  .axtr file parser (ZIP/XML -> Markdown)
+    taskrecorder-tools.js   Task Recorder MCP tool registration
   functions/            Azure Functions entry points
     d365kb.js             KB MCP endpoint (/api/d365kb)
     d365xref.js           XRef MCP endpoint (/api/d365xref)
+    d365sec.js            Security MCP endpoint (/api/d365sec)
+    d365taskrecorder.js   Task Recorder MCP + upload endpoint (/api/d365taskrecorder)
     index.js              Function App loader
   local/                Local stdio servers (development)
     mcp-server-kb.js      KB stdio server
     mcp-server-xref.js    XRef stdio server
+    mcp-server-sec.js     Security stdio server
+    mcp-server-taskrecorder.js  Task Recorder stdio server
+www/                    Test UIs
+  taskrecorder.html       Task Recorder upload & preview UI
+test/                   Tests
+  sec-tools.test.js       Security tools unit tests (38 tests)
+  taskrecorder-parser.test.js  Task Recorder parser tests
 ```
 
 ---
@@ -104,6 +122,8 @@ src/
 | [Administration](docs/Administration.md) | Azure Administrators | Prerequisites, build/deploy procedures, monitoring, troubleshooting |
 | [AI Configuration](docs/AI-Configuration.md) | AI Administrators | MCP client setup for Claude, Copilot, ChatGPT, Gemini, Cursor |
 | [VS Code Guide](docs/VS-Code-Guide.md) | Developers | VS Code setup, debugging, workflow, extensions |
+| [Security Service Design](docs/Design-D365Sec-MCP-Service.md) | Developers | Security MCP service architecture, schema, build pipeline |
+| [Copilot Studio Guide](docs/Copilot-Studio-Guide.md) | AI Administrators | Copilot Studio MCP integration and knownTools setup |
 
 ---
 
@@ -130,8 +150,14 @@ Environments: `d` (development), `p` (production).
 |-------------|---------|-----|
 | Development | KB | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Development | XRef | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Development | Security | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Development | Task Recorder | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
+| Development | Task Recorder UI | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder/upload` |
 | Production | KB | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Production | XRef | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Production | Security | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Production | Task Recorder | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
+| Production | Task Recorder UI | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder/upload` |
 
 Health check: `GET` to any endpoint returns `{ name, version, status }`.
 
@@ -182,6 +208,14 @@ Health check: `GET` to any endpoint returns `{ name, version, status }`.
 | `xref_find_field_usages` | Code locations reading/writing a field |
 | `xref_find_event_handlers` | Event handlers and delegates |
 
+### Task Recorder (1 tool)
+
+| Tool | Description |
+|------|-------------|
+| `taskrecorder_to_markdown` | Parse a D365FO Task Recorder (.axtr) file into structured Markdown (forms, steps, validations, security roles, scope tree) |
+
+A browser-based test UI is available at `/api/d365taskrecorder/upload` for drag-and-drop file parsing with live Markdown preview.
+
 ---
 
 ## Technology Stack
@@ -193,6 +227,7 @@ Health check: `GET` to any endpoint returns `{ name, version, status }`.
 | Database (runtime) | better-sqlite3 ^12.8.0 (native, read-only) |
 | Database (KB build) | sql.js ^1.12.0 (WebAssembly SQLite) |
 | XML parsing | fast-xml-parser ^5.2.3 |
+| ZIP handling | adm-zip ^0.5.16 (Task Recorder .axtr + Security upload) |
 | Azure Functions | @azure/functions ^4.9.0 (v4 programming model) |
 | Infrastructure | Azure Bicep |
 | Deployment | PowerShell + Azure CLI |

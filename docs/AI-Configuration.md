@@ -9,12 +9,13 @@
 
 ---
 
-This guide explains how to connect AI coding assistants to the D365FO MCP Services. Two services are available:
+This guide explains how to connect AI coding assistants to the D365FO MCP Services. Three services are available:
 
-- **d365kb** -- Knowledge Base (tables, fields, classes, methods, enums, entities, security)
+- **d365kb** -- Knowledge Base (tables, fields, classes, methods, enums, entities)
 - **d365xref** -- Cross-Reference (code dependencies, call graphs, impact analysis)
+- **d365sec** -- Security Configuration (roles, duties, privileges, users, permissions from PROD)
 
-Both services expose tools via the **Model Context Protocol (MCP)**.
+All services expose tools via the **Model Context Protocol (MCP)**.
 
 ---
 
@@ -24,8 +25,10 @@ Both services expose tools via the **Model Context Protocol (MCP)**.
 |-------------|---------|-----|
 | Development | KB | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Development | XRef | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Development | Security | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` |
 | Production | KB | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Production | XRef | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Production | Security | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
 
 **Health check:** `GET` to any endpoint returns `{ "name": "...", "version": "1.0.0", "status": "ok" }`.
 
@@ -49,6 +52,10 @@ Add to Claude Code MCP settings (`.claude/settings.json` or via `claude mcp add`
     "d365xref": {
       "type": "url",
       "url": "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref"
+    },
+    "d365sec": {
+      "type": "url",
+      "url": "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec"
     }
   }
 }
@@ -59,6 +66,7 @@ Or via CLI:
 ```bash
 claude mcp add d365kb url https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb
 claude mcp add d365xref url https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref
+claude mcp add d365sec url https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec
 ```
 
 ### 2.2 Local (stdio, for development)
@@ -417,7 +425,7 @@ After configuring any client, verify the connection:
    # Expected: {"name":"d365fo-kb","version":"1.0.0","status":"ok"}
    ```
 
-2. **Tool listing** -- MCP clients should show 17 KB tools and 16 XRef tools after connecting.
+2. **Tool listing** -- MCP clients should show 17 KB tools, 16 XRef tools, and 15 Security tools after connecting.
 
 3. **Test query** -- Ask the AI to "look up the CustTable table" or "find all callers of InventTable.find()".
 
@@ -468,13 +476,33 @@ After configuring any client, verify the connection:
 | `xref_find_field_usages` | `table_name`, `field_name`, `kind?`, `limit?` | Field read/write sites |
 | `xref_find_event_handlers` | `object_name`, `method_name?`, `limit?` | Event handlers |
 
+### 10.3 Security Tools (15)
+
+| Tool | Key Parameters | Description |
+|------|---------------|-------------|
+| `sec_lookup_role` | `role_name` | Full role details: sub-roles, duties, direct privileges, Grant/Deny |
+| `sec_lookup_duty` | `duty_name` | Duty details: parent roles, privileges |
+| `sec_lookup_privilege` | `privilege_name` | Privilege with CRUD entry points, parent duties and roles |
+| `sec_lookup_user` | `user_id` | User profile: roles, company scoping, status |
+| `sec_role_hierarchy` | `role_name`, `direction?` | Sub-role tree (children or parents) |
+| `sec_find_users_by_role` | `role_name`, `company_id?` | Users assigned to a role |
+| `sec_find_roles_by_duty` | `duty_name` | Roles containing a duty |
+| `sec_find_roles_by_privilege` | `privilege_name` | Roles granting a privilege (via duty chain or direct) |
+| `sec_company_users` | `company_id` | All users and roles for a company |
+| `sec_permission_trace` | `role_name`, `object_name?` | Full chain: role -> duties -> privileges -> entry points with CRUD |
+| `sec_compare_roles` | `role1`, `role2` | Side-by-side duty/privilege comparison |
+| `sec_effective_permissions` | `user_id` or `role_name`, `object_name?` | Flattened effective permissions with Grant/Deny resolution |
+| `sec_search` | `query`, `object_type?` | Full-text search across roles, duties, privileges, users |
+| `sec_stats` | (none) | Database summary statistics |
+| `sec_raw_sql` | `sql` | Ad-hoc SQL (read-only) |
+
 ---
 
 ## 11. Troubleshooting
 
 | Issue | Resolution |
 |-------|-----------|
-| Client shows 0 tools | Check the URL is correct and ends with `/api/d365kb` or `/api/d365xref` |
+| Client shows 0 tools | Check the URL is correct and ends with `/api/d365kb`, `/api/d365xref`, or `/api/d365sec` |
 | Connection timeout | Verify the Function App is running: `curl <endpoint-url>` |
 | 500 Internal Server Error | Check Application Insights in Azure Portal for error details |
 | Tools return empty results | The SQLite databases may not be uploaded; see [Administration Guide](Administration.md) |

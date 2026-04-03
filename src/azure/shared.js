@@ -15,6 +15,7 @@ const Database = require('better-sqlite3');
 
 let kbDb;
 let xrefDb;
+let secDb;
 
 function openDb(filePath) {
   const db = new Database(filePath, { readonly: true });
@@ -38,6 +39,22 @@ export function getXrefDb() {
     xrefDb = openDb(dbPath);
   }
   return xrefDb;
+}
+
+export function getSecDb() {
+  if (!secDb) {
+    const dbPath = process.env.SEC_DB_PATH || '/home/data/d365fo_sec.sqlite';
+    secDb = openDb(dbPath);
+  }
+  return secDb;
+}
+
+/** Close and discard the sec DB singleton so the next getSecDb() opens a fresh connection. */
+export function reloadSecDb() {
+  if (secDb) {
+    try { secDb.close(); } catch { /* ignore */ }
+    secDb = null;
+  }
 }
 
 // ── Query helper ─────────────────────────────────────────────────────────────
