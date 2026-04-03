@@ -11,7 +11,14 @@
     - host.json (Azure Functions runtime configuration)
     - package.json + node_modules with Linux better-sqlite3 binary
     - src/ (application source code)
+    - www/ (test UIs for Task Recorder etc.)
     - SQLite databases uploaded to /home/data/ via Kudu
+
+    Services deployed:
+    - d365kb         (Knowledge Base — 17 tools)
+    - d365xref       (Cross-Reference — 16 tools)
+    - d365sec        (Security — 15 tools)
+    - d365taskrecorder (Task Recorder — 1 tool + upload UI)
 
 .PARAMETER Environment
     'd' or 'p'. Default: d
@@ -28,9 +35,13 @@
 .PARAMETER XrefDbPath
     Path to XRef SQLite database. Default: %USERPROFILE%\.claude\d365fo_xref.sqlite
 
+.PARAMETER SecDbPath
+    Path to Security SQLite database (optional). Default: %USERPROFILE%\.claude\d365fo_sec.sqlite
+
 .EXAMPLE
     .\Deploy-FunctionApp.ps1 -Environment d
     .\Deploy-FunctionApp.ps1 -Environment d -SkipDbUpload
+    .\Deploy-FunctionApp.ps1 -Environment p -SkipNpmInstall
 #>
 [CmdletBinding()]
 param(
@@ -41,7 +52,8 @@ param(
     [switch]$SkipDbUpload,
 
     [string]$KbDbPath,
-    [string]$XrefDbPath
+    [string]$XrefDbPath,
+    [string]$SecDbPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,12 +70,14 @@ $zipPath    = Join-Path $projectDir '.deploy.zip'
 # Default database paths
 if (-not $KbDbPath)   { $KbDbPath   = Join-Path $env:USERPROFILE '.claude\d365fo_kb.sqlite' }
 if (-not $XrefDbPath) { $XrefDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite' }
+if (-not $SecDbPath)  { $SecDbPath  = Join-Path $env:USERPROFILE '.claude\d365fo_sec.sqlite' }
 
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "  D365FO MCP Services - Function App Deployment" -ForegroundColor Cyan
 Write-Host "================================================================" -ForegroundColor Cyan
-Write-Host "  Function App: $funcName"
+Write-Host "  Function App:   $funcName"
 Write-Host "  Resource Group: $rg"
+Write-Host "  Services:       d365kb, d365xref, d365sec, d365taskrecorder"
 Write-Host ""
 
 # --- Verify Function App exists --------------------------
@@ -78,7 +92,7 @@ Write-Host "  [OK] Function App exists: $($funcApp.defaultHostName)" -Foreground
 if (-not $SkipDbUpload) {
     Write-Host "`n--- Uploading SQLite databases to /home/data/ ---" -ForegroundColor Yellow
 
-    # Verify databases exist
+    # Verify required databases exist
     if (-not (Test-Path $KbDbPath)) {
         Write-Error "KB database not found: $KbDbPath. Run 'npm run build:kb' first."
         return
@@ -93,10 +107,17 @@ if (-not $SkipDbUpload) {
     Write-Host "  KB database:   $kbSize MB" -ForegroundColor DarkGray
     Write-Host "  XRef database: $xrefSize MB" -ForegroundColor DarkGray
 
+    $hasSecDb = Test-Path $SecDbPath
+    if ($hasSecDb) {
+        $secSize = [math]::Round((Get-Item $SecDbPath).Length / 1MB)
+        Write-Host "  Sec database:  $secSize MB" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  Sec database:  not found (optional, skipping)" -ForegroundColor DarkGray
+    }
+
     # Get Kudu publishing credentials
-    $creds = az functionapp deployment list-publishing-credentials `
-        --resource-group $rg --name $funcName `
-        --query "{user:publishingUserName, pass:publishingPassword}" -o json 2>$null | ConvertFrom-Json
+    $credsJson = cmd /c "az functionapp deployment list-publishing-credentials --resource-group $rg --name $funcName --query `"{user:publishingUserName, pass:publishingPassword}`" -o json 2>nul"
+    $creds = $credsJson | ConvertFrom-Json
     $kuduUser = $creds.user
     $kuduPass = $creds.pass
     $kuduBase = "https://$funcName.scm.azurewebsites.net"
@@ -123,6 +144,15 @@ if (-not $SkipDbUpload) {
         -Headers @{ Authorization = "Basic $kuduAuth"; 'If-Match' = '*' } `
         -InFile $XrefDbPath -ContentType 'application/octet-stream'
     Write-Host "  [OK] XRef database uploaded." -ForegroundColor Green
+
+    # Upload Security database (optional)
+    if ($hasSecDb) {
+        Write-Host "  Uploading Security database ($secSize MB)..." -ForegroundColor Yellow
+        Invoke-RestMethod -Uri "$kuduBase/api/vfs/data/d365fo_sec.sqlite" -Method PUT `
+            -Headers @{ Authorization = "Basic $kuduAuth"; 'If-Match' = '*' } `
+            -InFile $SecDbPath -ContentType 'application/octet-stream'
+        Write-Host "  [OK] Security database uploaded." -ForegroundColor Green
+    }
 } else {
     Write-Host "`n  [SKIP] Database upload skipped." -ForegroundColor DarkGray
 }
@@ -136,6 +166,11 @@ if (-not (Test-Path $hostJsonPath)) {
         extensionBundle = @{
             id      = 'Microsoft.Azure.Functions.ExtensionBundle'
             version = '[4.*, 5.0.0' + ')'
+        }
+        extensions = @{
+            http = @{
+                routePrefix = 'api'
+            }
         }
         logging = @{
             applicationInsights = @{
@@ -151,7 +186,7 @@ if (-not (Test-Path $hostJsonPath)) {
 }
 
 # --- Prepare deployment package (code + node_modules) ----
-Write-Host "`nPreparing deployment package..." -ForegroundColor Yellow
+Write-Host "`n--- Preparing deployment package ---" -ForegroundColor Yellow
 
 # Clean previous deploy artifacts
 if (Test-Path $deployDir) { Remove-Item $deployDir -Recurse -Force }
@@ -179,7 +214,7 @@ if (Test-Path $funcDir) {
     Copy-Item "$funcDir\*" (Join-Path $deployDir 'src\functions') -Recurse
 }
 
-# Copy www/ directory (test UIs for Task Recorder etc.)
+# Copy www/ directory (test UIs for Task Recorder, Security upload)
 $wwwDir = Join-Path $projectDir 'www'
 if (Test-Path $wwwDir) {
     New-Item -ItemType Directory -Path (Join-Path $deployDir 'www') -Force | Out-Null
@@ -187,14 +222,22 @@ if (Test-Path $wwwDir) {
     Write-Host "  [OK] www/ directory copied." -ForegroundColor Green
 }
 
+# List what's being deployed
+Write-Host "  Source files:" -ForegroundColor DarkGray
+Get-ChildItem (Join-Path $deployDir 'src\functions') -Filter '*.js' | ForEach-Object {
+    Write-Host "    src/functions/$($_.Name)" -ForegroundColor DarkGray
+}
+
 # npm install + cross-install Linux better-sqlite3 binary
 if (-not $SkipNpmInstall) {
     Write-Host "  Running npm install --production..." -ForegroundColor Yellow
     Push-Location $deployDir
     try {
-        $npmOutput = npm install --omit=dev 2>&1
+        # Use cmd /c to avoid PowerShell treating npm stderr as errors
+        $npmResult = cmd /c "npm install --omit=dev 2>&1"
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "npm install failed."
+            Write-Host $npmResult -ForegroundColor Red
+            Write-Error "npm install failed with exit code $LASTEXITCODE"
             return
         }
         Write-Host "  [OK] Dependencies installed." -ForegroundColor Green
@@ -202,7 +245,12 @@ if (-not $SkipNpmInstall) {
         # Cross-install Linux prebuild for better-sqlite3
         Write-Host "  Downloading Linux prebuild for better-sqlite3..." -ForegroundColor Yellow
         Push-Location (Join-Path $deployDir 'node_modules\better-sqlite3')
-        $prebuildOutput = npx --yes prebuild-install --platform linux --arch x64 --target 20.20.0 --runtime node 2>&1
+        $prebuildResult = cmd /c "npx --yes prebuild-install --platform linux --arch x64 --target 20.20.0 --runtime node 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host $prebuildResult -ForegroundColor Red
+            Write-Error "prebuild-install failed with exit code $LASTEXITCODE"
+            return
+        }
         Pop-Location
         Write-Host "  [OK] Linux binary installed." -ForegroundColor Green
     } finally {
@@ -219,8 +267,7 @@ if (-not $SkipNpmInstall) {
 
 # Disable remote build (we ship pre-built Linux binaries)
 $env:MSYS_NO_PATHCONV = 1
-az functionapp config appsettings set --resource-group $rg --name $funcName `
-    --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false --output none 2>&1
+cmd /c "az functionapp config appsettings set --resource-group $rg --name $funcName --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false --output none 2>&1" | Out-Null
 
 # Create zip
 Write-Host "  Creating zip package..." -ForegroundColor Yellow
@@ -235,22 +282,19 @@ $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 1)
 Write-Host "  [OK] Package created: $zipSize MB" -ForegroundColor Green
 
 # --- Deploy code -----------------------------------------
-Write-Host "`nDeploying to Azure Function App..." -ForegroundColor Yellow
+Write-Host "`n--- Deploying to Azure Function App ---" -ForegroundColor Yellow
 
-$deployOutput = az functionapp deployment source config-zip `
-    --resource-group $rg `
-    --name $funcName `
-    --src $zipPath `
-    --output none 2>&1
-
-# az CLI warnings go to stderr; check actual exit code, not stderr
+$deployResult = cmd /c "az functionapp deployment source config-zip --resource-group $rg --name $funcName --src `"$zipPath`" --output none 2>&1"
 if ($LASTEXITCODE -ne 0) {
-    $errors = $deployOutput | Where-Object { $_ -notmatch '^WARNING:' }
-    if ($errors) {
-        Write-Error "Deployment failed: $errors"
+    # Filter out warnings, only fail on real errors
+    $realErrors = $deployResult | Where-Object { $_ -notmatch '^WARNING:' }
+    if ($realErrors) {
+        Write-Host ($realErrors -join "`n") -ForegroundColor Red
+        Write-Error "Deployment failed."
         return
     }
 }
+Write-Host "  [OK] Code deployed." -ForegroundColor Green
 
 # --- Clean up --------------------------------------------
 Remove-Item $deployDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -259,12 +303,12 @@ Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 # --- Restart and validate --------------------------------
 $funcUrl = "https://$($funcApp.defaultHostName)"
 
-# Stop then start for a clean cold start (avoids restart-loop issues)
-Write-Host "`nRestarting Function App..." -ForegroundColor Yellow
-az functionapp stop --resource-group $rg --name $funcName --output none 2>&1
+# Stop then start for a clean cold start
+Write-Host "`n--- Restarting Function App ---" -ForegroundColor Yellow
+cmd /c "az functionapp stop --resource-group $rg --name $funcName --output none 2>&1" | Out-Null
 Start-Sleep -Seconds 3
-az functionapp start --resource-group $rg --name $funcName --output none 2>&1
-Write-Host "  Waiting for cold start..." -ForegroundColor DarkGray
+cmd /c "az functionapp start --resource-group $rg --name $funcName --output none 2>&1" | Out-Null
+Write-Host "  Waiting 30s for cold start..." -ForegroundColor DarkGray
 Start-Sleep -Seconds 30
 
 # Health check with retry (cold start can take 30-60s)
@@ -275,7 +319,7 @@ function Test-Endpoint {
             $resp = Invoke-WebRequest -Uri $Url -Method GET -TimeoutSec 30 -UseBasicParsing
             if ($resp.StatusCode -eq 200) {
                 Write-Host "  [OK] $Label" -ForegroundColor Green
-                return
+                return $true
             }
         } catch {
             if ($i -lt $Retries) {
@@ -284,21 +328,35 @@ function Test-Endpoint {
             }
         }
     }
-    Write-Warning "$Label failed after $Retries attempts"
+    Write-Warning "$Label FAILED after $Retries attempts"
+    return $false
 }
 
-Write-Host ""
-foreach ($svc in @('d365kb', 'd365xref', 'd365sec')) {
-    Test-Endpoint -Url "$funcUrl/api/$svc" -Label "$svc health"
+Write-Host "`n--- Validating all services ---" -ForegroundColor Yellow
+$allOk = $true
+
+# Health checks for all 4 MCP services
+foreach ($svc in @('d365kb', 'd365xref', 'd365sec', 'd365taskrecorder')) {
+    $ok = Test-Endpoint -Url "$funcUrl/api/$svc" -Label "$svc health"
+    if (-not $ok) { $allOk = $false }
 }
+
+# UI page checks
 foreach ($page in @('d365sec/upload', 'd365taskrecorder/upload')) {
-    Test-Endpoint -Url "$funcUrl/api/$page" -Label "$page page"
+    $ok = Test-Endpoint -Url "$funcUrl/api/$page" -Label "$page page"
+    if (-not $ok) { $allOk = $false }
 }
 
 Write-Host ""
-Write-Host "================================================================" -ForegroundColor Green
-Write-Host "  FUNCTION APP DEPLOYMENT COMPLETE" -ForegroundColor Green
-Write-Host "================================================================" -ForegroundColor Green
+if ($allOk) {
+    Write-Host "================================================================" -ForegroundColor Green
+    Write-Host "  ALL SERVICES DEPLOYED AND HEALTHY" -ForegroundColor Green
+    Write-Host "================================================================" -ForegroundColor Green
+} else {
+    Write-Host "================================================================" -ForegroundColor Yellow
+    Write-Host "  DEPLOYMENT COMPLETE (some health checks failed)" -ForegroundColor Yellow
+    Write-Host "================================================================" -ForegroundColor Yellow
+}
 Write-Host "  KB MCP:            $funcUrl/api/d365kb"
 Write-Host "  XRef MCP:          $funcUrl/api/d365xref"
 Write-Host "  Sec MCP:           $funcUrl/api/d365sec"
