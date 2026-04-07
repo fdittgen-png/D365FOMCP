@@ -17,18 +17,18 @@ let kbDb;
 let xrefDb;
 let secDb;
 
-function openDb(filePath) {
+function openDb(filePath, mmapSize = 3221225472) {
   const db = new Database(filePath, { readonly: true });
   db.pragma('journal_mode = OFF');
-  db.pragma('cache_size = -200000');   // 200 MB cache
-  db.pragma('mmap_size = 3221225472'); // 3 GB mmap for fast reads
+  db.pragma(`cache_size = -50000`);   // 50 MB cache
+  db.pragma(`mmap_size = ${mmapSize}`);
   return db;
 }
 
 export function getKbDb() {
   if (!kbDb) {
     const dbPath = process.env.KB_DB_PATH || '/home/data/d365fo_kb.sqlite';
-    kbDb = openDb(dbPath);
+    kbDb = openDb(dbPath, 1100000000);
   }
   return kbDb;
 }
@@ -44,7 +44,7 @@ export function getXrefDb() {
 export function getSecDb() {
   if (!secDb) {
     const dbPath = process.env.SEC_DB_PATH || '/home/data/d365fo_sec.sqlite';
-    secDb = openDb(dbPath);
+    secDb = openDb(dbPath, 67108864);
   }
   return secDb;
 }
@@ -52,7 +52,7 @@ export function getSecDb() {
 /** Close and discard the sec DB singleton so the next getSecDb() opens a fresh connection. */
 export function reloadSecDb() {
   if (secDb) {
-    try { secDb.close(); } catch { /* ignore */ }
+    try { secDb.close(); } catch (e) { console.warn('Warning closing sec DB:', e.message); }
     secDb = null;
   }
 }
@@ -79,10 +79,10 @@ export function formatMarkdownTable(rows, columns) {
   if (!rows || rows.length === 0) return 'No results found.';
   if (!columns) columns = Object.keys(rows[0]);
 
-  const header = '|' + columns.join('|') + '|';
-  const sep = '|' + columns.map(() => '---').join('|') + '|';
+  const header = '| ' + columns.join(' | ') + ' |';
+  const sep = '| ' + columns.map(() => '---').join(' | ') + ' |';
   const body = rows
-    .map(row => '|' + columns.map(c => row[c] == null ? '' : String(row[c])).join('|') + '|')
+    .map(row => '| ' + columns.map(c => row[c] == null ? '' : String(row[c])).join(' | ') + ' |')
     .join('\n');
 
   return `${header}\n${sep}\n${body}`;

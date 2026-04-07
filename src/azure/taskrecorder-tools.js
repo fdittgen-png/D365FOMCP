@@ -21,14 +21,17 @@ export function registerTaskRecorderTools(server) {
       + 'The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), '
       + 'data sources, security roles, navigation flow, and scope tree.',
     {
-      file_content: z.string().describe(
+      file_content: z.string().max(20000000).describe(
         'Base64-encoded contents of the .axtr file'
       ),
-      file_name: z.string().optional().default('recording.axtr').describe(
+      file_name: z.string().max(255).optional().default('recording.axtr').describe(
         'Original filename (used in the generated footer)'
       ),
     },
     async ({ file_content, file_name }) => {
+      if (file_content.length > 20_000_000) {
+        return textResult('ERROR: File too large. Maximum supported size is ~15 MB (20 MB base64-encoded).');
+      }
       try {
         const buffer = Buffer.from(file_content, 'base64');
         const markdown = parseTaskRecording(buffer, file_name);
