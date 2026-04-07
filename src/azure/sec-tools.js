@@ -23,7 +23,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_role',
     'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.',
-    { role_name: z.string().describe('Role name (case-insensitive)') },
+    { role_name: z.string().max(500).describe('Role name (case-insensitive)') },
     async ({ role_name }) => {
       const rn = role_name.trim();
       const role = q(`SELECT * FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
@@ -72,12 +72,12 @@ export function registerSecTools(server, db) {
       }
 
       // Direct entity permissions
-      const dirPerms = q(`SELECT * FROM role_direct_entity_permissions
+      const dirPerms = q(`SELECT entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke FROM role_direct_entity_permissions
         WHERE role_id = ? ORDER BY entity_name`, [r.role_id]);
       if (dirPerms.length) {
         out += `## Direct Entity Permissions (${dirPerms.length})\n`;
         out += formatMarkdownTable(dirPerms,
-          ['entity_name', 'grant_read', 'grant_create', 'grant_update', 'grant_delete']) + '\n\n';
+          ['entity_name', 'grant_read', 'grant_create', 'grant_update', 'grant_delete', 'grant_correct', 'grant_invoke']) + '\n\n';
       }
 
       // Users with this role
@@ -93,7 +93,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_duty',
     'Get duty details: parent roles, privileges granted, and entry points.',
-    { duty_name: z.string().describe('Duty ID or name (case-insensitive)') },
+    { duty_name: z.string().max(500).describe('Duty ID or name (case-insensitive)') },
     async ({ duty_name }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT * FROM duties WHERE duty_id = ? COLLATE NOCASE
@@ -143,7 +143,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_privilege',
     'Get privilege details: entry points with CRUD grants, parent duties, and parent roles.',
-    { privilege_name: z.string().describe('Privilege name (case-insensitive)') },
+    { privilege_name: z.string().max(500).describe('Privilege name (case-insensitive)') },
     async ({ privilege_name }) => {
       const pn = privilege_name.trim();
       const priv = q(`SELECT * FROM privileges WHERE privilege_name = ? COLLATE NOCASE`, [pn]);
@@ -203,7 +203,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_user',
     'Get user profile: roles, company scoping, enabled status, and email.',
-    { user_id: z.string().describe('User ID (case-insensitive)') },
+    { user_id: z.string().max(500).describe('User ID (case-insensitive)') },
     async ({ user_id }) => {
       const uid = user_id.trim();
       const user = q(`SELECT * FROM users WHERE user_id = ? COLLATE NOCASE`, [uid]);
@@ -258,7 +258,7 @@ export function registerSecTools(server, db) {
     'sec_role_hierarchy',
     'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from).',
     {
-      role_name: z.string().describe('Role name'),
+      role_name: z.string().max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
     },
     async ({ role_name, direction }) => {
@@ -291,8 +291,8 @@ export function registerSecTools(server, db) {
     'sec_find_users_by_role',
     'Find all users assigned to a role, optionally filtered to a specific company.',
     {
-      role_name: z.string().describe('Role name'),
-      company_id: z.string().optional().describe('Filter to users scoped to this company'),
+      role_name: z.string().max(500).describe('Role name'),
+      company_id: z.string().max(500).optional().describe('Filter to users scoped to this company'),
       limit: z.number().optional().default(100).describe('Max results'),
     },
     async ({ role_name, company_id, limit: rawLimit }) => {
@@ -326,6 +326,7 @@ export function registerSecTools(server, db) {
       if (company_id) out += ` (company: ${company_id})`;
       out += `\n${rows.length} user(s)\n\n`;
       out += formatMarkdownTable(rows);
+      if (rows.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
       return textResult(out);
     }
   );
@@ -335,7 +336,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_find_roles_by_duty',
     'Find all roles that contain a specific duty.',
-    { duty_name: z.string().describe('Duty ID or name') },
+    { duty_name: z.string().max(500).describe('Duty ID or name') },
     async ({ duty_name }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT duty_id FROM duties
@@ -359,7 +360,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_find_roles_by_privilege',
     'Find all roles that grant a privilege (via the duty chain or directly).',
-    { privilege_name: z.string().describe('Privilege name') },
+    { privilege_name: z.string().max(500).describe('Privilege name') },
     async ({ privilege_name }) => {
       const pn = privilege_name.trim();
 
@@ -404,7 +405,7 @@ export function registerSecTools(server, db) {
     'sec_company_users',
     'List all users and their roles for a specific company (legal entity).',
     {
-      company_id: z.string().describe('Company / legal entity ID (e.g., LADE, TAB)'),
+      company_id: z.string().max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
       limit: z.number().optional().default(200).describe('Max results'),
     },
     async ({ company_id, limit: rawLimit }) => {
@@ -423,6 +424,7 @@ export function registerSecTools(server, db) {
 
       let out = `# Company: ${cid}\n${rows.length} user-role assignment(s)\n\n`;
       out += formatMarkdownTable(rows, ['user_id', 'person_name', 'role_name', 'permission_type']);
+      if (rows.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
       return textResult(out);
     }
   );
@@ -433,8 +435,8 @@ export function registerSecTools(server, db) {
     'sec_permission_trace',
     'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object.',
     {
-      role_name: z.string().describe('Role name'),
-      object_name: z.string().optional().describe('Filter to entry points targeting this object'),
+      role_name: z.string().max(500).describe('Role name'),
+      object_name: z.string().max(500).optional().describe('Filter to entry points targeting this object'),
       limit: z.number().optional().default(500).describe('Max results'),
     },
     async ({ role_name, object_name, limit: rawLimit }) => {
@@ -451,18 +453,34 @@ export function registerSecTools(server, db) {
       params.push(limit);
 
       const trace = q(`
+        WITH RECURSIVE role_tree AS (
+          SELECT role_id FROM roles WHERE role_id = ?
+          UNION ALL
+          SELECT rs.child_role_id FROM role_subroles rs JOIN role_tree rt ON rs.parent_role_id = rt.role_id
+        )
         SELECT rd.permission_type, d.duty_id,
                dp.privilege_name,
                ep.object_type, ep.object_name,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke
-        FROM role_duties rd
+        FROM role_tree rtree
+        JOIN role_duties rd ON rd.role_id = rtree.role_id
         JOIN duties d ON d.duty_id = rd.duty_id
         JOIN duty_privileges dp ON dp.duty_id = d.duty_id
         JOIN privileges p ON p.privilege_name = dp.privilege_name
         JOIN privilege_entry_points ep ON ep.privilege_name = p.privilege_name
-        WHERE rd.role_id = ? ${objectFilter}
-        ORDER BY d.duty_id, dp.privilege_name, ep.entry_point_name
+        WHERE 1=1 ${objectFilter}
+        UNION ALL
+        SELECT 'Grant' as permission_type, '(direct)' as duty_id,
+               rp.privilege_name,
+               ep.object_type, ep.object_name,
+               ep.grant_read, ep.grant_create, ep.grant_update,
+               ep.grant_delete, ep.grant_correct, ep.grant_invoke
+        FROM role_tree rtree
+        JOIN role_direct_privileges rp ON rp.role_id = rtree.role_id
+        JOIN privilege_entry_points ep ON ep.privilege_name = rp.privilege_name
+        WHERE 1=1 ${objectFilter}
+        ORDER BY duty_id, privilege_name, object_name
         LIMIT ?
       `, params);
 
@@ -477,6 +495,7 @@ export function registerSecTools(server, db) {
         'duty_id', 'privilege_name', 'object_type', 'object_name',
         'grant_read', 'grant_create', 'grant_update', 'grant_delete',
       ]);
+      if (trace.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
       return textResult(out);
     }
   );
@@ -487,8 +506,8 @@ export function registerSecTools(server, db) {
     'sec_compare_roles',
     'Compare two roles side by side: shared vs unique duties and privileges.',
     {
-      role1: z.string().describe('First role name'),
-      role2: z.string().describe('Second role name'),
+      role1: z.string().max(500).describe('First role name'),
+      role2: z.string().max(500).describe('Second role name'),
     },
     async ({ role1, role2 }) => {
       const r1 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role1.trim()]);
@@ -522,6 +541,35 @@ export function registerSecTools(server, db) {
         out += only2.map(d => `- ${d}`).join('\n') + '\n\n';
       }
 
+      // Direct privilege comparison
+      const privs1 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r1[0].role_id]).map(r => r.privilege_name));
+      const privs2 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r2[0].role_id]).map(r => r.privilege_name));
+
+      if (privs1.size > 0 || privs2.size > 0) {
+        const sharedPrivs = [...privs1].filter(p => privs2.has(p));
+        const onlyPrivs1 = [...privs1].filter(p => !privs2.has(p));
+        const onlyPrivs2 = [...privs2].filter(p => !privs1.has(p));
+
+        out += `## Direct Privileges\n`;
+        out += `| | ${r1[0].role_name} | ${r2[0].role_name} |\n|---|---|---|\n`;
+        out += `| Total | ${privs1.size} | ${privs2.size} |\n`;
+        out += `| Shared | ${sharedPrivs.length} | ${sharedPrivs.length} |\n`;
+        out += `| Unique | ${onlyPrivs1.length} | ${onlyPrivs2.length} |\n\n`;
+
+        if (sharedPrivs.length > 0 && sharedPrivs.length <= 50) {
+          out += `### Shared Direct Privileges (${sharedPrivs.length})\n`;
+          out += sharedPrivs.map(p => `- ${p}`).join('\n') + '\n\n';
+        }
+        if (onlyPrivs1.length > 0 && onlyPrivs1.length <= 50) {
+          out += `### Only in ${r1[0].role_name} (${onlyPrivs1.length})\n`;
+          out += onlyPrivs1.map(p => `- ${p}`).join('\n') + '\n\n';
+        }
+        if (onlyPrivs2.length > 0 && onlyPrivs2.length <= 50) {
+          out += `### Only in ${r2[0].role_name} (${onlyPrivs2.length})\n`;
+          out += onlyPrivs2.map(p => `- ${p}`).join('\n') + '\n\n';
+        }
+      }
+
       return textResult(out);
     }
   );
@@ -532,9 +580,9 @@ export function registerSecTools(server, db) {
     'sec_effective_permissions',
     'Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name or company.',
     {
-      user_id: z.string().optional().describe('User ID (provide this OR role_name)'),
-      role_name: z.string().optional().describe('Role name (provide this OR user_id)'),
-      object_name: z.string().optional().describe('Filter to entry points for this object'),
+      user_id: z.string().max(500).optional().describe('User ID (provide this OR role_name)'),
+      role_name: z.string().max(500).optional().describe('Role name (provide this OR user_id)'),
+      object_name: z.string().max(500).optional().describe('Filter to entry points for this object'),
       limit: z.number().optional().default(200).describe('Max results'),
     },
     async ({ user_id, role_name, object_name, limit: rawLimit }) => {
@@ -563,14 +611,20 @@ export function registerSecTools(server, db) {
 
       if (!roleIds.length) return textResult('No roles found.');
 
-      // Expand sub-roles
+      // Expand sub-roles recursively using CTE
+      const placeholders = roleIds.map(() => '?').join(',');
       const allRoleIds = new Set(roleIds);
-      for (const rid of roleIds) {
-        const subs = q(`SELECT child_role_id FROM role_subroles WHERE parent_role_id = ?`, [rid]);
-        for (const s of subs) allRoleIds.add(s.child_role_id);
-      }
+      const expanded = q(`
+        WITH RECURSIVE role_tree AS (
+          SELECT role_id FROM roles WHERE role_id IN (${placeholders})
+          UNION ALL
+          SELECT rs.child_role_id FROM role_subroles rs JOIN role_tree rt ON rs.parent_role_id = rt.role_id
+        )
+        SELECT DISTINCT role_id FROM role_tree
+      `, roleIds);
+      for (const r of expanded) allRoleIds.add(r.role_id);
 
-      const placeholders = [...allRoleIds].map(() => '?').join(',');
+      const allPlaceholders = [...allRoleIds].map(() => '?').join(',');
       const params = [...allRoleIds];
 
       let objectFilter = '';
@@ -588,10 +642,18 @@ export function registerSecTools(server, db) {
         FROM role_duties rd
         JOIN duty_privileges dp ON dp.duty_id = rd.duty_id
         JOIN privilege_entry_points ep ON ep.privilege_name = dp.privilege_name
-        WHERE rd.role_id IN (${placeholders}) ${objectFilter}
-        ORDER BY ep.object_name
+        WHERE rd.role_id IN (${allPlaceholders}) ${objectFilter}
+        UNION ALL
+        SELECT DISTINCT ep.object_name, ep.object_type,
+               ep.grant_read, ep.grant_create, ep.grant_update,
+               ep.grant_delete, ep.grant_correct, ep.grant_invoke,
+               'Grant' as duty_perm
+        FROM role_direct_privileges rp
+        JOIN privilege_entry_points ep ON ep.privilege_name = rp.privilege_name
+        WHERE rp.role_id IN (${allPlaceholders}) ${objectFilter}
+        ORDER BY object_name
         LIMIT ?
-      `, params);
+      `, [...params, ...allRoleIds, ...(object_name ? [`%${object_name.trim()}%`] : [])]);
 
       if (!perms.length) {
         return textResult(`No effective permissions found for ${heading}` +
@@ -604,6 +666,7 @@ export function registerSecTools(server, db) {
         'object_name', 'object_type', 'grant_read', 'grant_create',
         'grant_update', 'grant_delete', 'duty_perm',
       ]);
+      if (perms.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
       return textResult(out);
     }
   );
@@ -614,8 +677,8 @@ export function registerSecTools(server, db) {
     'sec_search',
     'Full-text search across roles, duties, privileges, and users.',
     {
-      query: z.string().describe('Search keywords'),
-      object_type: z.string().optional().describe('Filter: role, duty, privilege, user'),
+      query: z.string().max(500).describe('Search keywords'),
+      object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
       limit: z.number().optional().default(20).describe('Max results'),
     },
     async ({ query: searchQuery, object_type, limit: rawLimit }) => {
@@ -635,10 +698,17 @@ export function registerSecTools(server, db) {
       sql += ' LIMIT ?';
       likeParams.push(limit);
 
-      const rows = q(sql, likeParams);
-      if (!rows.length) return textResult(`No results for "${searchQuery}".`);
+      const results = q(sql, likeParams);
+      if (!results.length) return textResult(`No results for "${searchQuery}".`);
 
-      return textResult(formatMarkdownTable(rows, ['object_type', 'object_name', 'module_id']));
+      const rows = results.map(r => ({
+        ...r,
+        match_context: r.content ? r.content.substring(0, 120) + (r.content.length > 120 ? '...' : '') : ''
+      }));
+
+      let out = formatMarkdownTable(rows, ['object_type', 'object_name', 'module_id', 'match_context']);
+      if (results.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     }
   );
 
@@ -653,8 +723,13 @@ export function registerSecTools(server, db) {
 
       const grantRoles = q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Grant'`)[0]?.n || 0;
       const denyRoles = q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Deny'`)[0]?.n || 0;
+      const totalDuties = q(`SELECT COUNT(*) as n FROM duties`)[0]?.n || 0;
+      const totalPrivileges = q(`SELECT COUNT(*) as n FROM privileges`)[0]?.n || 0;
+      const totalEntryPoints = q(`SELECT COUNT(*) as n FROM privilege_entry_points`)[0]?.n || 0;
       const enabledUsers = q(`SELECT COUNT(*) as n FROM users WHERE enabled = 1`)[0]?.n || 0;
       const disabledUsers = q(`SELECT COUNT(*) as n FROM users WHERE enabled = 0`)[0]?.n || 0;
+      const userRoleAssignments = q(`SELECT COUNT(*) as n FROM user_roles`)[0]?.n || 0;
+      const companies = q(`SELECT COUNT(DISTINCT company_id) as n FROM user_role_companies`)[0]?.n || 0;
 
       let out = '# Security Database Statistics\n\n';
       out += '## Build Info\n';
@@ -664,8 +739,13 @@ export function registerSecTools(server, db) {
       out += `| Metric | Value |\n|---|---|\n`;
       out += `| Grant Roles | ${grantRoles} |\n`;
       out += `| Deny Roles | ${denyRoles} |\n`;
+      out += `| Total Duties | ${totalDuties} |\n`;
+      out += `| Total Privileges | ${totalPrivileges} |\n`;
+      out += `| Total Entry Points | ${totalEntryPoints} |\n`;
       out += `| Enabled Users | ${enabledUsers} |\n`;
       out += `| Disabled Users | ${disabledUsers} |\n`;
+      out += `| User-Role Assignments | ${userRoleAssignments} |\n`;
+      out += `| Companies | ${companies} |\n`;
 
       return textResult(out);
     }
@@ -675,23 +755,34 @@ export function registerSecTools(server, db) {
 
   server.tool(
     'sec_raw_sql',
-    'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit.',
-    { sql: z.string().describe('SQL SELECT query') },
+    'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)',
+    { sql: z.string().max(50000).describe('SQL SELECT query') },
     async ({ sql: rawSql }) => {
-      const trimmed = rawSql.trim();
-      if (!/^\s*SELECT\s/i.test(trimmed)) {
-        return textResult('Only SELECT queries are allowed.');
+      const trimmed = rawSql.trim().replace(/;+$/, '');
+      if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
+        return textResult('ERROR: Only SELECT/WITH/PRAGMA queries are allowed.');
+      }
+
+      // Reject dangerous keywords
+      const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'ATTACH', 'DETACH'];
+      for (const kw of forbidden) {
+        const regex = new RegExp(`\\b${kw}\\b`, 'i');
+        if (regex.test(trimmed)) {
+          return textResult(`ERROR: Keyword "${kw}" is not allowed in read-only queries.`);
+        }
       }
 
       let limited = trimmed;
-      if (!/LIMIT\s+\d+/i.test(limited)) {
-        limited = limited.replace(/;?\s*$/, '') + ' LIMIT 500';
+      if (!/\bLIMIT\b/i.test(limited)) {
+        limited += ' LIMIT 500';
       }
 
       try {
         const rows = q(limited);
         if (!rows.length) return textResult('No results found.');
-        return textResult(formatMarkdownTable(rows));
+        let out = formatMarkdownTable(rows);
+        if (rows.length >= 500) out += `\n\n> ⚠️ Showing first 500 results. There may be more — add a LIMIT clause or refine your query.`;
+        return textResult(out);
       } catch (err) {
         return textResult(`SQL Error: ${err.message}`);
       }
