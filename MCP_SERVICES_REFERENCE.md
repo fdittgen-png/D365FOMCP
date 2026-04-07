@@ -729,18 +729,30 @@ Execute a raw SQL query against the security database. READ-ONLY, 500-row limit.
 
 The Task Recorder service parses D365FO Task Recorder (.axtr) files and returns structured Markdown documents describing recorded test cases.
 
+**Input methods:** The tool accepts files via two methods:
+- **`file_url`** (preferred) — provide a URL to the .axtr file. The server downloads and parses it directly. This is the correct method when users upload files in Copilot Studio, Claude Desktop, or any chat UI that provides file attachments as URLs.
+- **`file_content`** (fallback) — provide the .axtr file as a base64-encoded string. Use this for programmatic/CLI access.
+
+A browser-based test UI is also available at `/api/d365taskrecorder/upload` for drag-and-drop file parsing with live Markdown preview.
+
 ---
 
 ### taskrecorder_to_markdown
 
-Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown document describing the recorded test case. The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), data sources, security roles, navigation flow, and scope tree.
+Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown document describing the recorded test case. Provide EITHER `file_url` (preferred for file uploads/attachments) OR `file_content` (base64). The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), data sources, security roles, navigation flow, and scope tree.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| file_content | string (max 20000000) | Yes | Base64-encoded contents of the .axtr file |
+| file_url | string (max 2000) | No* | URL to the .axtr file (e.g. from a file upload or attachment). The server downloads and parses it directly. |
+| file_content | string (max 20000000) | No* | Base64-encoded contents of the .axtr file. Use `file_url` instead when the file is available as a URL. |
 | file_name | string (max 255) | No | Original filename (used in the generated footer, default: "recording.axtr") |
 
-**Example use case:** "Parse this task recording to extract the steps, forms, and security roles involved."
+\* One of `file_url` or `file_content` must be provided.
+
+**Example use cases:**
+- User uploads .axtr file in Copilot Studio → agent calls `taskrecorder_to_markdown(file_url: "<attachment-url>")`
+- CLI/programmatic access → `taskrecorder_to_markdown(file_content: "<base64>", file_name: "myrecording.axtr")`
+- "Parse this task recording to extract the steps, forms, and security roles involved."
 
 ---
 
@@ -812,7 +824,7 @@ Run in parallel:
 
 ### 5.8 Task Recording Analysis
 
-1. `taskrecorder_to_markdown(file_content)` -- parse the .axtr file
+1. `taskrecorder_to_markdown(file_url)` -- parse the uploaded .axtr file (or use `file_content` with base64 for CLI)
 2. From the output, identify forms and tables, then run in parallel:
    - `d365_lookup_table(table_name)` for each key table
    - `sec_lookup_role(role_name)` for each security role referenced
