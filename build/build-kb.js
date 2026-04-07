@@ -16,15 +16,20 @@ import initSqlJs from 'sql.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const DEFAULT_PACKAGES_PATHS = [
-  join(process.env.USERPROFILE || 'C:\\Users\\florian.dittgen', 'AppData', 'Local', 'Microsoft', 'Dynamics365', '10.0.2263.202', 'PackagesLocalDirectory'),
-  'C:\\Workspace\\DEV\\Metadata',
-];
+// D365FO version — update when targeting a different platform build, or pass via CLI
+const D365FO_VERSION = process.env.D365FO_VERSION || '10.0.2263.172';
 
-const DEFAULT_OUTPUT_PATH = join(
-  process.env.USERPROFILE || 'C:\\Users\\florian.dittgen',
-  '.claude', 'd365fo_kb.sqlite'
-);
+const userHome = process.env.USERPROFILE || process.env.HOME;
+
+const DEFAULT_PACKAGES_PATHS = userHome
+  ? [
+      join(userHome, 'AppData', 'Local', 'Microsoft', 'Dynamics365', D365FO_VERSION, 'PackagesLocalDirectory'),
+    ]
+  : [];
+
+const DEFAULT_OUTPUT_PATH = userHome
+  ? join(userHome, '.claude', 'd365fo_kb.sqlite')
+  : './output/d365fo_kb.sqlite';
 
 const packagesPaths = process.argv[2]
   ? process.argv[2].split(',').map(p => p.trim())
@@ -68,7 +73,8 @@ const stats = {
 function safeRead(filePath) {
   try {
     return readFileSync(filePath, 'utf-8');
-  } catch {
+  } catch (e) {
+    console.warn('Warning:', e.message);
     return null;
   }
 }
@@ -76,7 +82,8 @@ function safeRead(filePath) {
 function parseXml(content) {
   try {
     return xmlParser.parse(content);
-  } catch {
+  } catch (e) {
+    console.warn('Warning:', e.message);
     return null;
   }
 }
@@ -168,7 +175,7 @@ function findAxDirs(basePath, dirName) {
           walk(fullPath, depth + 1);
         }
       }
-    } catch { /* ignore permission errors */ }
+    } catch (e) { console.warn('Warning:', e.message); }
   }
 
   walk(basePath, 0);
@@ -206,7 +213,8 @@ function readXmlFiles(dirPath) {
         name: f.replace('.xml', ''),
         path: join(dirPath, f),
       }));
-  } catch {
+  } catch (e) {
+    console.warn('Warning:', e.message);
     return [];
   }
 }
@@ -251,7 +259,7 @@ function loadLabels() {
             findLabelFiles(join(dir, entry.name), depth + 1);
           }
         }
-      } catch { /* ignore permission errors */ }
+      } catch (e) { console.warn('Warning:', e.message); }
     }
     findLabelFiles(basePath, 0);
 
@@ -287,7 +295,7 @@ function loadLabels() {
           labelCount++;
         }
         fileCount++;
-      } catch { /* ignore read errors */ }
+      } catch (e) { console.warn('Warning:', e.message); }
     }
   }
 
@@ -654,7 +662,7 @@ function extractTable(parsed, filePath) {
           tableName, 'table', rel.RelatedTable, 'table', 'FK',
           JSON.stringify(constraints.filter(c => c.field).map(c => `${c.field}->${c.relatedField}`).join(','))
         );
-      } catch { /* ignore duplicate */ }
+      } catch (e) { console.warn('Warning:', e.message); }
     }
   }
 
@@ -668,14 +676,14 @@ function extractTable(parsed, filePath) {
       try {
         stmts.insertMethod.run('table', tableName, m.Name, sig, isStatic, sourceCode);
         stats.methods++;
-      } catch { /* ignore duplicate */ }
+      } catch (e) { console.warn('Warning:', e.message); }
     }
   }
 
   // Object path
   try {
     stmts.insertObjectPath.run('table', tableName, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e) { console.warn('Warning:', e.message); }
 }
 
 function extractEnum(parsed, filePath) {
@@ -697,7 +705,7 @@ function extractEnum(parsed, filePath) {
 
   try {
     stmts.insertObjectPath.run('enum', e.Name, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e2) { console.warn('Warning:', e2.message); }
 }
 
 function extractEdt(parsed, filePath) {
@@ -716,7 +724,7 @@ function extractEdt(parsed, filePath) {
 
   try {
     stmts.insertObjectPath.run('edt', e.Name, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e2) { console.warn('Warning:', e2.message); }
 }
 
 function extractClass(parsed, filePath) {
@@ -749,7 +757,7 @@ function extractClass(parsed, filePath) {
       try {
         stmts.insertMethod.run('class', c.Name, m.Name, sig, isStatic, sourceCode);
         stats.methods++;
-      } catch { /* ignore duplicate */ }
+      } catch (e) { console.warn('Warning:', e.message); }
     }
   }
 
@@ -757,12 +765,12 @@ function extractClass(parsed, filePath) {
   if (extendsClass) {
     try {
       stmts.insertGraphEdge.run(c.Name, 'class', extendsClass, 'class', 'extends', '');
-    } catch {}
+    } catch (e) { console.warn('Warning:', e.message); }
   }
 
   try {
     stmts.insertObjectPath.run('class', c.Name, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e) { console.warn('Warning:', e.message); }
 }
 
 function extractDataEntity(parsed, filePath) {
@@ -802,19 +810,19 @@ function extractDataEntity(parsed, filePath) {
         e.Name, f.Name, f.DataField || null,
         f.DataSource || null, f.Mandatory === 'Yes' ? 1 : 0
       );
-    } catch {}
+    } catch (e2) { console.warn('Warning:', e2.message); }
   }
 
   // Graph edge: entity -> primary table
   if (primaryTable) {
     try {
       stmts.insertGraphEdge.run(e.Name, 'entity', primaryTable, 'table', 'datasource', 'primary');
-    } catch {}
+    } catch (e2) { console.warn('Warning:', e2.message); }
   }
 
   try {
     stmts.insertObjectPath.run('entity', e.Name, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e2) { console.warn('Warning:', e2.message); }
 }
 
 function extractForm(parsed, filePath) {
@@ -839,7 +847,7 @@ function extractForm(parsed, filePath) {
     if (dataSources.length === 0) collectDataSources(f.Design?.DataSources);
     if (dataSources.length === 0) collectDataSources(f.Design?.AxFormDesign?.DataSources);
     if (dataSources.length === 0) collectDataSources(f.FormDesign?.DataSources);
-  } catch {}
+  } catch (e) { console.warn('Warning:', e.message); }
 
   stmts.insertForm.run(
     f.Name, moduleId, resolveLabel(f.Label) || null,
@@ -849,7 +857,7 @@ function extractForm(parsed, filePath) {
 
   try {
     stmts.insertObjectPath.run('form', f.Name, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e) { console.warn('Warning:', e.message); }
 }
 
 function extractView(parsed, filePath) {
@@ -867,7 +875,7 @@ function extractView(parsed, filePath) {
 
   try {
     stmts.insertObjectPath.run('view', v.Name, filePath, statSync(filePath).size);
-  } catch {}
+  } catch (e) { console.warn('Warning:', e.message); }
 }
 
 function extractSecurityRole(parsed, filePath) {
@@ -1051,11 +1059,11 @@ function buildModuleSummaries() {
     for (const row of modRows[0].values) {
       const mid = row[0];
       if (!mid) continue;
-      const tc = db.exec(`SELECT COUNT(*) FROM tables WHERE module_id='${mid}'`)[0]?.values[0][0] || 0;
-      const cc = db.exec(`SELECT COUNT(*) FROM classes WHERE module_id='${mid}'`)[0]?.values[0][0] || 0;
-      const ec = db.exec(`SELECT COUNT(*) FROM enums WHERE module_id='${mid}'`)[0]?.values[0][0] || 0;
-      const dc = db.exec(`SELECT COUNT(*) FROM data_entities WHERE module_id='${mid}'`)[0]?.values[0][0] || 0;
-      const fc = db.exec(`SELECT COUNT(*) FROM forms WHERE module_id='${mid}'`)[0]?.values[0][0] || 0;
+      const tc = db.exec(`SELECT COUNT(*) FROM tables WHERE module_id=?`, [mid])[0]?.values[0][0] || 0;
+      const cc = db.exec(`SELECT COUNT(*) FROM classes WHERE module_id=?`, [mid])[0]?.values[0][0] || 0;
+      const ec = db.exec(`SELECT COUNT(*) FROM enums WHERE module_id=?`, [mid])[0]?.values[0][0] || 0;
+      const dc = db.exec(`SELECT COUNT(*) FROM data_entities WHERE module_id=?`, [mid])[0]?.values[0][0] || 0;
+      const fc = db.exec(`SELECT COUNT(*) FROM forms WHERE module_id=?`, [mid])[0]?.values[0][0] || 0;
       stmts.insertModule.run(mid, tc, cc, ec, dc, fc);
       stats.modules++;
     }
@@ -1069,7 +1077,7 @@ function buildFtsIndex() {
   const tables = db.exec(`SELECT table_name, module_id, label, developer_doc FROM tables`);
   if (tables.length > 0) {
     for (const row of tables[0].values) {
-      const fieldsResult = db.exec(`SELECT field_name, label, edt FROM fields WHERE table_name='${row[0].replace(/'/g, "''")}'`);
+      const fieldsResult = db.exec(`SELECT field_name, label, edt FROM fields WHERE table_name=?`, [row[0]]);
       let fieldContent = '';
       if (fieldsResult.length > 0) {
         const fieldNames = fieldsResult[0].values.map(f => f[0]).join(', ');
@@ -1095,7 +1103,7 @@ function buildFtsIndex() {
   if (enums.length > 0) {
     for (const row of enums[0].values) {
       let valNames = '';
-      try { valNames = JSON.parse(row[3]).map(v => v.name).join(', '); } catch {}
+      try { valNames = JSON.parse(row[3]).map(v => v.name).join(', '); } catch (e) { console.warn('Warning:', e.message); }
       stmts.insertFts.run('enum', row[0], row[1] || '', `${row[2] || ''} ${valNames}`);
     }
   }
@@ -1114,7 +1122,7 @@ function buildFtsIndex() {
   if (formsForFts.length > 0) {
     for (const row of formsForFts[0].values) {
       let dsTables = '';
-      try { dsTables = JSON.parse(row[3] || '[]').join(', '); } catch {}
+      try { dsTables = JSON.parse(row[3] || '[]').join(', '); } catch (e) { console.warn('Warning:', e.message); }
       stmts.insertFts.run('form', row[0], row[1] || '', `${row[2] || ''} ${dsTables}`);
     }
   }
@@ -1355,9 +1363,9 @@ async function main() {
   importCuratedData();
 
   // KB metadata
-  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('d365fo_version', '10.0.2263.172')`);
-  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('build_date', '${new Date().toISOString()}')`);
-  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('packages_path', '${packagesPaths.join(';').replace(/\\/g, '\\\\')}')`);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('d365fo_version', ?)`, [D365FO_VERSION]);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('build_date', ?)`, [new Date().toISOString()]);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('packages_path', ?)`, [packagesPaths.join(';')]);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.0')`);
 
   db.run('COMMIT');
