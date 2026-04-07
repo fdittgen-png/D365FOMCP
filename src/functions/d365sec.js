@@ -11,12 +11,15 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getSecDb, query } from '../azure/shared.js';
 import { registerSecTools } from '../azure/sec-tools.js';
 
-const secServer = new McpServer({
-  name: 'd365fo-sec',
-  version: '1.0.0',
-  description: 'D365FO Security Configuration — roles, duties, privileges, permissions, and user assignments.',
-});
-registerSecTools(secServer, getSecDb());
+function createSecServer() {
+  const server = new McpServer({
+    name: 'd365fo-sec',
+    version: '1.0.0',
+    description: 'D365FO Security Configuration — roles, duties, privileges, permissions, and user assignments.',
+  });
+  registerSecTools(server, getSecDb());
+  return server;
+}
 
 app.http('d365sec', {
   methods: ['GET', 'POST', 'DELETE'],
@@ -35,10 +38,11 @@ app.http('d365sec', {
     }
 
     try {
+      const server = createSecServer();
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });
-      await secServer.connect(transport);
+      await server.connect(transport);
 
       let options;
       if (request.method === 'POST') {

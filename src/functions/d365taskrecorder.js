@@ -28,14 +28,17 @@ try {
   TEST_UI_HTML = readFileSync(join(__dirname, '..', '..', 'www', 'taskrecorder.html'), 'utf8');
 } catch { /* UI file not bundled in this deployment */ }
 
-// ── Singleton MCP server ────────────────────────────────────────────────────
+// ── MCP server factory ─────────────────────────────────────────────────────
 
-const taskrecorderServer = new McpServer({
-  name: 'd365fo-taskrecorder',
-  version: '1.0.0',
-  description: 'D365FO Task Recorder parser — converts .axtr recordings to structured Markdown for LLM consumption.',
-});
-registerTaskRecorderTools(taskrecorderServer);
+function createTaskRecorderServer() {
+  const server = new McpServer({
+    name: 'd365fo-taskrecorder',
+    version: '1.0.0',
+    description: 'D365FO Task Recorder parser — converts .axtr recordings to structured Markdown for LLM consumption.',
+  });
+  registerTaskRecorderTools(server);
+  return server;
+}
 
 // ── MCP endpoint ────────────────────────────────────────────────────────────
 
@@ -50,8 +53,9 @@ app.http('d365taskrecorder', {
     }
 
     try {
+      const server = createTaskRecorderServer();
       const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
-      await taskrecorderServer.connect(transport);
+      await server.connect(transport);
 
       let options;
       if (request.method === 'POST') {

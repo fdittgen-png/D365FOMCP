@@ -11,12 +11,15 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getKbDb } from '../azure/shared.js';
 import { registerKbTools } from '../azure/kb-tools.js';
 
-const kbServer = new McpServer({
-  name: 'd365fo-kb',
-  version: '1.0.0',
-  description: 'D365FO Knowledge Base — tables, fields, joins, enums, classes, methods, and more.',
-});
-registerKbTools(kbServer, getKbDb());
+function createKbServer() {
+  const server = new McpServer({
+    name: 'd365fo-kb',
+    version: '1.0.0',
+    description: 'D365FO Knowledge Base — tables, fields, joins, enums, classes, methods, and more.',
+  });
+  registerKbTools(server, getKbDb());
+  return server;
+}
 
 app.http('d365kb', {
   methods: ['GET', 'POST', 'DELETE'],
@@ -29,10 +32,11 @@ app.http('d365kb', {
     }
 
     try {
+      const server = createKbServer();
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });
-      await kbServer.connect(transport);
+      await server.connect(transport);
 
       // Parse body for POST, pass as parsedBody option
       let options;

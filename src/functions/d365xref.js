@@ -11,12 +11,15 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getXrefDb } from '../azure/shared.js';
 import { registerXrefTools } from '../azure/xref-tools.js';
 
-const xrefServer = new McpServer({
-  name: 'd365fo-xref',
-  version: '1.0.0',
-  description: 'D365FO Cross-Reference — find who calls, extends, implements, or references any AOT object.',
-});
-registerXrefTools(xrefServer, getXrefDb());
+function createXrefServer() {
+  const server = new McpServer({
+    name: 'd365fo-xref',
+    version: '1.0.0',
+    description: 'D365FO Cross-Reference — find who calls, extends, implements, or references any AOT object.',
+  });
+  registerXrefTools(server, getXrefDb());
+  return server;
+}
 
 app.http('d365xref', {
   methods: ['GET', 'POST', 'DELETE'],
@@ -29,10 +32,11 @@ app.http('d365xref', {
     }
 
     try {
+      const server = createXrefServer();
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });
-      await xrefServer.connect(transport);
+      await server.connect(transport);
 
       let options;
       if (request.method === 'POST') {
