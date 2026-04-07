@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #  D365FO MCP Services — Azure DevOps Pipeline
-#  Deploys infrastructure, configures RBAC, deploys code + databases,
-#  and validates the endpoints.
+#  Deploys infrastructure, deploys code + databases, and validates
+#  the endpoints.
 # ═══════════════════════════════════════════════════════════════════
 
 trigger:
@@ -58,7 +58,6 @@ variables:
   env: ${{ parameters.environment }}
   resourceGroup: '$(prefix)-$(env)-$(workload)-rg'
   functionAppName: '$(prefix)-$(env)-$(workload)-func'
-  kvName: '$(prefix)-$(env)-$(workload)-kv'
   nodeVersion: '20.x'
   # Service connection name — uses existing subscription-scoped ARM connection
   azureServiceConnection: 'Test service principal'
@@ -104,9 +103,22 @@ stages:
               fi
             displayName: 'Copy source files'
 
+          - task: Cache@2
+            inputs:
+              key: 'npm | "$(Agent.OS)" | package-lock.json'
+              path: node_modules
+              cacheHitVar: CACHE_RESTORED
+            displayName: 'Cache node_modules'
+
+          - script: |
+              echo "── Installing dependencies ──"
+              npm install --omit=dev
+            displayName: 'Install dependencies'
+            workingDirectory: '$(Build.SourcesDirectory)'
+            condition: ne(variables.CACHE_RESTORED, 'true')
+
           - script: |
               echo "── Running tests ──"
-              npm install --omit=dev
               npm test || echo "Tests require dev dependencies — skipping in production build"
             displayName: 'Run tests'
             workingDirectory: '$(Build.SourcesDirectory)'
@@ -198,81 +210,17 @@ stages:
                   --output table
 
   # ═══════════════════════════════════════════════════════════════
-  #  Stage 3: Configure — RBAC role assignments
+  #  Stage 3: Deploy — upload databases + deploy code
   # ═══════════════════════════════════════════════════════════════
-  - stage: Configure
-    displayName: 'Configure RBAC'
+  - stage: Deploy
+    displayName: 'Deploy Function App'
     dependsOn:
       - Build
       - Infrastructure
     condition: |
       and(
         succeeded('Build'),
-        eq('${{ parameters.deployInfrastructure }}', true),
-        succeeded('Infrastructure')
-      )
-    jobs:
-      - job: Roles
-        displayName: 'Assign RBAC roles'
-        pool:
-          vmImage: 'ubuntu-latest'
-        steps:
-          - task: AzureCLI@2
-            displayName: 'Assign Key Vault Secrets User role'
-            inputs:
-              azureSubscription: '$(azureServiceConnection)'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                echo "── Getting Function App managed identity ──"
-                PRINCIPAL_ID=$(az functionapp identity show \
-                  --resource-group "$(resourceGroup)" \
-                  --name "$(functionAppName)" \
-                  --query principalId -o tsv)
-
-                if [ -z "$PRINCIPAL_ID" ]; then
-                  echo "##vso[task.logissue type=error]No managed identity on $(functionAppName). Deploy infrastructure first."
-                  exit 1
-                fi
-                echo "Principal ID: $PRINCIPAL_ID"
-
-                echo "── Checking Key Vault ──"
-                KV_ID=$(az keyvault show \
-                  --name "$(kvName)" \
-                  --resource-group "$(resourceGroup)" \
-                  --query id -o tsv)
-
-                echo "── Assigning Key Vault Secrets User ──"
-                EXISTING=$(az role assignment list \
-                  --assignee "$PRINCIPAL_ID" \
-                  --role "Key Vault Secrets User" \
-                  --scope "$KV_ID" \
-                  --query "length(@)")
-
-                if [ "$EXISTING" -gt 0 ]; then
-                  echo "Role already assigned — skipping."
-                else
-                  az role assignment create \
-                    --assignee-object-id "$PRINCIPAL_ID" \
-                    --assignee-principal-type ServicePrincipal \
-                    --role "Key Vault Secrets User" \
-                    --scope "$KV_ID" \
-                    --output table
-                  echo "Role assigned successfully."
-                fi
-
-  # ═══════════════════════════════════════════════════════════════
-  #  Stage 4: Deploy — upload databases + deploy code
-  # ═══════════════════════════════════════════════════════════════
-  - stage: Deploy
-    displayName: 'Deploy Function App'
-    dependsOn:
-      - Build
-      - Configure
-    condition: |
-      and(
-        succeeded('Build'),
-        not(failed('Configure')),
+        not(failed('Infrastructure')),
         eq('${{ parameters.deployToAzure }}', true)
       )
     jobs:
@@ -438,7 +386,7 @@ stages:
                 sleep 30
 
   # ═══════════════════════════════════════════════════════════════
-  #  Stage 5: Validate — health checks and smoke tests
+  #  Stage 4: Validate — health checks and smoke tests
   # ═══════════════════════════════════════════════════════════════
   - stage: Validate
     displayName: 'Validate Deployment'
