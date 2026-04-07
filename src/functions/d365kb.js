@@ -24,7 +24,7 @@ function createKbServer() {
 app.http('d365kb', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365kb',
-  authLevel: 'function',
+  authLevel: 'anonymous',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {

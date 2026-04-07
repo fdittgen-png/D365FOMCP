@@ -24,7 +24,7 @@ function createSecServer() {
 app.http('d365sec', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365sec',
-  authLevel: 'function',
+  authLevel: 'anonymous',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {

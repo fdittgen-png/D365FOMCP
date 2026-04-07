@@ -45,7 +45,7 @@ function createTaskRecorderServer() {
 app.http('d365taskrecorder', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365taskrecorder',
-  authLevel: 'function',
+  authLevel: 'anonymous',
   handler: async (request, context) => {
     // Health check
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
