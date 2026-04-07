@@ -1,18 +1,14 @@
-# D365 MCP Services - Complete Reference
+# D365FO MCP Services Reference
 
-## 1. Overview
+## Service Inventory
 
-This document provides a comprehensive reference for all MCP (Model Context Protocol) services available in the Claude Code environment for D365 Finance & Operations development, analysis, and operations. These services provide instant access to metadata, cross-references, security models, documentation, and official Microsoft Learn content.
-
-### Service Inventory
-
-| Service | Scope | Database / Source | Tools | Purpose |
-|---------|-------|-------------------|-------|---------|
-| d365kb | Local | SQLite (412 MB, AOT metadata) | 15 | Table/field/enum/class metadata, anti-hallucination |
-| d365xref | Local | SQLite (3.3 GB, cross-references) | 13 | Who calls/uses/extends/implements what |
-| d365sec | Cloud | D365 security model | 12 | Users, roles, duties, privileges, permissions |
-| d365rag | Cloud | D365 documentation corpus | 8 | Conceptual documentation, how-to guides |
-| Microsoft Learn | Cloud | Official Microsoft docs | 3 | Microsoft/Azure documentation and code samples |
+| Service | Endpoint | Tools | Database |
+|---------|----------|-------|----------|
+| KB | /api/d365kb | 17 | SQLite (AOT metadata) |
+| XRef | /api/d365xref | 16 | SQLite (cross-references) |
+| Security | /api/d365sec | 15 | D365 security model |
+| Task Recorder | /api/d365taskrecorder | 1 | N/A (file parsing) |
+| **Total** | | **49** | |
 
 ### Architecture
 
@@ -23,17 +19,15 @@ All local MCP servers follow the same pattern:
 3. Claude Code communicates with the server via JSON-RPC over stdio
 4. Queries execute in 1-50ms (in-memory SQLite)
 
-Cloud-based services (d365sec, d365rag, Microsoft Learn) are hosted remotely and accessed via the MCP protocol through the Claude.ai infrastructure.
+Cloud-based services (d365sec) are hosted remotely and accessed via the MCP protocol through the Claude.ai infrastructure.
 
 ---
 
-## 2. D365 Knowledge Base (d365kb)
-
-### 2.1 Purpose
+## 1. Knowledge Base Tools (17)
 
 The Knowledge Base provides structured access to the entire D365 Finance & Operations Application Object Tree (AOT) metadata. It answers questions like "What fields does CustTable have?", "What are the values of enum SalesStatus?", and "Does field XYZ exist on table ABC?".
 
-### 2.2 Data Coverage
+### Data Coverage
 
 | Object Type | Count | Details |
 |-------------|-------|---------|
@@ -49,245 +43,227 @@ The Knowledge Base provides structured access to the entire D365 Finance & Opera
 | Menu Items | 17,638 | Action, display, and output menu items |
 | Modules | 165 | With aggregated object counts |
 
-### 2.3 Tool Reference
+---
 
-#### d365_lookup_table
+### d365_lookup_table
 
-**Purpose:** Complete table metadata including fields, indexes, and relations.
+Get complete metadata for a D365FO table: fields (name, type, EDT), primary key, indexes, and foreign key relations. Returns a compact Markdown summary.
 
-**Parameters:**
-- `tableName` (required) - Exact table name (e.g., "CustTable")
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table_name | string (max 500) | Yes | Table name (case-insensitive, e.g. CustInvoiceJour) |
 
-**Returns:** Table properties, all fields with types and EDTs, indexes, and outgoing relations.
-
-**When to use:** When you know the exact table name and need its full structure. This is the primary entry point for table analysis.
-
-**Example use case:** "Show me the structure of SalesTable" or "What fields does InventTable have?"
+**Example use case:** "Show me the structure of SalesTable including all fields, indexes, and relations."
 
 ---
 
-#### d365_check_field_exists
+### d365_get_join_keys
 
-**Purpose:** Validates whether a specific field exists on a table. Returns the field's type, EDT, and mandatory flag if found.
+Get the exact join fields between two D365FO tables. Critical for writing correct SQL joins.
 
-**Parameters:**
-- `tableName` (required) - Table name
-- `fieldName` (required) - Field name to check
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table1 | string (max 500) | Yes | First table name |
+| table2 | string (max 500) | Yes | Second table name |
 
-**Returns:** Field existence confirmation, data type, EDT, enum reference, and mandatory flag.
-
-**When to use:** Before writing SQL queries or making assumptions about field names. Essential for anti-hallucination - LLMs frequently invent field names that don't exist in D365.
-
-**Example use case:** "Does CustTable have a field called CreditLimit?" or validating LLM-generated SQL.
+**Example use case:** "How do I join CustInvoiceJour to CustInvoiceTrans?"
 
 ---
 
-#### d365_search
+### d365_search
 
-**Purpose:** Full-text search across all object types in the AOT.
+Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release".
 
-**Parameters:**
-- `query` (required) - Search terms
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string (max 1000) | Yes | Search query (keywords) |
+| object_type | string (max 500) | No | Optional filter: table, class, enum, entity |
+| limit | number | No | Max results (default 20) |
 
-**Returns:** Matching objects across tables, classes, enums, entities, etc. with relevance ranking.
-
-**When to use:** When you don't know the exact name of an object but know keywords related to it. Do NOT use when you already know the exact name - use `d365_lookup_table` or `d365_get_enum` directly instead.
-
-**Example use case:** "Find objects related to vendor invoicing" or "Search for anything about warehouse management".
-
----
-
-#### d365_get_enum
-
-**Purpose:** Retrieves all values of a D365 enum with their numeric codes.
-
-**Parameters:**
-- `enumName` (required) - Exact enum name (e.g., "SalesStatus")
-
-**Returns:** All enum values with Name and numeric Value.
-
-**When to use:** When you need to understand what numeric values mean in a database query, or when mapping status codes to human-readable names.
-
-**Example use case:** "What are the values of SalesStatus?" or "What does LogType value 2 mean?"
+**Example use case:** "Find objects related to vendor invoicing."
 
 ---
 
-#### d365_get_join_keys
+### d365_get_enum
 
-**Purpose:** Returns the exact join fields between two tables based on their foreign key relations.
+Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++.
 
-**Parameters:**
-- `sourceTable` (required) - First table name
-- `targetTable` (required) - Second table name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| enum_name | string (max 500) | Yes | Enum name (e.g. StatusIssue, InventTransType) |
 
-**Returns:** Join field pairs (source field = target field) for the relation between the two tables.
-
-**When to use:** When writing SQL JOIN clauses. Never guess join keys - always verify with this tool. D365 composite keys are complex and frequently wrong in LLM-generated queries.
-
-**Example use case:** "How do I join CustInvoiceJour to CustInvoiceTrans?" or "What are the join keys between SalesTable and SalesLine?"
+**Example use case:** "What are the numeric values of SalesStatus?"
 
 ---
 
-#### d365_get_class_methods
+### d365_check_field_exists
 
-**Purpose:** Lists all method signatures for a class or table.
+Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names.
 
-**Parameters:**
-- `className` (required) - Class or table name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table_name | string (max 500) | Yes | Table name |
+| field_names | array of string (max 500 each) | Yes | Array of field names to check |
 
-**Returns:** Method names with full signatures (parameters and return types).
-
-**When to use:** When exploring what methods are available on a class, or when planning an extension.
-
-**Example use case:** "What methods does SalesFormLetter have?" or "Show me the methods on CustTable".
+**Example use case:** "Verify that CustTable has fields AccountNum, CreditLimit, and CustName before writing SQL."
 
 ---
 
-#### d365_get_method_source
+### d365_get_class_methods
 
-**Purpose:** Retrieves the X++ source code of a specific method.
+Get method signatures (and optionally full X++ source code) for a D365FO class or table. Use include_source=true to get the complete method bodies.
 
-**Parameters:**
-- `className` (required) - Class or table name
-- `methodName` (required) - Method name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| name | string (max 500) | Yes | Class or table name |
+| filter | string (max 500) | No | Optional filter on method name (LIKE pattern) |
+| include_source | boolean | No | If true, include full X++ source code for each method (default false) |
+| limit | number | No | Max results (default 100) |
 
-**Returns:** Full X++ source code of the method.
-
-**When to use:** When you need to understand how a method works internally, or when planning a Chain of Command extension.
-
-**Example use case:** "Show me the source of SalesFormLetter.confirm" or "How does CustTable.find work?"
-
----
-
-#### d365_find_referencing_tables
-
-**Purpose:** Finds all tables that have a foreign key pointing to the specified table.
-
-**Parameters:**
-- `tableName` (required) - Target table name
-
-**Returns:** List of tables with their relation fields that reference the target table.
-
-**When to use:** When you need to understand the data model around a table - what child/related tables exist.
-
-**Example use case:** "What tables reference CustTable?" or "Find all child tables of SalesTable".
+**Example use case:** "What methods does SalesFormLetter have? Show me methods matching 'validate' with source code."
 
 ---
 
-#### d365_get_module_summary
+### d365_get_method_source
 
-**Purpose:** Overview of a module with key objects and counts.
+Get the full X++ source code for a specific method on a class or table. Use this for targeted code analysis when you know the exact method name.
 
-**Parameters:**
-- `moduleName` (required) - Module name (e.g., "AccountsReceivable")
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| owner_name | string (max 500) | Yes | Class or table name |
+| method_name | string (max 500) | Yes | Method name |
 
-**Returns:** Module overview with counts of tables, classes, enums, entities, and key objects.
-
-**When to use:** When exploring what a module contains, or when starting work in an unfamiliar module.
-
----
-
-#### d365_get_entity_sources
-
-**Purpose:** Maps data entity fields back to their source tables and fields.
-
-**Parameters:**
-- `entityName` (required) - Data entity name
-
-**Returns:** Field mapping showing which source table and field each entity field comes from.
-
-**When to use:** When troubleshooting data entity behavior, understanding BYOD sync, or mapping entity fields to table fields.
-
-**Example use case:** "What are the source fields for CustCustomerEntity?"
+**Example use case:** "Show me the source of SalesFormLetter.confirm."
 
 ---
 
-#### d365_sql_template
+### d365_find_referencing_tables
 
-**Purpose:** Returns pre-validated SQL query templates for common D365 queries.
+Find all tables that have foreign key relationships TO a given table. Useful for impact analysis.
 
-**Parameters:**
-- `templateName` (required) - Template identifier
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table_name | string (max 500) | Yes | Target table name |
 
-**Returns:** Complete, validated SQL query with correct table names, join keys, and field names.
-
-**When to use:** When writing SQL against D365 databases. These templates have been verified against live databases and avoid common LLM mistakes.
-
----
-
-#### d365_hallucination_check
-
-**Purpose:** Checks a query or field reference against known LLM hallucination patterns.
-
-**Parameters:**
-- `query` (required) - SQL query or field reference to validate
-
-**Returns:** List of potential hallucination issues found (non-existent fields, wrong table names, incorrect join keys).
-
-**When to use:** After generating SQL queries, before presenting them to the user. Catches common LLM mistakes like using AX2012 field names or inventing fields.
+**Example use case:** "What tables have foreign keys pointing to CustTable?"
 
 ---
 
-#### d365_field_renames
+### d365_get_module_summary
 
-**Purpose:** Maps AX2012 field names to their D365FO equivalents.
+Get a summary of a D365FO module/package: object counts and key tables/classes.
 
-**Parameters:**
-- `fieldName` (required) - Field name (AX2012 or D365)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| module_name | string (max 500) | Yes | Module name (e.g. ApplicationSuite, EngineeringChangeManagement) |
 
-**Returns:** Rename history showing old and new names.
-
-**When to use:** When working with legacy documentation or AX2012 migration code that uses old field names.
-
-**Example use case:** "Was CUSTACCOUNT renamed in D365?" or "What was DATAAREAID called in AX2012?"
+**Example use case:** "Show me an overview of the ApplicationSuite module."
 
 ---
 
-#### d365_list_modules
+### d365_get_entity_sources
 
-**Purpose:** Lists all D365 modules with their object counts.
+Get data source chain and fields for a D365FO data entity. Shows the primary table and OData name.
 
-**Returns:** Module directory with counts of tables, classes, enums, entities per module.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| entity_name | string (max 500) | Yes | Data entity name |
 
-**When to use:** For orientation - understanding what modules exist and their relative size.
-
----
-
-#### d365_graph_traverse
-
-**Purpose:** Traverses the dependency graph using recursive CTEs.
-
-**Parameters:**
-- `startNode` (required) - Starting object
-- `direction` (optional) - "upstream" or "downstream"
-- `maxDepth` (optional) - Maximum traversal depth
-
-**Returns:** Dependency tree from the starting point.
-
-**When to use:** When analyzing complex dependency chains that go beyond direct references.
+**Example use case:** "What are the source tables and fields for CustCustomerEntity?"
 
 ---
 
-#### d365_raw_sql
+### d365_sql_template
 
-**Purpose:** Executes ad-hoc read-only SQL queries against the KB SQLite database.
+Get a pre-validated SQL query template for common D365FO scenarios. Templates have correct join keys and field names.
 
-**Parameters:**
-- `sql` (required) - SQL SELECT query
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| scenario | string (max 500) | No | Search term for template (e.g. "customer invoice", "vendor", "GL entries"). Leave empty to list all. |
 
-**Returns:** Query results.
-
-**When to use:** When none of the purpose-built tools can answer your question. Prefer specific tools over raw SQL for reliability.
+**Example use case:** "Show me a SQL template for customer invoices."
 
 ---
 
-## 3. D365 Cross-References (d365xref)
+### d365_hallucination_check
 
-### 3.1 Purpose
+Check for known D365FO hallucination traps for a table. Returns common LLM mistakes and their corrections.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table_name | string (max 500) | Yes | Table name to check traps for |
+
+**Example use case:** "Check CustTable for known hallucination traps before writing SQL."
+
+---
+
+### d365_raw_sql
+
+Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...)
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| sql | string (max 50000) | Yes | SQL SELECT query to execute |
+
+**Example use case:** "SELECT table_name, field_count FROM tables WHERE module_id = 'ApplicationSuite' ORDER BY field_count DESC LIMIT 10"
+
+---
+
+### d365_graph_traverse
+
+Traverse the D365FO object dependency graph. Find related tables, class hierarchies, or entity-to-table mappings within N hops.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| start_node | string (max 500) | Yes | Starting object name |
+| max_depth | number | No | Maximum traversal depth (default 2) |
+| edge_type | string (max 500) | No | Optional edge type filter: FK, extends, datasource |
+
+**Example use case:** "Traverse the dependency graph from SalesTable up to 3 hops following FK edges."
+
+---
+
+### d365_field_renames
+
+Look up AX2012-to-D365FO field renames for a table. Prevents using obsolete field names.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table_name | string (max 500) | Yes | Table name |
+
+**Example use case:** "Were any fields renamed on CustTable from AX2012 to D365FO?"
+
+---
+
+### d365_list_modules
+
+List all D365FO modules/packages with object counts. The Level-0 directory of the entire knowledge base.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| _(none)_ | | | |
+
+**Example use case:** "List all available D365FO modules."
+
+---
+
+### d365_resolve_label
+
+Resolve D365FO label IDs (like @SYS12345) to human-readable text. Use when you encounter unresolved label references.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| label_ids | array of string (max 500 each) | Yes | Array of label IDs to resolve (e.g. ["@SYS12345", "@SYS67890"]) |
+
+**Example use case:** "Resolve labels @SYS12345 and @SYS67890 to their display text."
+
+---
+
+## 2. Cross-Reference Tools (16)
 
 The Cross-Reference service answers "who uses what" questions across the entire D365 codebase. It tracks 26.6 million references between 5.8 million named objects, covering method calls, field reads, class inheritance, interface implementation, and more.
 
-### 3.2 Data Coverage
+### Data Coverage
 
 | Metric | Count |
 |--------|-------|
@@ -296,7 +272,7 @@ The Cross-Reference service answers "who uses what" questions across the entire 
 | Modules | 390 |
 | Reference kinds | 8 |
 
-### 3.3 Reference Kinds
+### Reference Kinds
 
 | Kind ID | Name | Count | Meaning |
 |---------|------|-------|---------|
@@ -309,7 +285,7 @@ The Cross-Reference service answers "who uses what" questions across the entire 
 | 9 | Tag | 4K | Tag reference |
 | 10 | Override | 134K | Method override |
 
-### 3.4 Path Format
+### Path Format
 
 Objects are identified by paths following the pattern:
 
@@ -323,240 +299,229 @@ Objects are identified by paths following the pattern:
 /DataEntityViews/CustInvoiceJourEntity
 ```
 
-### 3.5 Tool Reference
+---
 
-#### xref_find_references
+### xref_find_references
 
-**Purpose:** Finds all objects that reference (use) the specified object. Answers "Who uses X?"
+Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query.
 
-**Parameters:**
-- `objectName` (required) - Object name (e.g., "CustTable", "SalesFormLetter")
-- `kind` (optional) - Filter by reference kind (Call, Read, Extends, etc.)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter") |
+| kind | enum: All, Call, Read, Implements, Extends, Delegate, Attribute, Override | No | Filter by reference kind (default: All) |
+| limit | number | No | Max results (default 100) |
 
-**Returns:** List of objects that reference the target, with reference kind and line numbers.
-
-**When to use:** When you need to understand who depends on an object before modifying it.
-
-**Example use case:** "Who uses CustTable?" or "What classes extend InventMovement?"
+**Example use case:** "Who uses CustTable? Show me all references filtered to Extends only."
 
 ---
 
-#### xref_find_usages
+### xref_find_usages
 
-**Purpose:** Finds all objects that the specified object uses. Answers "What does X depend on?"
+Find all objects that a given D365FO object references (what it calls/reads/extends). This is the "Uses" / outgoing references query.
 
-**Parameters:**
-- `objectName` (required) - Object name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Object name or full path |
+| kind | enum: All, Call, Read, Implements, Extends, Delegate, Attribute, Override | No | Filter by reference kind (default: All) |
+| limit | number | No | Max results (default 100) |
 
-**Returns:** List of objects referenced by the source object, with kind and location.
-
-**When to use:** When understanding what an object depends on - its outgoing dependencies.
-
-**Example use case:** "What does SalesFormLetter depend on?" or "What tables does PurchFormLetter read?"
-
----
-
-#### xref_find_method_callers
-
-**Purpose:** Finds all callers of a specific method.
-
-**Parameters:**
-- `className` (required) - Class or table name
-- `methodName` (required) - Method name
-
-**Returns:** List of methods that call the specified method, with line numbers.
-
-**When to use:** Before modifying a method's signature or behavior - understand who calls it.
-
-**Example use case:** "Who calls CustTable.find?" or "What invokes SalesFormLetter.confirm?"
+**Example use case:** "What does SalesFormLetter depend on?"
 
 ---
 
-#### xref_method_references
+### xref_find_method_callers
 
-**Purpose:** Finds all outgoing references from a specific method.
+Find all callers of a specific method on a class or table. Returns source locations with line numbers.
 
-**Parameters:**
-- `className` (required) - Class or table name
-- `methodName` (required) - Method name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Class or table name (e.g. "SalesFormLetter") |
+| method_name | string (max 500) | Yes | Method name (e.g. "construct", "run") |
+| limit | number | No | Max results (default 100) |
 
-**Returns:** All objects referenced by the method (calls, reads, etc.).
+**Example use case:** "Who calls SalesFormLetter.confirm?"
 
-**When to use:** When analyzing what a method does - its internal dependencies.
+---
+
+### xref_class_hierarchy
+
+Find the full class inheritance hierarchy -- all subclasses (recursive) or the parent chain of a given class.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| class_name | string (max 500) | Yes | Class name (e.g. "SalesFormLetter", "FormLetterServiceController") |
+| direction | enum: subclasses, parents | No | "subclasses" = who extends this (default), "parents" = what does this extend |
+
+**Example use case:** "Show all subclasses of InventMovement."
+
+---
+
+### xref_interface_implementors
+
+Find all classes that implement a given interface, including indirect implementors through inheritance.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| interface_name | string (max 500) | Yes | Interface name (e.g. "SysRunnable", "SysPackable") |
+
+**Example use case:** "Who implements SysRunnable?"
+
+---
+
+### xref_search_names
+
+Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| pattern | string (max 500) | Yes | Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%). |
+| object_type | enum: All, Classes, Tables, Forms, Enums, DataEntityViews, Edts, Views, Maps, Labels | No | Filter by object type (default: All) |
+| limit | number | No | Max results (default 50) |
+
+**Example use case:** "Find all classes starting with 'SalesForm'."
+
+---
+
+### xref_method_references
+
+Find all outgoing references from a specific method -- what objects/methods/types does it call or use.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Class or table name |
+| method_name | string (max 500) | Yes | Method name |
+| kind | enum: All, Call, Read | No | Filter: All, Call (method invocations only), Read (type/field reads only). Default: All |
+| limit | number | No | Max results (default 100) |
 
 **Example use case:** "What does SalesFormLetter.confirm call internally?"
 
 ---
 
-#### xref_class_hierarchy
+### xref_module_objects
 
-**Purpose:** Returns the full class inheritance tree (both upward and downward).
+List all top-level objects (classes, tables, forms, etc.) in a given D365FO module from the cross-reference database.
 
-**Parameters:**
-- `className` (required) - Class name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| module_name | string (max 500) | Yes | Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement") |
+| object_type | enum: All, Classes, Tables, Forms, Enums, DataEntityViews, Edts, Views | No | Filter by object type (default: All) |
+| limit | number | No | Max results (default 200) |
 
-**Returns:** Inheritance chain: ancestors (parent, grandparent, ...) and descendants (children, grandchildren, ...).
-
-**When to use:** When understanding class design patterns, planning extensions, or identifying which subclass to modify.
-
-**Example use case:** "Show the inheritance tree for InventMovement" or "What are the subclasses of FormLetterService?"
-
----
-
-#### xref_interface_implementors
-
-**Purpose:** Finds all classes that implement a specified interface.
-
-**Parameters:**
-- `interfaceName` (required) - Interface name
-
-**Returns:** List of implementing classes, including those that inherit the implementation.
-
-**When to use:** When working with interfaces to understand which concrete classes provide the implementation.
-
-**Example use case:** "Who implements SysRunnable?" or "What classes implement WHSWorkExecuteDisplay?"
+**Example use case:** "List all tables in the EngineeringChangeManagement module."
 
 ---
 
-#### xref_find_extensions
+### xref_cross_module_deps
 
-**Purpose:** Finds Chain of Command (CoC) extensions on an object.
+Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it).
 
-**Parameters:**
-- `objectName` (required) - Object to check for extensions
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| module_name | string (max 500) | Yes | Module name |
+| direction | enum: depends_on, depended_by | No | "depends_on" = modules this module references (default), "depended_by" = modules that reference this one |
+| limit | number | No | Max results (default 50) |
 
-**Returns:** Extension classes and their methods that extend the target.
-
-**When to use:** Before creating a new extension - check what already exists to avoid conflicts.
-
----
-
-#### xref_find_event_handlers
-
-**Purpose:** Finds event handlers attached to an object.
-
-**Parameters:**
-- `objectName` (required) - Object to check
-
-**Returns:** Event handler methods with their subscription type (Pre/Post/DataEvent).
-
-**When to use:** When analyzing customization patterns or before adding new event handlers.
+**Example use case:** "Which modules does EngineeringChangeManagement depend on?"
 
 ---
 
-#### xref_find_field_usages
+### xref_raw_sql
 
-**Purpose:** Finds all code locations that read or write a specific table field.
+Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).
 
-**Parameters:**
-- `tableName` (required) - Table name
-- `fieldName` (required) - Field name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| sql | string (max 50000) | Yes | SQL SELECT query (no schema prefix needed -- use table names directly) |
+| limit | number | No | Max rows (default 100) |
 
-**Returns:** List of methods that access the field, with read/write indication.
-
-**When to use:** Before modifying a field's type, removing it, or changing its behavior.
-
-**Example use case:** "Who reads SalesTable.SalesStatus?" or "What code writes to CustTable.CreditMax?"
+**Example use case:** "SELECT path FROM names WHERE path LIKE '/Classes/Sales%' LIMIT 20"
 
 ---
 
-#### xref_impact_analysis
+### xref_impact_analysis
 
-**Purpose:** Comprehensive impact analysis for modifying an object. Combines multiple reference lookups into a single impact report.
+Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.
 
-**Parameters:**
-- `objectName` (required) - Object to analyze
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Object name or path |
 
-**Returns:** Impact summary: direct consumers, transitive dependents, extensions at risk, cross-module impacts.
-
-**When to use:** Before making any significant modification to a shared object. This is the most comprehensive analysis tool.
-
-**Example use case:** "What's the impact of modifying SalesTable?" or "Impact analysis for changing InventMovement".
+**Example use case:** "What is the impact of modifying SalesTable?"
 
 ---
 
-#### xref_cross_module_deps
+### xref_list_modules
 
-**Purpose:** Analyzes cross-module dependencies for a module.
+List all D365FO modules in the XRef database with object counts.
 
-**Parameters:**
-- `moduleName` (required) - Module name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| _(none)_ | | | |
 
-**Returns:** Which modules depend on this module, and which modules this module depends on.
-
-**When to use:** When assessing the blast radius of changes to a module, or understanding module coupling.
-
----
-
-#### xref_object_summary
-
-**Purpose:** Compact summary of an object's reference profile.
-
-**Parameters:**
-- `objectName` (required) - Object name
-
-**Returns:** Reference counts by kind, top callers, top dependencies.
-
-**When to use:** Quick overview of how important/connected an object is before deep-diving.
+**Example use case:** "List all modules available in the XRef database."
 
 ---
 
-#### xref_module_objects
+### xref_object_summary
 
-**Purpose:** Lists all objects in a module.
+Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module.
 
-**Parameters:**
-- `moduleName` (required) - Module name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Object name or path |
 
-**Returns:** All objects in the module grouped by type.
-
-**When to use:** When exploring a module's contents.
-
----
-
-#### xref_search_names
-
-**Purpose:** Searches object names by pattern.
-
-**Parameters:**
-- `pattern` (required) - Search pattern (supports LIKE wildcards)
-
-**Returns:** Matching object paths.
-
-**When to use:** When looking for objects by partial name.
-
-**Example use case:** "Find all classes starting with 'SalesForm'" or "Search for methods named 'validate'".
+**Example use case:** "Give me a quick reference profile for SalesFormLetter."
 
 ---
 
-#### xref_list_modules
+### xref_find_extensions
 
-**Purpose:** Lists all modules with object counts.
+Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. Shows [ExtensionOf] classes that wrap the target with CoC methods using "next". Finds extensions by naming convention. Results may include false positives for common name prefixes.
 
-**Returns:** All modules with their object counts.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter") |
+| object_type | enum: All, Classes, Tables, Forms, DataEntityViews | No | Object type to search for extensions (default: All) |
+| limit | number | No | Max results (default 100) |
 
----
-
-#### xref_raw_sql
-
-**Purpose:** Ad-hoc read-only SQL queries against the XRef SQLite database.
-
-**Parameters:**
-- `sql` (required) - SQL SELECT query
-
-**Returns:** Query results.
-
-**When to use:** When purpose-built tools don't cover your specific cross-reference question.
+**Example use case:** "Find all CoC extensions on CustTable."
 
 ---
 
-## 4. D365 Security (d365sec)
+### xref_find_field_usages
 
-### 4.1 Purpose
+Find all code locations that read or write a specific field on a D365FO table. Returns callers with line numbers, grouped by kind (Read vs Call/Write).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| table_name | string (max 500) | Yes | Table name (e.g. "CustTable", "SalesTable") |
+| field_name | string (max 500) | Yes | Field name (e.g. "AccountNum", "InvoiceId") |
+| kind | enum: All, Read, Write | No | Filter: All, Read (field value reads), Write (field assignments). Default: All |
+| limit | number | No | Max results (default 100) |
+
+**Example use case:** "Who reads SalesTable.SalesStatus?"
+
+---
+
+### xref_find_event_handlers
+
+Find all event handlers and delegates for a D365FO object or method. Discovers [SubscribesTo], [DataEventHandler], [PreHandlerFor], [PostHandlerFor] subscriptions, and delegate definitions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| object_name | string (max 500) | Yes | Class or table name (e.g. "SalesFormLetter", "CustTable") |
+| method_name | string (max 500) | No | Optional: specific method/delegate name to find handlers for |
+| limit | number | No | Max results (default 100) |
+
+**Example use case:** "What event handlers subscribe to SalesFormLetter events?"
+
+---
+
+## 3. Security Tools (15)
 
 The Security service provides access to the D365 role-based security model. It can answer questions about user access, role assignments, duty/privilege structures, and permission traces.
 
-### 4.2 Security Model Hierarchy
+### Security Model Hierarchy
 
 ```
 User
@@ -566,412 +531,307 @@ User
         -> Permission(s) on AOT objects (Table, Form, Menu Item, etc.)
 ```
 
-### 4.3 Tool Reference
+---
 
-#### sec_lookup_user
+### sec_lookup_role
 
-**Purpose:** Retrieves a user's profile including assigned roles and companies.
+Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.
 
-**Parameters:**
-- `userId` (required) - User ID or alias
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| role_name | string (max 500) | Yes | Role name (case-insensitive) |
 
-**Returns:** User details, assigned security roles, company access.
-
-**When to use:** When auditing a specific user's access or troubleshooting "why can't user X do Y?"
+**Example use case:** "Show me the full structure of the SystemAdministrator role."
 
 ---
 
-#### sec_lookup_role
+### sec_lookup_duty
 
-**Purpose:** Retrieves a role's complete structure (duties, privileges, permissions).
+Get duty details: parent roles, privileges granted, and entry points.
 
-**Parameters:**
-- `roleName` (required) - Security role name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| duty_name | string (max 500) | Yes | Duty ID or name (case-insensitive) |
 
-**Returns:** Role definition with nested duties and privileges.
-
-**When to use:** When analyzing what a role grants access to.
-
----
-
-#### sec_lookup_duty
-
-**Purpose:** Retrieves a duty's privileges and their permissions.
-
-**Parameters:**
-- `dutyName` (required) - Security duty name
-
-**Returns:** Duty definition with privileges and their granted permissions.
+**Example use case:** "What privileges are in the SalesOrderMaintain duty?"
 
 ---
 
-#### sec_lookup_privilege
+### sec_lookup_privilege
 
-**Purpose:** Retrieves a privilege's direct permissions.
+Get privilege details: entry points with CRUD grants, parent duties, and parent roles.
 
-**Parameters:**
-- `privilegeName` (required) - Security privilege name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| privilege_name | string (max 500) | Yes | Privilege name (case-insensitive) |
 
-**Returns:** Privilege definition with object-level permissions (Read, Update, Create, Delete).
-
----
-
-#### sec_effective_permissions
-
-**Purpose:** Calculates a user's effective (flattened) permissions, optionally filtered to a specific object.
-
-**Parameters:**
-- `userId` (required) - User ID
-- `objectName` (optional) - Filter to a specific object
-
-**Returns:** Merged permissions from all roles/duties/privileges.
-
-**When to use:** To definitively answer "Can user X access object Y?" considering all role assignments.
+**Example use case:** "What entry points does the CustTableMaintain privilege grant?"
 
 ---
 
-#### sec_permission_trace
+### sec_lookup_user
 
-**Purpose:** Traces which roles, duties, and privileges grant access to a specific object.
+Get user profile: roles, company scoping, enabled status, and email.
 
-**Parameters:**
-- `objectName` (required) - AOT object name (table, form, menu item)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| user_id | string (max 500) | Yes | User ID (case-insensitive) |
 
-**Returns:** All access paths: Role -> Duty -> Privilege -> Permission on the object.
-
-**When to use:** When you need to know "Who can access CustTable?" or "Which roles grant write access to SalesTable?"
-
----
-
-#### sec_find_roles_by_duty
-
-**Purpose:** Finds all roles that contain a specific duty.
-
-**Parameters:**
-- `dutyName` (required) - Duty name
-
-**Returns:** List of roles containing the duty.
+**Example use case:** "Show me the roles and companies for user FDittgen."
 
 ---
 
-#### sec_find_roles_by_privilege
+### sec_role_hierarchy
 
-**Purpose:** Finds all roles that grant a specific privilege (directly or via duties).
+Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from).
 
-**Parameters:**
-- `privilegeName` (required) - Privilege name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| role_name | string (max 500) | Yes | Role name |
+| direction | enum: children, parents | No | Traverse direction (default: children) |
 
-**Returns:** List of roles and the path through which they grant the privilege.
-
----
-
-#### sec_find_users_by_role
-
-**Purpose:** Finds all users assigned to a specific role.
-
-**Parameters:**
-- `roleName` (required) - Role name
-
-**Returns:** List of users with the role, including company scope.
-
-**When to use:** When auditing role membership or before modifying a role.
+**Example use case:** "What sub-roles does SystemAdministrator inherit?"
 
 ---
 
-#### sec_compare_roles
+### sec_find_users_by_role
 
-**Purpose:** Side-by-side comparison of two security roles.
+Find all users assigned to a role, optionally filtered to a specific company.
 
-**Parameters:**
-- `role1` (required) - First role name
-- `role2` (required) - Second role name
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| role_name | string (max 500) | Yes | Role name |
+| company_id | string (max 500) | No | Filter to users scoped to this company |
+| limit | number | No | Max results (default 100) |
 
-**Returns:** Duties/privileges unique to each role and those shared.
-
-**When to use:** When consolidating roles, troubleshooting access differences, or planning role reorganization.
-
----
-
-#### sec_role_hierarchy
-
-**Purpose:** Shows parent and child roles for a given role.
-
-**Parameters:**
-- `roleName` (required) - Role name
-
-**Returns:** Role hierarchy tree (inherited roles and sub-roles).
+**Example use case:** "List all users with the SystemAdministrator role in company LADE."
 
 ---
 
-#### sec_company_users
+### sec_find_roles_by_duty
 
-**Purpose:** Lists all users with access to a specific company/legal entity.
+Find all roles that contain a specific duty.
 
-**Parameters:**
-- `companyId` (required) - Company/DataAreaId
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| duty_name | string (max 500) | Yes | Duty ID or name |
 
-**Returns:** Users with their roles scoped to that company.
-
----
-
-#### sec_stats
-
-**Purpose:** Overall security model statistics.
-
-**Returns:** Counts of roles, duties, privileges, users, and relationships.
+**Example use case:** "Which roles contain the SalesOrderMaintain duty?"
 
 ---
 
-#### sec_search
+### sec_find_roles_by_privilege
 
-**Purpose:** Search across security objects (roles, duties, privileges).
+Find all roles that grant a privilege (via the duty chain or directly).
 
-**Parameters:**
-- `query` (required) - Search terms
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| privilege_name | string (max 500) | Yes | Privilege name |
 
-**Returns:** Matching security objects.
-
----
-
-#### sec_raw_sql
-
-**Purpose:** Ad-hoc read-only SQL against the security database.
-
-**Parameters:**
-- `sql` (required) - SQL SELECT query
+**Example use case:** "Which roles grant the CustTableMaintain privilege?"
 
 ---
 
-## 5. D365 RAG (d365rag)
+### sec_company_users
 
-### 5.1 Purpose
+List all users and their roles for a specific company (legal entity).
 
-The RAG (Retrieval-Augmented Generation) service provides access to a curated corpus of D365 Finance & Operations documentation. It answers conceptual questions about how D365 features work, configuration guides, and best practices.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| company_id | string (max 500) | Yes | Company / legal entity ID (e.g., LADE, TAB) |
+| limit | number | No | Max results (default 200) |
 
-### 5.2 Tool Reference
-
-#### rag_ask
-
-**Purpose:** Ask a natural language question about D365 and get an answer grounded in documentation.
-
-**Parameters:**
-- `question` (required) - Natural language question
-
-**Returns:** Answer synthesized from relevant documentation passages, with source references.
-
-**When to use:** For conceptual questions about D365 functionality, configuration, or best practices. Do NOT use for metadata questions (use d365kb for those).
-
-**Example use case:** "How does BYOD incremental sync work?" or "What is the purpose of number sequences in D365?"
+**Example use case:** "List all users and their roles in company LADE."
 
 ---
 
-#### rag_search
+### sec_permission_trace
 
-**Purpose:** Keyword search across the documentation corpus.
+Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object.
 
-**Parameters:**
-- `query` (required) - Search keywords
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| role_name | string (max 500) | Yes | Role name |
+| object_name | string (max 500) | No | Filter to entry points targeting this object |
+| limit | number | No | Max results (default 500) |
 
-**Returns:** Matching document passages with relevance scores.
-
-**When to use:** When `rag_ask` doesn't find what you need, or when you want to browse related documents.
-
----
-
-#### rag_list_documents
-
-**Purpose:** Lists all documents in the RAG corpus.
-
-**Returns:** Document inventory with titles and categories.
+**Example use case:** "Trace how SalesClerk gets access to CustTable."
 
 ---
 
-#### rag_lookup_document
+### sec_compare_roles
 
-**Purpose:** Retrieves a specific document by ID.
+Compare two roles side by side: shared vs unique duties and privileges.
 
-**Parameters:**
-- `documentId` (required) - Document identifier
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| role1 | string (max 500) | Yes | First role name |
+| role2 | string (max 500) | Yes | Second role name |
 
-**Returns:** Full document content.
-
-**When to use:** When you found a document via search and want to read the complete content.
-
----
-
-#### rag_list_categories
-
-**Purpose:** Lists all document categories in the corpus.
-
-**Returns:** Category names with document counts.
+**Example use case:** "Compare SalesClerk and SalesManager to see what permissions differ."
 
 ---
 
-#### rag_search_by_category
+### sec_effective_permissions
 
-**Purpose:** Searches within a specific category.
+Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name or company.
 
-**Parameters:**
-- `category` (required) - Category name
-- `query` (optional) - Additional search terms
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| user_id | string (max 500) | No | User ID (provide this OR role_name) |
+| role_name | string (max 500) | No | Role name (provide this OR user_id) |
+| object_name | string (max 500) | No | Filter to entry points for this object |
+| limit | number | No | Max results (default 200) |
 
-**Returns:** Matching documents within the category.
-
----
-
-#### rag_get_image_info
-
-**Purpose:** Retrieves information about images referenced in documents.
-
-**Parameters:**
-- `imageId` (required) - Image identifier
-
-**Returns:** Image metadata and description.
+**Example use case:** "Can user FDittgen access CustTable? Show effective permissions."
 
 ---
 
-#### rag_raw_sql
+### sec_search
 
-**Purpose:** Ad-hoc SQL against the RAG database.
+Full-text search across roles, duties, privileges, and users.
 
-**Parameters:**
-- `sql` (required) - SQL SELECT query
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| query | string (max 500) | Yes | Search keywords |
+| object_type | enum: role, duty, privilege, user | No | Filter: role, duty, privilege, user |
+| limit | number | No | Max results (default 20) |
 
----
-
-## 6. Microsoft Learn
-
-### 6.1 Purpose
-
-The Microsoft Learn service provides structured access to official Microsoft and Azure documentation. It returns authoritative, up-to-date content directly from Microsoft's documentation platform.
-
-### 6.2 Tool Reference
-
-#### microsoft_docs_search
-
-**Purpose:** Search official Microsoft documentation and return concise, high-quality content chunks.
-
-**Parameters:**
-- `query` (required) - Search terms
-
-**Returns:** Up to 10 content chunks (max 500 tokens each) with title, URL, and excerpt.
-
-**When to use:** First step when looking for Microsoft/Azure documentation. Provides breadth.
-
-**Example use case:** "D365 data entity batch processing" or "Azure SQL BACPAC export"
+**Example use case:** "Search for security objects related to 'inventory'."
 
 ---
 
-#### microsoft_code_sample_search
+### sec_stats
 
-**Purpose:** Search for code snippets and examples in Microsoft documentation.
+Get summary statistics for the security database: role counts, user counts, company count, etc.
 
-**Parameters:**
-- `query` (required) - Search terms
-- `language` (optional) - Filter by programming language
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| _(none)_ | | | |
 
-**Returns:** Up to 20 relevant code samples.
-
-**When to use:** When you need practical code examples for Microsoft/Azure technologies.
-
-**Example use case:** "X++ Chain of Command example" or "PowerShell Azure SQL export"
+**Example use case:** "How many roles, duties, and users are in the security database?"
 
 ---
 
-#### microsoft_docs_fetch
+### sec_raw_sql
 
-**Purpose:** Fetch and convert a full Microsoft Learn documentation page to markdown.
+Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)
 
-**Parameters:**
-- `url` (required) - Microsoft Learn URL
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| sql | string (max 50000) | Yes | SQL SELECT query |
 
-**Returns:** Full page content in clean markdown format.
-
-**When to use:** After `microsoft_docs_search` identifies a relevant page, use this to get the complete content. Required for detailed tutorials, prerequisites, or when search results are incomplete.
-
-**Example use case:** Fetching the full BACPAC export tutorial or a complete API reference page.
+**Example use case:** "SELECT role_name, license_type FROM roles WHERE permission_type = 'Grant' ORDER BY role_name"
 
 ---
 
-## 7. Orchestration Workflows
+## 4. Task Recorder Tools (1)
 
-### 7.1 Design Principles
+The Task Recorder service parses D365FO Task Recorder (.axtr) files and returns structured Markdown documents describing recorded test cases.
+
+---
+
+### taskrecorder_to_markdown
+
+Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown document describing the recorded test case. The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), data sources, security roles, navigation flow, and scope tree.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| file_content | string (max 20000000) | Yes | Base64-encoded contents of the .axtr file |
+| file_name | string (max 255) | No | Original filename (used in the generated footer, default: "recording.axtr") |
+
+**Example use case:** "Parse this task recording to extract the steps, forms, and security roles involved."
+
+---
+
+## 5. Orchestration Workflows
+
+### 5.1 Design Principles
 
 1. **Parallel first**: Run independent tool calls simultaneously to minimize latency
 2. **Narrow before wide**: Use specific tools before broad searches
 3. **KB for metadata, RAG for concepts**: Never mix them up
 4. **Stop early**: If the first call answers the question, skip remaining calls
 
-### 7.2 Table Deep Dive
+### 5.2 Table Deep Dive
 
 For comprehensive table analysis, run in parallel:
 
-- `d365_lookup_table` (fields, indexes, relations)
-- `xref_object_summary` (who references this table)
-- `xref_find_extensions` (CoC extensions)
-- `d365_find_referencing_tables` (incoming foreign keys)
+- `d365_lookup_table(table_name)` -- fields, indexes, relations
+- `xref_object_summary(object_name)` -- who references this table
+- `xref_find_extensions(object_name)` -- CoC extensions
+- `d365_find_referencing_tables(table_name)` -- incoming foreign keys
 
-Then resolve any enum-type fields with `d365_get_enum`.
+Then resolve any enum-type fields with `d365_get_enum(enum_name)`.
 
-### 7.3 Field Investigation
-
-Run in parallel:
-
-- `d365_check_field_exists` (confirms existence and type)
-- `d365_field_renames` (AX2012 rename history)
-- `xref_find_field_usages` (who reads/writes the field)
-
-Then `d365_get_enum` if the field is an enum type.
-
-### 7.4 Impact Analysis
+### 5.3 Field Investigation
 
 Run in parallel:
 
-- `xref_impact_analysis` (downstream dependency tree)
-- `d365_lookup_table` or `d365_get_class_methods` (current structure)
-- `xref_find_extensions` (existing CoC extensions)
-- `xref_find_event_handlers` (event handler subscriptions)
+- `d365_check_field_exists(table_name, field_names)` -- confirms existence and type
+- `d365_field_renames(table_name)` -- AX2012 rename history
+- `xref_find_field_usages(table_name, field_name)` -- who reads/writes the field
 
-Then `xref_cross_module_deps` if cross-module impacts are detected.
+Then `d365_get_enum(enum_name)` if the field is an enum type.
 
-### 7.5 Method Tracing
-
-Run in parallel:
-
-- `xref_find_method_callers` (incoming calls)
-- `xref_method_references` (outgoing calls)
-- `d365_get_method_source` (source code)
-
-### 7.6 Security Audit
-
-For a user: `sec_lookup_user` + `sec_effective_permissions` in parallel.
-
-For a role: `sec_lookup_role` + `sec_role_hierarchy` + `sec_find_users_by_role` in parallel.
-
-For an object: `sec_permission_trace` + `d365_lookup_table` in parallel.
-
-### 7.7 Research
-
-Run all in parallel:
-
-- `rag_ask` (D365 documentation)
-- `microsoft_docs_search` (official Microsoft docs)
-- `d365_search` (AOT metadata objects)
-
-Then conditionally: `microsoft_docs_fetch` for full articles, `microsoft_code_sample_search` for code examples.
-
-### 7.8 Class Extensibility Analysis
+### 5.4 Impact Analysis
 
 Run in parallel:
 
-- `d365_get_class_methods` (available methods)
-- `xref_class_hierarchy` (inheritance chain)
-- `xref_find_extensions` (existing CoC extensions)
-- `xref_find_event_handlers` (existing event handlers)
+- `xref_impact_analysis(object_name)` -- downstream dependency tree
+- `d365_lookup_table(table_name)` or `d365_get_class_methods(name)` -- current structure
+- `xref_find_extensions(object_name)` -- existing CoC extensions
+- `xref_find_event_handlers(object_name)` -- event handler subscriptions
+
+Then `xref_cross_module_deps(module_name)` if cross-module impacts are detected.
+
+### 5.5 Method Tracing
+
+Run in parallel:
+
+- `xref_find_method_callers(object_name, method_name)` -- incoming calls
+- `xref_method_references(object_name, method_name)` -- outgoing calls
+- `d365_get_method_source(owner_name, method_name)` -- source code
+
+### 5.6 Security Audit
+
+For a user: `sec_lookup_user(user_id)` + `sec_effective_permissions(user_id)` in parallel.
+
+For a role: `sec_lookup_role(role_name)` + `sec_role_hierarchy(role_name)` + `sec_find_users_by_role(role_name)` in parallel.
+
+For an object: `sec_permission_trace(role_name, object_name)` + `d365_lookup_table(table_name)` in parallel.
+
+### 5.7 Class Extensibility Analysis
+
+Run in parallel:
+
+- `d365_get_class_methods(name)` -- available methods
+- `xref_class_hierarchy(class_name)` -- inheritance chain
+- `xref_find_extensions(object_name)` -- existing CoC extensions
+- `xref_find_event_handlers(object_name)` -- existing event handlers
+
+### 5.8 Task Recording Analysis
+
+1. `taskrecorder_to_markdown(file_content)` -- parse the .axtr file
+2. From the output, identify forms and tables, then run in parallel:
+   - `d365_lookup_table(table_name)` for each key table
+   - `sec_lookup_role(role_name)` for each security role referenced
 
 ---
 
-## 8. Slash Commands
+## 6. Anti-Patterns
+
+| Anti-Pattern | Why it is Inefficient | Correct Approach |
+|-------------|----------------------|------------------|
+| Using `d365_search` when you know the exact name | Wastes a call, returns fuzzy results | Use `d365_lookup_table` or `d365_get_enum` directly |
+| Sequential calls when parallel is possible | Doubles or triples latency | Batch independent calls in one message |
+| Using `d365_raw_sql` for standard lookups | Fragile, schema may change | Use purpose-built tools |
+| Calling `d365_hallucination_check` on every query | Unnecessary overhead | Only when generating SQL or unsure about field names |
+| Calling `sec_lookup_user` for role questions | Wrong starting point | Use `sec_lookup_role` for role analysis |
+
+---
+
+## 7. Slash Commands
 
 The following slash commands are available to invoke predefined multi-tool workflows:
 
@@ -988,39 +848,6 @@ Each command orchestrates 3-5 parallel MCP calls, synthesizes results, and offer
 
 ---
 
-## 9. Anti-Patterns
-
-| Anti-Pattern | Why it is Inefficient | Correct Approach |
-|-------------|----------------------|------------------|
-| Using `d365_search` when you know the exact name | Wastes a call, returns fuzzy results | Use `d365_lookup_table` or `d365_get_enum` directly |
-| Sequential calls when parallel is possible | Doubles or triples latency | Batch independent calls in one message |
-| Using `d365_raw_sql` for standard lookups | Fragile, schema may change | Use purpose-built tools |
-| Using `rag_ask` for metadata questions | RAG contains docs, not metadata | Use KB tools for tables/fields/enums |
-| Using `microsoft_docs_fetch` without searching first | May fetch the wrong page | Search first, then fetch the best match |
-| Calling `d365_hallucination_check` on every query | Unnecessary overhead | Only when generating SQL or unsure about field names |
-| Calling `sec_lookup_user` for role questions | Wrong starting point | Use `sec_lookup_role` for role analysis |
-
----
-
-## 10. Service Availability and Dependencies
-
-### Local Services (d365kb, d365xref)
-
-- **Require:** Node.js v18+, SQLite databases built from D365 metadata
-- **Startup:** Loaded into memory when Claude Code session starts
-- **Memory:** KB ~200 MB, XRef ~3.5 GB
-- **Latency:** 1-50ms per query
-- **Rebuild trigger:** D365FO version update, new custom models
-
-### Cloud Services (d365sec, d365rag, Microsoft Learn)
-
-- **Require:** Active internet connection, Claude.ai infrastructure
-- **Availability:** Dependent on remote service uptime
-- **Latency:** 100-2000ms per query (network dependent)
-- **Data currency:** Updated independently of local builds
-
----
-
-*Document version: 1.0*
-*Date: 2026-03-26*
+*Document version: 2.0*
+*Date: 2026-04-07*
 *Author: Florian Dittgen*

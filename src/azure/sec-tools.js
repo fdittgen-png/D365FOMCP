@@ -444,12 +444,14 @@ export function registerSecTools(server, db) {
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
       if (!role.length) return textResult(`Role "${role_name}" not found.`);
 
-      const params = [role[0].role_id];
       let objectFilter = '';
-      if (object_name) {
-        objectFilter = ' AND ep.object_name LIKE ?';
-        params.push(`%${object_name.trim()}%`);
-      }
+      const objParam = object_name ? `%${object_name.trim()}%` : null;
+      if (objParam) objectFilter = ' AND ep.object_name LIKE ?';
+
+      // Params: CTE base (1), first branch objectFilter (0-1), second branch objectFilter (0-1), LIMIT (1)
+      const params = [role[0].role_id];
+      if (objParam) params.push(objParam);
+      if (objParam) params.push(objParam);
       params.push(limit);
 
       const trace = q(`
@@ -458,8 +460,8 @@ export function registerSecTools(server, db) {
           UNION ALL
           SELECT rs.child_role_id FROM role_subroles rs JOIN role_tree rt ON rs.parent_role_id = rt.role_id
         )
-        SELECT rd.permission_type, d.duty_id,
-               dp.privilege_name,
+        SELECT rd.permission_type, d.duty_id as duty_id,
+               dp.privilege_name as priv_name,
                ep.object_type, ep.object_name,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke
@@ -472,7 +474,7 @@ export function registerSecTools(server, db) {
         WHERE 1=1 ${objectFilter}
         UNION ALL
         SELECT 'Grant' as permission_type, '(direct)' as duty_id,
-               rp.privilege_name,
+               rp.privilege_name as priv_name,
                ep.object_type, ep.object_name,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke
@@ -480,7 +482,7 @@ export function registerSecTools(server, db) {
         JOIN role_direct_privileges rp ON rp.role_id = rtree.role_id
         JOIN privilege_entry_points ep ON ep.privilege_name = rp.privilege_name
         WHERE 1=1 ${objectFilter}
-        ORDER BY duty_id, privilege_name, object_name
+        ORDER BY 2, 3, 5
         LIMIT ?
       `, params);
 
@@ -492,7 +494,7 @@ export function registerSecTools(server, db) {
       let out = `# Permission Trace: ${role[0].role_name}\n`;
       out += `${trace.length} entry point(s)` + (object_name ? ` matching "${object_name}"` : '') + '\n\n';
       out += formatMarkdownTable(trace, [
-        'duty_id', 'privilege_name', 'object_type', 'object_name',
+        'duty_id', 'priv_name', 'object_type', 'object_name',
         'grant_read', 'grant_create', 'grant_update', 'grant_delete',
       ]);
       if (trace.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
@@ -624,15 +626,20 @@ export function registerSecTools(server, db) {
       `, roleIds);
       for (const r of expanded) allRoleIds.add(r.role_id);
 
-      const allPlaceholders = [...allRoleIds].map(() => '?').join(',');
-      const params = [...allRoleIds];
+      const allRoleArr = [...allRoleIds];
+      const allPlaceholders = allRoleArr.map(() => '?').join(',');
 
       let objectFilter = '';
-      if (object_name) {
-        objectFilter = ' AND ep.object_name LIKE ?';
-        params.push(`%${object_name.trim()}%`);
-      }
-      params.push(limit);
+      const objParam = object_name ? `%${object_name.trim()}%` : null;
+      if (objParam) objectFilter = ' AND ep.object_name LIKE ?';
+
+      // Params must match placeholder order: first IN + filter, second IN + filter, LIMIT
+      const queryParams = [];
+      queryParams.push(...allRoleArr);
+      if (objParam) queryParams.push(objParam);
+      queryParams.push(...allRoleArr);
+      if (objParam) queryParams.push(objParam);
+      queryParams.push(limit);
 
       const perms = q(`
         SELECT DISTINCT ep.object_name, ep.object_type,
@@ -653,7 +660,7 @@ export function registerSecTools(server, db) {
         WHERE rp.role_id IN (${allPlaceholders}) ${objectFilter}
         ORDER BY object_name
         LIMIT ?
-      `, [...params, ...allRoleIds, ...(object_name ? [`%${object_name.trim()}%`] : [])]);
+      `, queryParams);
 
       if (!perms.length) {
         return textResult(`No effective permissions found for ${heading}` +

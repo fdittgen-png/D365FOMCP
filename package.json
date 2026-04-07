@@ -14,6 +14,8 @@
     "start:taskrecorder": "node src/local/mcp-server-taskrecorder.js",
     "test": "node --test test/*.test.js",
     "test:sec": "node --test test/sec-tools.test.js",
+    "test:kb": "node --test test/kb-tools.test.js",
+    "test:xref": "node --test test/xref-tools.test.js",
     "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
     "start:azure": "func start"
   },
