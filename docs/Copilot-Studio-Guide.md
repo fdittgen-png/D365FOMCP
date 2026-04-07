@@ -135,6 +135,8 @@ sec_stats
 taskrecorder_to_markdown
 ```
 
+> **Note:** The `taskrecorder_to_markdown` tool accepts either a `file_url` (preferred for Copilot Studio file uploads — the server fetches the file directly) or `file_content` (base64-encoded, for CLI/programmatic use). When a user uploads an `.axtr` file in Copilot Studio, the agent should pass the attachment URL via `file_url`.
+
 > **Tip:** For role-specific agents that don't need all tools, see `skills/copilot-studio/` for minimal `knownTools` lists per role.
 
 ### 3.3 How to Edit `knownTools`

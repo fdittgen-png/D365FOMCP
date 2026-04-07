@@ -212,7 +212,7 @@ Health check: `GET` to any endpoint returns `{ name, version, status }`.
 
 | Tool | Description |
 |------|-------------|
-| `taskrecorder_to_markdown` | Parse a D365FO Task Recorder (.axtr) file into structured Markdown (forms, steps, validations, security roles, scope tree) |
+| `taskrecorder_to_markdown` | Parse a D365FO Task Recorder (.axtr) file into structured Markdown. Accepts `file_url` (for Copilot Studio uploads) or `file_content` (base64). |
 
 A browser-based test UI is available at `/api/d365taskrecorder/upload` for drag-and-drop file parsing with live Markdown preview.
 
