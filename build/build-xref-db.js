@@ -8,7 +8,7 @@
  *
  * Defaults:
  *   serverInstance = (LocalDB)\MSSQLLocalDB
- *   databaseName   = XRef_tbg-dev3651002263172
+ *   databaseName   = (required) set via XREF_DATABASE env var or CLI argument
  *   outputPath     = %USERPROFILE%\.claude\d365fo_xref.sqlite
  */
 
@@ -24,12 +24,19 @@ const Database = require('better-sqlite3');
 // ── Configuration ──────────────────────────────────────────────────────────────
 
 const DEFAULT_INSTANCE = String.raw`(LocalDB)\MSSQLLocalDB`;
-const DEFAULT_DATABASE = 'XRef_tbg-dev3651002263172';
-const DEFAULT_OUTPUT = join(process.env.USERPROFILE, '.claude', 'd365fo_xref.sqlite');
+const DEFAULT_DATABASE = process.env.XREF_DATABASE || '';
+const DEFAULT_OUTPUT = join(process.env.USERPROFILE || process.env.HOME || '.', '.claude', 'd365fo_xref.sqlite');
 
 const serverInstance = process.argv[2] || DEFAULT_INSTANCE;
 const database = process.argv[3] || DEFAULT_DATABASE;
 const outputPath = process.argv[4] || DEFAULT_OUTPUT;
+
+if (!database) {
+  console.error('ERROR: No database name provided.');
+  console.error('Set the XREF_DATABASE environment variable or pass it as the second CLI argument.');
+  console.error('Usage: node build-xref-db.js [serverInstance] <databaseName> [outputPath]');
+  process.exit(1);
+}
 
 // ── Kind enum mapping ──────────────────────────────────────────────────────────
 
@@ -107,7 +114,7 @@ function getLocalDbPipe(instanceName) {
     const pipeMatch = output.match(/Instance pipe name:\s*(np:\\.+)/i);
     if (pipeMatch) return pipeMatch[1];
   } catch (e) {
-    // Ignore
+    console.warn('Warning:', e.message);
   }
 
   try {
@@ -116,7 +123,7 @@ function getLocalDbPipe(instanceName) {
     const pipeMatch = output2.match(/Instance pipe name:\s*(np:\\.+)/i);
     if (pipeMatch) return pipeMatch[1];
   } catch (e) {
-    // Ignore
+    console.warn('Warning:', e.message);
   }
 
   return null;
