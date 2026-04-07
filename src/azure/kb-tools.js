@@ -31,14 +31,14 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_lookup_table',
     'Get complete metadata for a D365FO table: fields (name, type, EDT), primary key, indexes, and foreign key relations. Returns a compact Markdown summary.',
-    { table_name: z.string().describe('Table name (case-insensitive, e.g. CustInvoiceJour)') },
+    { table_name: z.string().max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)') },
     async ({ table_name }) => {
       const tn = table_name.trim();
 
       // Table header
       const tbl = q(
         `SELECT table_name, module_id, label, table_group, save_per_company, cache_lookup, clustered_index, replacement_key
-         FROM tables WHERE table_name = ?`, [tn]
+         FROM tables WHERE table_name = ? COLLATE NOCASE`, [tn]
       );
 
       if (!tbl || tbl.length === 0) {
@@ -99,7 +99,7 @@ export function registerKbTools(server, db) {
               .filter(c => c.field && c.relatedField)
               .map(c => `${c.field}->${c.relatedField}`)
               .join(', ');
-          } catch {}
+          } catch (e) { console.warn('KB tool warning:', e.message); }
           out += `|${row.relation_name}|${row.related_table}|${joinFields}|${row.relationship_type || '-'}|${row.on_delete || '-'}|\n`;
         }
       } else {
@@ -118,8 +118,11 @@ export function registerKbTools(server, db) {
           try {
             const constraints = JSON.parse(row.constraints_json || '[]');
             joinFields = constraints.filter(c => c.field).map(c => `${c.field}->${c.relatedField}`).join(', ');
-          } catch {}
+          } catch (e) { console.warn('KB tool warning:', e.message); }
           out += `|${row.source_table}|${row.relation_name}|${joinFields}|\n`;
+        }
+        if (inRelResult.length >= 20) {
+          out += `\n> ⚠️ Showing first 20 results. There may be more — increase limit or refine your query.`;
         }
       }
 
@@ -132,8 +135,8 @@ export function registerKbTools(server, db) {
     'd365_get_join_keys',
     'Get the exact join fields between two D365FO tables. Critical for writing correct SQL joins.',
     {
-      table1: z.string().describe('First table name'),
-      table2: z.string().describe('Second table name'),
+      table1: z.string().max(500).describe('First table name'),
+      table2: z.string().max(500).describe('Second table name'),
     },
     async ({ table1, table2 }) => {
       const t1 = table1.trim();
@@ -143,8 +146,8 @@ export function registerKbTools(server, db) {
       const result = q(
         `SELECT source_table, related_table, relation_name, constraints_json, relationship_type
          FROM relations
-         WHERE (source_table = ? AND related_table = ?)
-            OR (source_table = ? AND related_table = ?)`,
+         WHERE (source_table = ? COLLATE NOCASE AND related_table = ? COLLATE NOCASE)
+            OR (source_table = ? COLLATE NOCASE AND related_table = ? COLLATE NOCASE)`,
         [t1, t2, t2, t1]
       );
 
@@ -155,7 +158,7 @@ export function registerKbTools(server, db) {
       let out = `## Join Keys: ${t1} <-> ${t2}\n\n`;
       for (const row of result) {
         let constraints = [];
-        try { constraints = JSON.parse(row.constraints_json || '[]'); } catch {}
+        try { constraints = JSON.parse(row.constraints_json || '[]'); } catch (e) { console.warn('KB tool warning:', e.message); }
 
         const fieldPairs = constraints
           .filter(c => c.field && c.relatedField)
@@ -173,7 +176,7 @@ export function registerKbTools(server, db) {
       // Also check hallucination traps for these tables
       const traps = q(
         `SELECT wrong_value, correct_value, explanation FROM hallucination_traps
-         WHERE (object_name = ? OR object_name = ?)
+         WHERE (object_name = ? COLLATE NOCASE OR object_name = ? COLLATE NOCASE)
            AND trap_type = 'wrong_join'`,
         [t1, t2]
       );
@@ -193,8 +196,8 @@ export function registerKbTools(server, db) {
     'd365_search',
     'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release".',
     {
-      query: z.string().describe('Search query (keywords)'),
-      object_type: z.string().optional().describe('Optional filter: table, class, enum, entity'),
+      query: z.string().max(1000).describe('Search query (keywords)'),
+      object_type: z.string().max(500).optional().describe('Optional filter: table, class, enum, entity'),
       limit: z.number().optional().default(20).describe('Max results (default 20)'),
     },
     async ({ query: searchQuery, object_type, limit }) => {
@@ -214,7 +217,7 @@ export function registerKbTools(server, db) {
                  WHERE ${likeParts.join(' AND ')}`;
 
       if (object_type) {
-        sql += ` AND object_type = ?`;
+        sql += ` AND object_type = ? COLLATE NOCASE`;
         likeParams.push(object_type);
       }
 
@@ -231,7 +234,11 @@ export function registerKbTools(server, db) {
       if (!rows || rows.length === 0) {
         return textResult(`No results for "${searchQuery}".`);
       }
-      return textResult(formatMarkdownTable(rows));
+      let out = formatMarkdownTable(rows);
+      if (rows.length >= lim) {
+        out += `\n\n> ⚠️ Showing first ${lim} results. There may be more — increase limit or refine your query.`;
+      }
+      return textResult(out);
     }
   );
 
@@ -239,11 +246,11 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_get_enum',
     'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++.',
-    { enum_name: z.string().describe('Enum name (e.g. StatusIssue, InventTransType)') },
+    { enum_name: z.string().max(500).describe('Enum name (e.g. StatusIssue, InventTransType)') },
     async ({ enum_name }) => {
       const en = enum_name.trim();
       const result = q(
-        `SELECT enum_name, module_id, label, values_json FROM enums WHERE enum_name = ?`, [en]
+        `SELECT enum_name, module_id, label, values_json FROM enums WHERE enum_name = ? COLLATE NOCASE`, [en]
       );
 
       if (!result || result.length === 0) {
@@ -265,7 +272,7 @@ export function registerKbTools(server, db) {
         for (const v of values) {
           out += `|${v.name}|${v.value ?? ''}|${v.label || ''}|\n`;
         }
-      } catch {}
+      } catch (e) { console.warn('KB tool warning:', e.message); }
 
       return textResult(out);
     }
@@ -276,15 +283,15 @@ export function registerKbTools(server, db) {
     'd365_check_field_exists',
     'Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names.',
     {
-      table_name: z.string().describe('Table name'),
-      field_names: z.array(z.string()).describe('Array of field names to check'),
+      table_name: z.string().max(500).describe('Table name'),
+      field_names: z.array(z.string().max(500)).describe('Array of field names to check'),
     },
     async ({ table_name, field_names }) => {
       const tn = table_name.trim();
 
       // Verify table exists
       const tblCheck = q(
-        `SELECT table_name FROM tables WHERE table_name = ?`, [tn]
+        `SELECT table_name FROM tables WHERE table_name = ? COLLATE NOCASE`, [tn]
       );
       if (!tblCheck || tblCheck.length === 0) {
         return textResult(`Table "${tn}" not found in knowledge base.`);
@@ -339,22 +346,24 @@ export function registerKbTools(server, db) {
     'd365_get_class_methods',
     'Get method signatures (and optionally full X++ source code) for a D365FO class or table. Use include_source=true to get the complete method bodies.',
     {
-      name: z.string().describe('Class or table name'),
-      filter: z.string().optional().describe('Optional filter on method name (LIKE pattern)'),
+      name: z.string().max(500).describe('Class or table name'),
+      filter: z.string().max(500).optional().describe('Optional filter on method name (LIKE pattern)'),
       include_source: z.boolean().optional().default(false).describe('If true, include full X++ source code for each method'),
+      limit: z.number().optional().default(100).describe('Max results (default 100)'),
     },
-    async ({ name, filter, include_source }) => {
+    async ({ name, filter, include_source, limit }) => {
       const n = name.trim();
 
       let sql = `SELECT owner_type, method_name, signature, is_static${include_source ? ', source_code' : ''}
-                 FROM methods WHERE owner_name = ?`;
+                 FROM methods WHERE owner_name = ? COLLATE NOCASE`;
       const params = [n];
 
       if (filter) {
         sql += ` AND method_name LIKE ?`;
         params.push(`%${filter}%`);
       }
-      sql += ` ORDER BY is_static DESC, method_name`;
+      sql += ` ORDER BY is_static DESC, method_name LIMIT ?`;
+      params.push(limit);
 
       const result = q(sql, params);
       if (!result || result.length === 0) {
@@ -367,7 +376,7 @@ export function registerKbTools(server, db) {
       // Also show class hierarchy info
       if (ownerType === 'class') {
         const cls = q(
-          `SELECT extends_class, implements_list, is_abstract FROM classes WHERE class_name = ?`, [n]
+          `SELECT extends_class, implements_list, is_abstract FROM classes WHERE class_name = ? COLLATE NOCASE`, [n]
         );
         if (cls.length > 0) {
           const { extends_class: ext, implements_list: impl, is_abstract: abs } = cls[0];
@@ -398,6 +407,10 @@ export function registerKbTools(server, db) {
         }
       }
 
+      if (result.length >= limit) {
+        out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      }
+
       return textResult(out);
     }
   );
@@ -407,8 +420,8 @@ export function registerKbTools(server, db) {
     'd365_get_method_source',
     'Get the full X++ source code for a specific method on a class or table. Use this for targeted code analysis when you know the exact method name.',
     {
-      owner_name: z.string().describe('Class or table name'),
-      method_name: z.string().describe('Method name'),
+      owner_name: z.string().max(500).describe('Class or table name'),
+      method_name: z.string().max(500).describe('Method name'),
     },
     async ({ owner_name, method_name }) => {
       const on = owner_name.trim();
@@ -417,7 +430,7 @@ export function registerKbTools(server, db) {
       const result = q(
         `SELECT owner_type, owner_name, method_name, signature, is_static, source_code
          FROM methods
-         WHERE owner_name = ? AND method_name = ?`,
+         WHERE owner_name = ? COLLATE NOCASE AND method_name = ? COLLATE NOCASE`,
         [on, mn]
       );
 
@@ -452,13 +465,13 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_find_referencing_tables',
     'Find all tables that have foreign key relationships TO a given table. Useful for impact analysis.',
-    { table_name: z.string().describe('Target table name') },
+    { table_name: z.string().max(500).describe('Target table name') },
     async ({ table_name }) => {
       const tn = table_name.trim();
 
       const result = q(
         `SELECT source_table, relation_name, constraints_json, relationship_type
-         FROM relations WHERE related_table = ?
+         FROM relations WHERE related_table = ? COLLATE NOCASE
          ORDER BY source_table`, [tn]
       );
 
@@ -474,7 +487,7 @@ export function registerKbTools(server, db) {
         try {
           const constraints = JSON.parse(row.constraints_json || '[]');
           joinFields = constraints.filter(c => c.field).map(c => `${c.field}->${c.relatedField}`).join(', ');
-        } catch {}
+        } catch (e) { console.warn('KB tool warning:', e.message); }
         out += `|${row.source_table}|${row.relation_name}|${joinFields}|${row.relationship_type || '-'}|\n`;
       }
 
@@ -487,12 +500,12 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_get_module_summary',
     'Get a summary of a D365FO module/package: object counts and key tables/classes.',
-    { module_name: z.string().describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)') },
+    { module_name: z.string().max(500).describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)') },
     async ({ module_name }) => {
       const mn = module_name.trim();
 
       const mod = q(
-        `SELECT * FROM modules WHERE module_id = ?`, [mn]
+        `SELECT * FROM modules WHERE module_id = ? COLLATE NOCASE`, [mn]
       );
 
       if (!mod || mod.length === 0) {
@@ -533,12 +546,12 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_get_entity_sources',
     'Get data source chain and fields for a D365FO data entity. Shows the primary table and OData name.',
-    { entity_name: z.string().describe('Data entity name') },
+    { entity_name: z.string().max(500).describe('Data entity name') },
     async ({ entity_name }) => {
       const en = entity_name.trim();
       const result = q(
         `SELECT entity_name, module_id, label, public_name, public_collection, is_public, primary_table, staging_table, config_key
-         FROM data_entities WHERE entity_name = ?`, [en]
+         FROM data_entities WHERE entity_name = ? COLLATE NOCASE`, [en]
       );
 
       if (!result || result.length === 0) {
@@ -577,7 +590,7 @@ export function registerKbTools(server, db) {
     'd365_sql_template',
     'Get a pre-validated SQL query template for common D365FO scenarios. Templates have correct join keys and field names.',
     {
-      scenario: z.string().optional().describe('Search term for template (e.g. "customer invoice", "vendor", "GL entries"). Leave empty to list all.'),
+      scenario: z.string().max(500).optional().describe('Search term for template (e.g. "customer invoice", "vendor", "GL entries"). Leave empty to list all.'),
     },
     async ({ scenario }) => {
       let sql, params;
@@ -611,13 +624,13 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_hallucination_check',
     'Check for known D365FO hallucination traps for a table. Returns common LLM mistakes and their corrections.',
-    { table_name: z.string().describe('Table name to check traps for') },
+    { table_name: z.string().max(500).describe('Table name to check traps for') },
     async ({ table_name }) => {
       const tn = table_name.trim();
 
       const result = q(
         `SELECT trap_type, wrong_value, correct_value, explanation
-         FROM hallucination_traps WHERE object_name = ?`, [tn]
+         FROM hallucination_traps WHERE object_name = ? COLLATE NOCASE`, [tn]
       );
 
       if (!result || result.length === 0) {
@@ -638,8 +651,8 @@ export function registerKbTools(server, db) {
   // ── 13. d365_raw_sql ──────────────────────────────────────────────────────
   server.tool(
     'd365_raw_sql',
-    'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows.',
-    { sql: z.string().describe('SQL SELECT query to execute') },
+    'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...)',
+    { sql: z.string().max(50000).describe('SQL SELECT query to execute') },
     async ({ sql: rawSql }) => {
       const trimmed = rawSql.trim();
       const upper = trimmed.toUpperCase();
@@ -650,7 +663,7 @@ export function registerKbTools(server, db) {
       }
 
       // Block data-modifying keywords anywhere in the query
-      const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'GRANT', 'REVOKE', 'ATTACH'];
+      const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'ATTACH', 'DETACH'];
       for (const kw of forbidden) {
         const regex = new RegExp(`\\b${kw}\\b`, 'i');
         if (regex.test(trimmed)) {
@@ -665,7 +678,11 @@ export function registerKbTools(server, db) {
           safeSql += ' LIMIT 500';
         }
         const rows = q(safeSql);
-        return textResult(formatMarkdownTable(rows));
+        let out = formatMarkdownTable(rows);
+        if (rows.length >= 500) {
+          out += `\n\n> ⚠️ Showing first 500 results. There may be more — increase limit or refine your query.`;
+        }
+        return textResult(out);
       } catch (err) {
         return textResult(`Error: ${err.message}`);
       }
@@ -677,9 +694,9 @@ export function registerKbTools(server, db) {
     'd365_graph_traverse',
     'Traverse the D365FO object dependency graph. Find related tables, class hierarchies, or entity-to-table mappings within N hops.',
     {
-      start_node: z.string().describe('Starting object name'),
+      start_node: z.string().max(500).describe('Starting object name'),
       max_depth: z.number().optional().default(2).describe('Maximum traversal depth (default 2)'),
-      edge_type: z.string().optional().describe('Optional edge type filter: FK, extends, datasource'),
+      edge_type: z.string().max(500).optional().describe('Optional edge type filter: FK, extends, datasource'),
     },
     async ({ start_node, max_depth, edge_type }) => {
       const sn = start_node.trim();
@@ -709,7 +726,7 @@ export function registerKbTools(server, db) {
         WITH RECURSIVE connected(node, node_type, edge, detail, depth) AS (
           SELECT target_node, target_type, edge_type, edge_detail, 1
           FROM graph_edges
-          WHERE source_node = ? ${edgeFilter}
+          WHERE source_node = ? COLLATE NOCASE ${edgeFilter}
           UNION ALL
           SELECT g.target_node, g.target_type, g.edge_type, g.edge_detail, c.depth + 1
           FROM graph_edges g
@@ -733,6 +750,10 @@ export function registerKbTools(server, db) {
         out += `|${row.node}|${row.node_type}|${row.edge}|${row.depth}|\n`;
       }
 
+      if (result.length >= 100) {
+        out += `\n\n> ⚠️ Showing first 100 results. There may be more — increase limit or refine your query.`;
+      }
+
       return textResult(out);
     }
   );
@@ -741,12 +762,12 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_field_renames',
     'Look up AX2012-to-D365FO field renames for a table. Prevents using obsolete field names.',
-    { table_name: z.string().describe('Table name') },
+    { table_name: z.string().max(500).describe('Table name') },
     async ({ table_name }) => {
       const tn = table_name.trim();
       const result = q(
         `SELECT ax2012_name AS "AX2012", d365fo_name AS "D365FO"
-         FROM field_renames WHERE table_name = ?`, [tn]
+         FROM field_renames WHERE table_name = ? COLLATE NOCASE`, [tn]
       );
       if (!result || result.length === 0) {
         return textResult(`No known field renames for "${tn}".`);
@@ -782,7 +803,7 @@ export function registerKbTools(server, db) {
     'd365_resolve_label',
     'Resolve D365FO label IDs (like @SYS12345) to human-readable text. Use when you encounter unresolved label references.',
     {
-      label_ids: z.array(z.string()).describe('Array of label IDs to resolve (e.g. ["@SYS12345", "@SYS67890"])'),
+      label_ids: z.array(z.string().max(500)).describe('Array of label IDs to resolve (e.g. ["@SYS12345", "@SYS67890"])'),
     },
     async ({ label_ids }) => {
       if (!label_ids || label_ids.length === 0) {
