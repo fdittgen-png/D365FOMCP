@@ -19,5 +19,9 @@ const server = new McpServer({
 
 registerTaskRecorderTools(server);
 
+// Graceful shutdown
+process.on('SIGINT', () => { process.exit(0); });
+process.on('SIGTERM', () => { process.exit(0); });
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

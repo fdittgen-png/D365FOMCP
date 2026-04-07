@@ -11,12 +11,17 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getXrefDb } from '../azure/shared.js';
 import { registerXrefTools } from '../azure/xref-tools.js';
 
-app.setup({ enableHttpStream: true });
+const xrefServer = new McpServer({
+  name: 'd365fo-xref',
+  version: '1.0.0',
+  description: 'D365FO Cross-Reference — find who calls, extends, implements, or references any AOT object.',
+});
+registerXrefTools(xrefServer, getXrefDb());
 
 app.http('d365xref', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365xref',
-  authLevel: 'anonymous',
+  authLevel: 'function',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
@@ -24,20 +29,10 @@ app.http('d365xref', {
     }
 
     try {
-      const db = getXrefDb();
-
-      const server = new McpServer({
-        name: 'd365fo-xref',
-        version: '1.0.0',
-        description: 'D365FO Cross-Reference — find who calls, extends, implements, or references any AOT object.',
-      });
-
-      registerXrefTools(server, db);
-
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });
-      await server.connect(transport);
+      await xrefServer.connect(transport);
 
       let options;
       if (request.method === 'POST') {

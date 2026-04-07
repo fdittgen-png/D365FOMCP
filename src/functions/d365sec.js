@@ -11,12 +11,17 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getSecDb, query } from '../azure/shared.js';
 import { registerSecTools } from '../azure/sec-tools.js';
 
-app.setup({ enableHttpStream: true });
+const secServer = new McpServer({
+  name: 'd365fo-sec',
+  version: '1.0.0',
+  description: 'D365FO Security Configuration — roles, duties, privileges, permissions, and user assignments.',
+});
+registerSecTools(secServer, getSecDb());
 
 app.http('d365sec', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365sec',
-  authLevel: 'anonymous',
+  authLevel: 'function',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
@@ -30,20 +35,10 @@ app.http('d365sec', {
     }
 
     try {
-      const db = getSecDb();
-
-      const server = new McpServer({
-        name: 'd365fo-sec',
-        version: '1.0.0',
-        description: 'D365FO Security Configuration — roles, duties, privileges, permissions, and user assignments.',
-      });
-
-      registerSecTools(server, db);
-
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });
-      await server.connect(transport);
+      await secServer.connect(transport);
 
       let options;
       if (request.method === 'POST') {

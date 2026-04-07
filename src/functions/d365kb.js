@@ -11,12 +11,17 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getKbDb } from '../azure/shared.js';
 import { registerKbTools } from '../azure/kb-tools.js';
 
-app.setup({ enableHttpStream: true });
+const kbServer = new McpServer({
+  name: 'd365fo-kb',
+  version: '1.0.0',
+  description: 'D365FO Knowledge Base — tables, fields, joins, enums, classes, methods, and more.',
+});
+registerKbTools(kbServer, getKbDb());
 
 app.http('d365kb', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365kb',
-  authLevel: 'anonymous',
+  authLevel: 'function',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
@@ -24,20 +29,10 @@ app.http('d365kb', {
     }
 
     try {
-      const db = getKbDb();
-
-      const server = new McpServer({
-        name: 'd365fo-kb',
-        version: '1.0.0',
-        description: 'D365FO Knowledge Base — tables, fields, joins, enums, classes, methods, and more.',
-      });
-
-      registerKbTools(server, db);
-
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });
-      await server.connect(transport);
+      await kbServer.connect(transport);
 
       // Parse body for POST, pass as parsedBody option
       let options;
