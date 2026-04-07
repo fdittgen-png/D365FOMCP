@@ -18,21 +18,31 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
 
-app.setup({ enableHttpStream: true });
-
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
 
 // ── Load test UI HTML at startup ────────────────────────────────────────────
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_UI_HTML = readFileSync(join(__dirname, '..', '..', 'www', 'taskrecorder.html'), 'utf8');
+let TEST_UI_HTML = '<html><body>Upload UI not available</body></html>';
+try {
+  TEST_UI_HTML = readFileSync(join(__dirname, '..', '..', 'www', 'taskrecorder.html'), 'utf8');
+} catch { /* UI file not bundled in this deployment */ }
+
+// ── Singleton MCP server ────────────────────────────────────────────────────
+
+const taskrecorderServer = new McpServer({
+  name: 'd365fo-taskrecorder',
+  version: '1.0.0',
+  description: 'D365FO Task Recorder parser — converts .axtr recordings to structured Markdown for LLM consumption.',
+});
+registerTaskRecorderTools(taskrecorderServer);
 
 // ── MCP endpoint ────────────────────────────────────────────────────────────
 
 app.http('d365taskrecorder', {
   methods: ['GET', 'POST', 'DELETE'],
   route: 'd365taskrecorder',
-  authLevel: 'anonymous',
+  authLevel: 'function',
   handler: async (request, context) => {
     // Health check
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
@@ -40,16 +50,8 @@ app.http('d365taskrecorder', {
     }
 
     try {
-      const server = new McpServer({
-        name: 'd365fo-taskrecorder',
-        version: '1.0.0',
-        description: 'D365FO Task Recorder parser — converts .axtr recordings to structured Markdown for LLM consumption.',
-      });
-
-      registerTaskRecorderTools(server);
-
       const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
-      await server.connect(transport);
+      await taskrecorderServer.connect(transport);
 
       let options;
       if (request.method === 'POST') {

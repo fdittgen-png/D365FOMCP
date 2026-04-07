@@ -3,6 +3,9 @@
  * Imports all function registrations so the runtime discovers them.
  */
 
+import { app } from '@azure/functions';
+app.setup({ enableHttpStream: true });
+
 import './d365kb.js';
 import './d365xref.js';
 import './d365sec.js';

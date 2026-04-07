@@ -32,8 +32,8 @@ const dbPath = process.argv[2] || DEFAULT_DB_PATH;
 
 const db = new Database(dbPath, { readonly: true });
 db.pragma('journal_mode = OFF');
-db.pragma('cache_size = -200000');
-db.pragma('mmap_size = 3221225472');
+db.pragma('cache_size = -50000');
+db.pragma('mmap_size = 67108864');
 
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
@@ -44,6 +44,10 @@ const server = new McpServer({
 });
 
 registerSecTools(server, db);
+
+// Graceful shutdown
+process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });
+process.on('SIGTERM', () => { try { db.close(); } catch {} process.exit(0); });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
