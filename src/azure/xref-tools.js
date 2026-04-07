@@ -9,6 +9,11 @@
 import { query, formatMarkdownTable, textResult } from './shared.js';
 import { z } from 'zod';
 
+/** Convert array-of-arrays rows to array-of-objects using column names as keys. */
+function rowsToObjects(columns, arrayRows) {
+  return arrayRows.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+}
+
 // Kind lookup (same values as the local SQLite version)
 const KIND_NAMES = {
   1: 'Call', 2: 'Read', 3: 'Implements', 4: 'Extends',
@@ -82,7 +87,7 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query.',
     {
-      object_name: z.string().describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
+      object_name: z.string().max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
       kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
         .describe('Filter by reference kind. Default: All'),
       limit: z.number().default(100).describe('Max results (default 100)'),
@@ -119,12 +124,14 @@ export function registerXrefTools(server, db) {
         row.source, kindName(row.kind), row.line ?? '', row.col ?? '', row.module,
       ]);
 
-      const header = `**References TO** \`${targetPath}\` (${rows.length} results):\n\n`;
       const columns = ['Source', 'Kind', 'Line', 'Col', 'Module'];
+      const header = `**References TO** \`${targetPath}\` (${rows.length} results):\n\n`;
       const table = rows.length === 0
-        ? '_No results_'
-        : formatTable(columns, rows);
-      return textResult(header + table);
+        ? 'No results found.'
+        : formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      let out = header + table;
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -135,7 +142,7 @@ export function registerXrefTools(server, db) {
     'xref_find_usages',
     'Find all objects that a given D365FO object references (what it calls/reads/extends). This is the "Uses" / outgoing references query.',
     {
-      object_name: z.string().describe('Object name or full path'),
+      object_name: z.string().max(500).describe('Object name or full path'),
       kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
         .describe('Filter by reference kind'),
       limit: z.number().default(100).describe('Max results (default 100)'),
@@ -172,8 +179,11 @@ export function registerXrefTools(server, db) {
         row.target, kindName(row.kind), row.line ?? '', row.col ?? '', row.module,
       ]);
 
+      const columns = ['Target', 'Kind', 'Line', 'Col', 'Module'];
       const header = `**References FROM** \`${sourcePath}\` (${rows.length} results):\n\n`;
-      return textResult(header + formatTable(['Target', 'Kind', 'Line', 'Col', 'Module'], rows));
+      let out = header + formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -184,8 +194,8 @@ export function registerXrefTools(server, db) {
     'xref_find_method_callers',
     'Find all callers of a specific method on a class or table. Returns source locations with line numbers.',
     {
-      object_name: z.string().describe('Class or table name (e.g. "SalesFormLetter")'),
-      method_name: z.string().describe('Method name (e.g. "construct", "run")'),
+      object_name: z.string().max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
+      method_name: z.string().max(500).describe('Method name (e.g. "construct", "run")'),
       limit: z.number().default(100).describe('Max results'),
     },
     async ({ object_name, method_name, limit }) => {
@@ -224,8 +234,11 @@ export function registerXrefTools(server, db) {
         row.path, row.line ?? '', row.col ?? '', row.module,
       ]);
 
+      const columns = ['Caller', 'Line', 'Col', 'Module'];
       const header = `**Callers of** \`${targetPath}\` (${rows.length} results):\n\n`;
-      return textResult(header + formatTable(['Caller', 'Line', 'Col', 'Module'], rows));
+      let out = header + formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -236,7 +249,7 @@ export function registerXrefTools(server, db) {
     'xref_class_hierarchy',
     'Find the full class inheritance hierarchy — all subclasses (recursive) or the parent chain of a given class.',
     {
-      class_name: z.string().describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
+      class_name: z.string().max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
       direction: z.enum(['subclasses', 'parents']).default('subclasses')
         .describe('"subclasses" = who extends this (default), "parents" = what does this extend'),
     },
@@ -268,8 +281,9 @@ export function registerXrefTools(server, db) {
           row.depth,
         ]);
 
+        const columns = ['Class', 'Depth'];
         const header = `**Subclasses of** \`${class_name}\` (${rows.length} classes):\n\n`;
-        return textResult(header + formatTable(['Class', 'Depth'], rows));
+        return textResult(header + formatMarkdownTable(rowsToObjects(columns, rows), columns));
       } else {
         // Walk up the extends chain
         const result = q(`
@@ -291,8 +305,9 @@ export function registerXrefTools(server, db) {
           row.depth,
         ]);
 
+        const columns = ['Class', 'Level'];
         const header = `**Inheritance chain for** \`${class_name}\`:\n\n`;
-        return textResult(header + formatTable(['Class', 'Level'], rows));
+        return textResult(header + formatMarkdownTable(rowsToObjects(columns, rows), columns));
       }
     },
   );
@@ -304,7 +319,7 @@ export function registerXrefTools(server, db) {
     'xref_interface_implementors',
     'Find all classes that implement a given interface, including indirect implementors through inheritance.',
     {
-      interface_name: z.string().describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
+      interface_name: z.string().max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
     },
     async ({ interface_name }) => {
       let targetId = null;
@@ -343,8 +358,9 @@ export function registerXrefTools(server, db) {
         row.depth === 1 ? 'Direct' : `Inherited (depth ${row.depth})`,
       ]);
 
+      const columns = ['Class', 'Type'];
       const header = `**Implementors of** \`${interface_name}\` (${rows.length} classes):\n\n`;
-      return textResult(header + formatTable(['Class', 'Type'], rows));
+      return textResult(header + formatMarkdownTable(rowsToObjects(columns, rows), columns));
     },
   );
 
@@ -355,7 +371,7 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name.',
     {
-      pattern: z.string().describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
+      pattern: z.string().max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
       object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
         .default('All').describe('Filter by object type'),
       limit: z.number().default(50).describe('Max results'),
@@ -386,7 +402,10 @@ export function registerXrefTools(server, db) {
       `, params);
 
       const rows = result.map(row => [row.path, row.module]);
-      return textResult(formatTable(['Path', 'Module'], rows));
+      const columns = ['Path', 'Module'];
+      let out = formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -397,8 +416,8 @@ export function registerXrefTools(server, db) {
     'xref_method_references',
     'Find all outgoing references from a specific method — what objects/methods/types does it call or use.',
     {
-      object_name: z.string().describe('Class or table name'),
-      method_name: z.string().describe('Method name'),
+      object_name: z.string().max(500).describe('Class or table name'),
+      method_name: z.string().max(500).describe('Method name'),
       kind: z.enum(['All', 'Call', 'Read']).default('All').describe('Filter: All, Call (method invocations only), Read (type/field reads only)'),
       limit: z.number().default(100).describe('Max results'),
     },
@@ -442,8 +461,11 @@ export function registerXrefTools(server, db) {
         row.path, kindName(row.kind), row.line ?? '', row.col ?? '',
       ]);
 
+      const columns = ['Target', 'Kind', 'Line', 'Col'];
       const header = `**Outgoing references from** \`${sourcePath}\` (${rows.length}):\n\n`;
-      return textResult(header + formatTable(['Target', 'Kind', 'Line', 'Col'], rows));
+      let out = header + formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -454,7 +476,7 @@ export function registerXrefTools(server, db) {
     'xref_module_objects',
     'List all top-level objects (classes, tables, forms, etc.) in a given D365FO module from the cross-reference database.',
     {
-      module_name: z.string().describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
+      module_name: z.string().max(500).describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
       object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views'])
         .default('All').describe('Filter by object type'),
       limit: z.number().default(200).describe('Max results'),
@@ -485,8 +507,11 @@ export function registerXrefTools(server, db) {
       `, params);
 
       const rows = result.map(row => [row.path, row.provider]);
+      const columns = ['Path', 'Provider'];
       const header = `**Objects in** \`${module_name}\` (${rows.length}):\n\n`;
-      return textResult(header + formatTable(['Path', 'Provider'], rows));
+      let out = header + formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -497,7 +522,7 @@ export function registerXrefTools(server, db) {
     'xref_cross_module_deps',
     'Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it).',
     {
-      module_name: z.string().describe('Module name'),
+      module_name: z.string().max(500).describe('Module name'),
       direction: z.enum(['depends_on', 'depended_by']).default('depends_on')
         .describe('"depends_on" = modules this module references, "depended_by" = modules that reference this one'),
       limit: z.number().default(50).describe('Max results'),
@@ -538,9 +563,12 @@ export function registerXrefTools(server, db) {
       const result = q(sql, params);
       const rows = result.map(row => [row.module, row.ref_count]);
 
+      const columns = ['Module', 'Reference Count'];
       const dirLabel = direction === 'depends_on' ? 'depends on' : 'is depended on by';
       const header = `**\`${module_name}\`** ${dirLabel} (${rows.length} modules):\n\n`;
-      return textResult(header + formatTable(['Module', 'Reference Count'], rows));
+      let out = header + formatMarkdownTable(rowsToObjects(columns, rows), columns);
+      if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+      return textResult(out);
     },
   );
 
@@ -551,18 +579,22 @@ export function registerXrefTools(server, db) {
     'xref_raw_sql',
     'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).',
     {
-      sql: z.string().describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
+      sql: z.string().max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
       limit: z.number().default(100).describe('Max rows'),
     },
     async ({ sql: userSql, limit }) => {
       const trimmed = userSql.trim().replace(/;+$/, '');
-      if (!/^\s*(SELECT|PRAGMA)/i.test(trimmed)) {
-        return textResult('ERROR: Only SELECT/PRAGMA queries are allowed.');
+      if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
+        return textResult('ERROR: Only SELECT/WITH/PRAGMA queries are allowed.');
       }
 
       // Reject dangerous keywords
-      if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|ATTACH)\b/i.test(trimmed)) {
-        return textResult('ERROR: Only SELECT queries are allowed.');
+      const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER', 'CREATE', 'TRUNCATE', 'ATTACH', 'DETACH'];
+      for (const kw of forbidden) {
+        const regex = new RegExp(`\\b${kw}\\b`, 'i');
+        if (regex.test(trimmed)) {
+          return textResult(`ERROR: Keyword "${kw}" is not allowed in read-only queries.`);
+        }
       }
 
       // Add LIMIT if not already present
@@ -573,8 +605,10 @@ export function registerXrefTools(server, db) {
 
       try {
         const result = q(finalSql);
-        if (!result || result.length === 0) return textResult('_No results_');
-        return textResult(formatMarkdownTable(result));
+        if (!result || result.length === 0) return textResult('No results found.');
+        let out = formatMarkdownTable(result);
+        if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
+        return textResult(out);
       } catch (err) {
         return textResult(`SQL Error: ${err.message}`);
       }
@@ -586,20 +620,18 @@ export function registerXrefTools(server, db) {
   // ─────────────────────────────────────────────────────────────────────────
   server.tool(
     'xref_impact_analysis',
-    'Analyze the impact of changing a D365FO object: find all direct and indirect dependents grouped by type and module. Essential before modifying shared classes, tables, or methods.',
+    'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.',
     {
-      object_name: z.string().describe('Object name or path'),
-      depth: z.number().default(1).describe('Depth of analysis (1=direct only, 2=include dependents of dependents). Max 3.'),
+      object_name: z.string().max(500).describe('Object name or path'),
     },
-    async ({ object_name, depth }) => {
+    async ({ object_name }) => {
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found.`);
       const { id: targetId, path: targetPath } = resolved;
-      const maxDepth = Math.min(depth, 3);
 
       // Also include sub-paths (methods, fields) of this object as targets
       const subPaths = q(
-        'SELECT id FROM names WHERE path LIKE ?',
+        'SELECT id FROM names WHERE path LIKE ? LIMIT 500',
         [targetPath + '/%']);
       const allTargetIds = [targetId, ...subPaths.map(r => r.id)];
 
@@ -641,7 +673,8 @@ export function registerXrefTools(server, db) {
 
       text += `\n**Referencing objects:**\n\n`;
       const rows = result.slice(0, 100).map(row => [row.path, kindName(row.kind), row.module]);
-      text += formatTable(['Source', 'Kind', 'Module'], rows);
+      const columns = ['Source', 'Kind', 'Module'];
+      text += formatMarkdownTable(rowsToObjects(columns, rows), columns);
 
       return textResult(text);
     },
@@ -664,7 +697,8 @@ export function registerXrefTools(server, db) {
       `);
 
       const rows = result.map(row => [row.module, row.object_count]);
-      return textResult(formatTable(['Module', 'Object Count'], rows));
+      const columns = ['Module', 'Object Count'];
+      return textResult(formatMarkdownTable(rowsToObjects(columns, rows), columns));
     },
   );
 
@@ -675,7 +709,7 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     'Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module.',
     {
-      object_name: z.string().describe('Object name or path'),
+      object_name: z.string().max(500).describe('Object name or path'),
     },
     async ({ object_name }) => {
       const resolved = resolveNameId(q, object_name);
@@ -745,9 +779,9 @@ export function registerXrefTools(server, db) {
   // ─────────────────────────────────────────────────────────────────────────
   server.tool(
     'xref_find_extensions',
-    'Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. Shows [ExtensionOf] classes that wrap the target with CoC methods using "next".',
+    'Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. Shows [ExtensionOf] classes that wrap the target with CoC methods using "next". Finds extensions by naming convention. Results may include false positives for common name prefixes.',
     {
-      object_name: z.string().describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
+      object_name: z.string().max(500).describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
       object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'DataEntityViews']).default('All')
         .describe('Object type to search for extensions. Default: All'),
       limit: z.number().default(100).describe('Max results'),
@@ -823,47 +857,41 @@ export function registerXrefTools(server, db) {
 
       if (cocClasses.length > 0) {
         text += `**CoC / [ExtensionOf] Classes (${cocClasses.length}):**\n\n`;
-        text += formatTable(
-          ['Class', 'Module'],
-          cocClasses.map(r => [r.path.replace('/Classes/', ''), r.module])
-        );
+        const cols = ['Class', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, cocClasses.map(r => [r.path.replace('/Classes/', ''), r.module])), cols);
         text += '\n\n';
       }
 
       if (tableExtensions.length > 0) {
         text += `**Table Extensions (${tableExtensions.length}):**\n\n`;
-        text += formatTable(
-          ['Extension', 'Module'],
-          tableExtensions.map(r => [r.path, r.module])
-        );
+        const cols = ['Extension', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, tableExtensions.map(r => [r.path, r.module])), cols);
         text += '\n\n';
       }
 
       if (formExtensions.length > 0) {
         text += `**Form Extensions (${formExtensions.length}):**\n\n`;
-        text += formatTable(
-          ['Extension', 'Module'],
-          formExtensions.map(r => [r.path, r.module])
-        );
+        const cols = ['Extension', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, formExtensions.map(r => [r.path, r.module])), cols);
         text += '\n\n';
       }
 
       if (entityExtensions.length > 0) {
         text += `**Entity Extensions (${entityExtensions.length}):**\n\n`;
-        text += formatTable(
-          ['Extension', 'Module'],
-          entityExtensions.map(r => [r.path, r.module])
-        );
+        const cols = ['Extension', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, entityExtensions.map(r => [r.path, r.module])), cols);
         text += '\n\n';
       }
 
       if (other.length > 0) {
         text += `**Other (${other.length}):**\n\n`;
-        text += formatTable(['Path', 'Module'], other.map(r => [r.path, r.module]));
+        const cols = ['Path', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, other.map(r => [r.path, r.module])), cols);
         text += '\n\n';
       }
 
       text += `\n**Total:** ${result.length} extensions`;
+      if (result.length >= limit) text += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
       return textResult(text);
     },
   );
@@ -875,8 +903,8 @@ export function registerXrefTools(server, db) {
     'xref_find_field_usages',
     'Find all code locations that read or write a specific field on a D365FO table. Returns callers with line numbers, grouped by kind (Read vs Call/Write).',
     {
-      table_name: z.string().describe('Table name (e.g. "CustTable", "SalesTable")'),
-      field_name: z.string().describe('Field name (e.g. "AccountNum", "InvoiceId")'),
+      table_name: z.string().max(500).describe('Table name (e.g. "CustTable", "SalesTable")'),
+      field_name: z.string().max(500).describe('Field name (e.g. "AccountNum", "InvoiceId")'),
       kind: z.enum(['All', 'Read', 'Write']).default('All')
         .describe('Filter: All, Read (field value reads), Write (field assignments). Default: All'),
       limit: z.number().default(100).describe('Max results'),
@@ -936,30 +964,25 @@ export function registerXrefTools(server, db) {
 
       if (reads.length > 0) {
         text += `**Reads (${reads.length}):**\n\n`;
-        text += formatTable(
-          ['Source', 'Line', 'Col', 'Module'],
-          reads.map(r => [r.source, r.line ?? '', r.col ?? '', r.module])
-        );
+        const cols = ['Source', 'Line', 'Col', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, reads.map(r => [r.source, r.line ?? '', r.col ?? '', r.module])), cols);
         text += '\n\n';
       }
 
       if (writes.length > 0) {
         text += `**Writes/Calls (${writes.length}):**\n\n`;
-        text += formatTable(
-          ['Source', 'Line', 'Col', 'Module'],
-          writes.map(r => [r.source, r.line ?? '', r.col ?? '', r.module])
-        );
+        const cols = ['Source', 'Line', 'Col', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, writes.map(r => [r.source, r.line ?? '', r.col ?? '', r.module])), cols);
         text += '\n\n';
       }
 
       if (other.length > 0) {
         text += `**Other references (${other.length}):**\n\n`;
-        text += formatTable(
-          ['Source', 'Kind', 'Line', 'Module'],
-          other.map(r => [r.source, kindName(r.kind), r.line ?? '', r.module])
-        );
+        const cols = ['Source', 'Kind', 'Line', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, other.map(r => [r.source, kindName(r.kind), r.line ?? '', r.module])), cols);
       }
 
+      if (result.length >= limit) text += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
       return textResult(text);
     },
   );
@@ -971,8 +994,8 @@ export function registerXrefTools(server, db) {
     'xref_find_event_handlers',
     'Find all event handlers and delegates for a D365FO object or method. Discovers [SubscribesTo], [DataEventHandler], [PreHandlerFor], [PostHandlerFor] subscriptions, and delegate definitions.',
     {
-      object_name: z.string().describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
-      method_name: z.string().optional().describe('Optional: specific method/delegate name to find handlers for'),
+      object_name: z.string().max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
+      method_name: z.string().max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),
       limit: z.number().default(100).describe('Max results'),
     },
     async ({ object_name, method_name, limit }) => {
@@ -980,21 +1003,9 @@ export function registerXrefTools(server, db) {
 
       // Part 1: Find delegate definitions on this object (kind=6 references FROM the object)
       const resolved = resolveNameId(q, object_name);
-      let delegateResults = [];
 
       if (resolved) {
         const { id: objId, path: objPath } = resolved;
-
-        // Find all sub-paths (methods) that ARE delegates
-        const delegatePaths = q(`
-          SELECT DISTINCT t.path
-          FROM refs r
-          JOIN names n ON r.source_id = n.id
-          JOIN names t ON r.target_id = t.id
-          WHERE r.kind = 6
-            AND n.path LIKE ?
-          LIMIT ?
-        `, [objPath + '/%', limit]);
 
         // Find methods on this object that have delegate references
         const delegateMethods = q(`
@@ -1008,48 +1019,13 @@ export function registerXrefTools(server, db) {
 
         if (delegateMethods.length > 0) {
           text += `**Delegates defined on** \`${objPath}\`:\n\n`;
-          text += formatTable(
-            ['Delegate Method'],
-            delegateMethods.map(r => [r.path.split('/Methods/')[1] || r.path])
-          );
+          const cols = ['Delegate Method'];
+          text += formatMarkdownTable(rowsToObjects(cols, delegateMethods.map(r => [r.path.split('/Methods/')[1] || r.path])), cols);
           text += '\n\n';
         }
       }
 
       // Part 2: Find event handlers that subscribe to this object's events
-      // These are methods with [SubscribesTo(classStr(ObjectName), ...)] or
-      // [DataEventHandler(tableStr(ObjectName), ...)] attributes.
-      // In xref: kind=7 (Attribute) where the source method references SubscribesTo/DataEventHandlerAttribute
-      // AND also references the target object.
-
-      // Strategy: Find all methods that have Attribute refs (kind=7) to both
-      // SubscribesTo/DataEventHandler AND to the target object
-      const handlerPatterns = method_name
-        ? [`%${object_name}%${method_name}%`]
-        : [`%${object_name}%`];
-
-      // Search for methods referencing SubscribesTo that also reference the target object
-      // We use the KB database approach: search source_code for SubscribesTo + object name
-      // Since this tool is in xref-tools, we use the xref approach:
-      // Find methods whose path contains handler patterns AND have kind=7 refs to SubscribesTo
-
-      // First, find all subscriber/handler methods that reference this object
-      const subscriberParams = [];
-      let subscriberFilter = '';
-
-      if (method_name) {
-        // Specific delegate: find handlers that reference both the class and method
-        subscriberFilter = `
-          AND n.path IN (
-            SELECT r2.source_id FROM refs r2
-            JOIN names t2 ON r2.target_id = t2.id
-            WHERE r2.kind = 7 AND (t2.path = '/Classes/SubscribesTo' OR t2.path = '/Classes/DataEventHandlerAttribute')
-          )
-        `;
-        // This is complex — let's use a simpler pattern-based approach
-        subscriberFilter = '';
-      }
-
       // Find methods with SubscribesTo attribute that reference our target
       const subscriberResult = q(`
         SELECT DISTINCT n.path, m.module
@@ -1073,15 +1049,15 @@ export function registerXrefTools(server, db) {
 
       if (subscriberResult.length > 0) {
         text += `**Event handlers subscribing to** \`${object_name}\`${method_name ? '.' + method_name : ''} **(${subscriberResult.length}):**\n\n`;
-        text += formatTable(
-          ['Handler Method', 'Module'],
-          subscriberResult.map(r => [r.path, r.module])
-        );
+        const cols = ['Handler Method', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, subscriberResult.map(r => [r.path, r.module])), cols);
         text += '\n\n';
+        if (subscriberResult.length >= limit) text += `> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.\n\n`;
       }
 
       // Part 3: Find DataEventHandler subscriptions via table event patterns
       // These use [DataEventHandler(tableStr(TableName), DataEventType::Inserted)]
+      // Fix: use parameterized queries instead of template literals in SQL
       const dataEventResult = q(`
         SELECT DISTINCT n.path, m.module
         FROM names n
@@ -1095,20 +1071,18 @@ export function registerXrefTools(server, db) {
             SELECT 1 FROM refs r2
             JOIN names t2 ON r2.target_id = t2.id
             WHERE r2.source_id = n.id
-              AND (t2.path = '/Tables/${object_name}' OR t2.path LIKE '/Tables/${object_name}/%')
+              AND (t2.path = ? OR t2.path LIKE ?)
           )
         ORDER BY n.path
         LIMIT ?
-      `, [limit]);
+      `, ['/Tables/' + object_name, '/Tables/' + object_name + '/%', limit]);
 
-      if (dataEventResult.length > 0 && subscriberResult.length === 0) {
-        // Only show if not already captured above
+      if (dataEventResult.length > 0) {
         text += `**Data event handlers for** \`${object_name}\` **(${dataEventResult.length}):**\n\n`;
-        text += formatTable(
-          ['Handler Method', 'Module'],
-          dataEventResult.map(r => [r.path, r.module])
-        );
+        const cols = ['Handler Method', 'Module'];
+        text += formatMarkdownTable(rowsToObjects(cols, dataEventResult.map(r => [r.path, r.module])), cols);
         text += '\n\n';
+        if (dataEventResult.length >= limit) text += `> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.\n\n`;
       }
 
       // Part 4: Find Override handlers (kind=10) on this object
@@ -1128,10 +1102,9 @@ export function registerXrefTools(server, db) {
 
         if (overrideResult.length > 0) {
           text += `**Method overrides on** \`${object_name}\` **(${overrideResult.length}):**\n\n`;
-          text += formatTable(
-            ['Override', 'Module'],
-            overrideResult.map(r => [r.path, r.module])
-          );
+          const cols = ['Override', 'Module'];
+          text += formatMarkdownTable(rowsToObjects(cols, overrideResult.map(r => [r.path, r.module])), cols);
+          if (overrideResult.length >= limit) text += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
         }
       }
 
@@ -1142,18 +1115,4 @@ export function registerXrefTools(server, db) {
       return textResult(text);
     },
   );
-}
-
-// ── Internal table formatter (columns + array-of-arrays) ────────────────────
-// The shared formatMarkdownTable works with row objects, but many tools above
-// build array-of-arrays.  This small helper keeps the code concise.
-
-function formatTable(columns, rows) {
-  if (rows.length === 0) return '_No results_';
-  const header = '| ' + columns.join(' | ') + ' |';
-  const sep = '| ' + columns.map(() => '---').join(' | ') + ' |';
-  const body = rows
-    .map(r => '| ' + r.map(c => (c == null ? '' : String(c))).join(' | ') + ' |')
-    .join('\n');
-  return `${header}\n${sep}\n${body}`;
 }
