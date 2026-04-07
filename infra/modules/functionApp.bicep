@@ -2,7 +2,6 @@ param location string
 param funcName string
 param aspName string
 param stName string
-param kvName string
 param appiConnectionString string
 param tags object
 
@@ -21,39 +20,21 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-// ─── Key Vault ──────────────────────────────────────────
-resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: kvName
-  location: location
-  tags: tags
-  properties: {
-    sku: {
-      family: 'A'
-      name: 'standard'
-    }
-    tenantId: subscription().tenantId
-    enableRbacAuthorization: true
-    enableSoftDelete: true
-    softDeleteRetentionInDays: 7
-  }
-}
-
-// ─── App Service Plan (Premium EP1) ─────────────────────
+// ─── App Service Plan (Premium V3) ──────────────────────
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: aspName
   location: location
   tags: tags
   sku: {
-    name: 'EP1'
-    tier: 'ElasticPremium'
-    size: 'EP1'
-    family: 'EP'
+    name: 'P0v3'
+    tier: 'PremiumV3'
+    size: 'P0v3'
+    family: 'Pv3'
     capacity: 1
   }
-  kind: 'elastic'
+  kind: 'linux'
   properties: {
-    maximumElasticWorkerCount: 3
-    reserved: true  // Linux
+    reserved: true
   }
 }
 
@@ -89,10 +70,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: appiConnectionString
         }
         {
-          name: 'KEY_VAULT_URI'
-          value: keyVault.properties.vaultUri
-        }
-        {
           name: 'KB_DB_PATH'
           value: '/home/data/d365fo_kb.sqlite'
         }
@@ -101,16 +78,12 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: '/home/data/d365fo_xref.sqlite'
         }
       ]
+      alwaysOn: true
       minTlsVersion: '1.2'
       ftpsState: 'Disabled'
     }
   }
 }
-
-// NOTE: Key Vault RBAC role assignment requires Owner/User Access Administrator.
-// Assign 'Key Vault Secrets User' role to the Function App managed identity post-deployment:
-//   az role assignment create --assignee <functionApp-principalId> \
-//     --role "Key Vault Secrets User" --scope <keyVault-resourceId>
 
 output functionAppUrl string = 'https://${functionApp.properties.defaultHostName}'
 output functionAppPrincipalId string = functionApp.identity.principalId

@@ -17,7 +17,6 @@ param prefix string = 'tis'
 var funcName  = '${prefix}-${env}-${workload}-func'
 var aspName   = '${prefix}-${env}-${workload}-asp'
 var stName    = '${prefix}${env}${workload}st'
-var kvName    = '${prefix}-${env}-${workload}-kv'
 var appiName  = '${prefix}-${env}-${workload}-appi'
 var logName   = '${prefix}-${env}-${workload}-log'
 
@@ -48,7 +47,6 @@ module func 'modules/functionApp.bicep' = {
     funcName: funcName
     aspName: aspName
     stName: stName
-    kvName: kvName
     appiConnectionString: monitoring.outputs.appiConnectionString
     tags: tags
   }
