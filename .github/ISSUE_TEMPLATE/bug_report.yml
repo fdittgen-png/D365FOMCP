@@ -1,0 +1,58 @@
+name: Bug Report
+description: Report a bug in an MCP service or build pipeline
+labels: ["type: bug"]
+body:
+  - type: dropdown
+    id: service
+    attributes:
+      label: Affected Service
+      options:
+        - KB (Knowledge Base)
+        - XRef (Cross-Reference)
+        - Security
+        - Task Recorder
+        - Build Pipeline
+        - Infrastructure
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Local (stdio)
+        - Azure Dev
+        - Azure Prod
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: MCP tool call, curl command, or script to reproduce
+      render: bash
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      render: text

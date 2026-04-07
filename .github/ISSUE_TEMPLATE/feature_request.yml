@@ -1,0 +1,40 @@
+name: Feature Request
+description: Suggest a new tool, enhancement, or capability
+labels: ["type: feature"]
+body:
+  - type: dropdown
+    id: service
+    attributes:
+      label: Target Service
+      options:
+        - KB (Knowledge Base)
+        - XRef (Cross-Reference)
+        - Security
+        - Task Recorder
+        - New Service
+        - Skills / Agents
+        - Infrastructure
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: What problem does this solve? Who benefits?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How should it work? Include tool name, parameters, and expected output if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What workarounds or alternative approaches exist?
