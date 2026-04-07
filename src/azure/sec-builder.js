@@ -11,7 +11,7 @@
  */
 
 import { createRequire } from 'module';
-import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, statSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, copyFileSync, statSync } from 'fs';
 import { join, resolve, basename, dirname } from 'path';
 import { XMLParser } from 'fast-xml-parser';
 
@@ -779,9 +779,14 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   db.exec('VACUUM');
   db.close();
 
-  // Atomic replace: swap the temp file into place
+  // Replace output file: try rename first, fall back to copy+delete for CIFS/SMB mounts (Azure /home/)
   rmSync(outputPath, { force: true });
-  renameSync(tmpOutputPath, outputPath);
+  try {
+    renameSync(tmpOutputPath, outputPath);
+  } catch {
+    copyFileSync(tmpOutputPath, outputPath);
+    rmSync(tmpOutputPath, { force: true });
+  }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   const fileSize = (statSync(outputPath).size / (1024 * 1024)).toFixed(1);
