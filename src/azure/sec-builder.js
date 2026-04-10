@@ -147,11 +147,35 @@ CREATE TABLE IF NOT EXISTS sec_search (
 );
 CREATE INDEX IF NOT EXISTS idx_sec_search_type ON sec_search(object_type);
 CREATE INDEX IF NOT EXISTS idx_sec_search_name ON sec_search(object_name);
+CREATE INDEX IF NOT EXISTS idx_sec_search_content_nocase ON sec_search(content COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS sec_metadata (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
+
+-- ── Performance indexes ──────────────────────────────────────────────────────
+-- Case-insensitive lookups (sec-tools.js uses COLLATE NOCASE everywhere)
+CREATE INDEX IF NOT EXISTS idx_roles_name_nocase    ON roles(role_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_duties_id_nocase     ON duties(duty_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_duties_name_nocase   ON duties(duty_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_privs_name_nocase    ON privileges(privilege_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_users_id_nocase      ON users(user_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_users_email_nocase   ON users(email COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_users_person_nocase  ON users(person_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_ep_object_nocase     ON privilege_entry_points(object_name COLLATE NOCASE);
+
+-- Covering composite for the duty_privileges joins (multi-million-row table).
+-- The PK is (duty_id, privilege_name) — this adds the reverse direction.
+CREATE INDEX IF NOT EXISTS idx_dp_priv_duty         ON duty_privileges(privilege_name, duty_id);
+
+-- Reverse lookups for direct privilege/permission tables
+CREATE INDEX IF NOT EXISTS idx_rdp_priv             ON role_direct_privileges(privilege_name);
+CREATE INDEX IF NOT EXISTS idx_rdep_role            ON role_direct_entity_permissions(role_id);
+CREATE INDEX IF NOT EXISTS idx_urc_role_id          ON user_role_companies(role_id);
+
+-- Hierarchy traversal in both directions
+CREATE INDEX IF NOT EXISTS idx_subroles_parent      ON role_subroles(parent_role_id);
 `;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

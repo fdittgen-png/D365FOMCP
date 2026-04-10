@@ -84,3 +84,49 @@ Caller2.method →            → Callee2.method
 - "View full source of a method?" → `d365_get_method_source`
 - "Impact analysis?" → `/d365-impact`
 - "Who has access to run this?" → `sec_permission_trace`
+
+---
+
+## When reviewing changes to THIS project (the MCP service itself, not D365 X++)
+
+Before any commit / deploy of `src/azure/*.js`, `src/functions/*.js`, `host.json`, `package.json`, or `build/*.js`, run this checklist explicitly:
+
+### Pre-deploy code-review checklist
+
+1. **Template literals trap**: search the diff for `\`...${...}...\`` patterns where the template literal is later passed to `.replace('${...}', value)`. JS evaluates `${var}` at template-literal definition time, not at replace time. **A `ReferenceError` here crashes the entire Function App at module load → all 5 endpoints return 404.** Use `{{var}}` placeholders instead, or escape with `\${var}`.
+   ```bash
+   grep -nE '\$\{[A-Z_]+\}' src/functions/*.js
+   ```
+   If any matches are inside backtick strings AND the file calls `.replace('${...}', ...)` on the same string, that's the bug.
+
+2. **File-operation safety on Azure CIFS**: any `rmSync(dest, { force: true })` followed by `renameSync(temp, dest)` is dangerous if `temp` is in `/tmp` (different filesystem) and `dest` is in `/home/data/` (CIFS mount). The rename throws EXDEV, the catch falls back to `copyFileSync`, and partial state can lose the destination file. **Default to in-place modifications via SQLite ATTACH for the security DB**, not file-rename gymnastics. If you must use temp files, put them in the same directory as the destination (`dirname(dest)`).
+
+3. **Module load smoke test** before deploying:
+   ```bash
+   node -e "import('./src/functions/d365sec-upload.js').then(() => console.log('OK')).catch(e => console.error('FAIL:', e.message))" 2>&1 | grep -v WARNING
+   ```
+   This catches import errors, syntax errors, and the template-literal trap before they hit Azure.
+
+4. **Run the test suite** (`npm test`) — should be 254/254 passing. Adding test cases is preferred over skipping.
+
+5. **For changes to `sec-builder.js` SCHEMA**: verify the new schema is backward-compatible with the in-place merge functions in `d365sec-upload.js`. The `mergeBuildsInPlace` and `mergeAotUpdateInPlace` functions enumerate specific table names — if you add a new table, decide whether it's DMF-sourced or AOT-sourced and add it to the right list.
+
+6. **For SQL queries on multi-million-row tables** (`duty_privileges`, `privilege_entry_points`):
+   - Never use `LOWER()` on indexed columns (bypasses indexes)
+   - Use `COLLATE NOCASE` literals which match the NOCASE indexes
+   - For known-casing data, prefer explicit `IN ('CamelCase', 'UPPERCASE')` over `COLLATE NOCASE`
+   - Avoid joining on case-mismatched columns without `COLLATE NOCASE` on the join condition itself
+
+### After deploy
+1. Wait 30s for cold start
+2. Smoke test:
+   ```bash
+   curl -s -o /dev/null -w "HTTP %{http_code}" "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec/upload"
+   ```
+   Expected: 200. If 404, the module failed to load — check Application Insights or roll back.
+3. Verify the database is still loaded:
+   ```bash
+   sec_raw_sql: SELECT key, value FROM sec_metadata WHERE key IN ('build_date','dutyPrivileges','privileges','entryPoints')
+   ```
+   Compare against expected counts before declaring the deploy successful.
+

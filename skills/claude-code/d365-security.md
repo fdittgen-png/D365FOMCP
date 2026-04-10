@@ -7,6 +7,18 @@ Comprehensive security analysis for a user, role, or object.
 
 ## Workflow
 
+### Step 0 — ALWAYS verify the data source first
+
+Before any analysis:
+
+```sql
+sec_raw_sql: SELECT key, value FROM sec_metadata WHERE key IN ('build_date','build_mode','dutyPrivileges','privileges','entryPoints','duties','roles','users')
+```
+
+Check the `build_date` is recent. If you're investigating a "lost access" ticket and the build is more than 24 h old, **stop and request a fresh DMF refresh first** — stale data is the #1 cause of wrong root-cause hypotheses on this project.
+
+> **Critical pitfall**: The local stdio MCP at `C:\Users\...\.claude\d365fo_sec.sqlite` is usually a **stale snapshot**. The Azure-deployed MCP at `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` is the live source. When in doubt, query Azure directly via `curl` (see `mcp-db-admin` skill).
+
 ### Detect analysis type from $ARGUMENTS
 
 **If user ID**:
@@ -41,6 +53,57 @@ Then present:
 - Users who have access (via those roles)
 - Offer: "Audit a specific user's access?" → drill into user
 
+---
+
+## Critical data quirks (memorize these)
+
+These cause wrong conclusions in ~30% of investigations if not accounted for:
+
+### 1. Case mismatch between AOT and DMF identifiers
+
+The same duty/privilege exists in **two casings** in the database:
+
+| Source | Casing example |
+|--------|----------------|
+| AOT (`AxSecurityDuty/*.xml`) | `CollectionLetterCollectionsTransMaintai` (mixed case) |
+| DMF (`System Security Duty.xml`) | `COLLECTIONLETTERCOLLECTIONSTRANSMAINTAI` (UPPERCASE) |
+
+They are stored as **separate primary-key rows**. A naive `JOIN duty_privileges dp ON rd.duty_id = dp.duty_id` (default BINARY collation) will silently miss data.
+
+**When writing `sec_raw_sql` queries that join on `duty_id` or `privilege_name`:**
+
+✅ **Fast and correct:**
+```sql
+WHERE col = 'value' COLLATE NOCASE       -- uses idx_*_nocase
+WHERE col IN ('CamelCase', 'UPPERCASE')  -- uses BINARY index, both casings
+```
+
+❌ **Slow or wrong:**
+```sql
+WHERE LOWER(col) = LOWER('value')        -- bypasses ALL indexes; 16+ s on 34M-row tables
+ON rd.duty_id = dp.duty_id               -- BINARY collation, misses rows when sources differ
+```
+
+### 2. iExtension `TOC_ReadOnlyPrivilege` overrides
+
+The Trelleborg custom `iExtension` module contains `TOC_ReadOnlyPrivilege` that explicitly defines certain menu items as read-only entry points (notably `CustCollectionLetter*`, possibly others). When investigating "user lost write access" tickets in finance/AR, **always check whether the menu item is defined in `TOC_ReadOnlyPrivilege`** before blaming role assignments:
+
+```sql
+sec_raw_sql: SELECT pe.privilege_name, pe.entry_point_name, pe.grant_create, pe.grant_update
+             FROM privilege_entry_points pe
+             WHERE pe.object_name = '<MenuItem>'
+             ORDER BY pe.privilege_name
+```
+
+If `TOC_ReadOnlyPrivilege` is the **only** privilege defining the menu item, no role can ever get write access to it — the fix lives in the `iExtension` X++ code, not in role assignments.
+
+### 3. The DMF effective view inflates duty_privileges to 34M rows
+
+`duty_privileges` contains the **expanded effective privilege set** for every (duty, privilege) pair, not just direct AOT assignments. A single duty can have 9000+ effective privileges through hierarchy expansion. When counting "how many privileges does duty X have", expect thousands, not dozens.
+
+---
+
 ### Always end with
 - Summary table of findings
 - Security recommendations if any gaps or over-provisioning detected
+- **For "lost access" tickets**: explicit before/after comparison if a recent role change is detected
