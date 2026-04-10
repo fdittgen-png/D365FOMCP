@@ -765,14 +765,14 @@ The security database should be rebuilt when:
 
 ### 8.2 DMF Export Automation
 
-The DMF exports can be automated via a D365 recurring data export job:
+The DMF exports are automated via a D365 recurring data export project named **`secMCP_Repository`**:
 
-1. Create a **Data Project** in D365 F&O (Data Management workspace)
-2. Add the 6 required entities (see Section 2.2)
-3. Configure format: **XML**
-4. Set up a **Recurring export** schedule (e.g., monthly)
-5. Export to Azure Blob Storage or SharePoint
-6. Trigger the build pipeline (manual or via Azure DevOps)
+1. **Data Project `secMCP_Repository`** in D365 F&O (Data Management workspace) — owned by the D365 development team
+2. Contains the 6 required entities (see Section 2.2)
+3. Format: **XML**
+4. Scheduled export (daily) triggered by PowerAutomate — see `PowerAutomate-SecDatabase-Update.md`
+5. Export package is streamed directly to the MCP async build endpoint via `source_url`
+6. No intermediate Blob/SharePoint storage required — the MCP function downloads the package from the D365-issued SAS URL
 
 ### 8.3 Pipeline Addition to azure-pipelines.yml
 

@@ -11,7 +11,7 @@
  */
 
 import { createRequire } from 'module';
-import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, copyFileSync, statSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, copyFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, resolve, basename, dirname } from 'path';
 import { XMLParser } from 'fast-xml-parser';
 
@@ -174,6 +174,7 @@ function createXmlParser() {
       'SYSTEMSECURITYUSERROLEASSOCIATIONENTITY',
       'SYSTEMSECURITYUSERROLEORGANIZATIONENTITY',
       'SYSTEMUSERENTITY', 'USERINFOENTITY',
+      'SYSTEMSECURITYDUTYENTITY',
     ].includes(name),
   });
 }
@@ -284,6 +285,73 @@ function findDmfFile(dir, ...names) {
   return null;
 }
 
+/**
+ * Extract a field value from a flat XML entity string.
+ * Assumes simple <TAG>value</TAG> structure (no attributes, no nesting).
+ */
+function extractField(xml, tag) {
+  const open = `<${tag}>`;
+  const start = xml.indexOf(open);
+  if (start === -1) return null;
+  const valStart = start + open.length;
+  const end = xml.indexOf(`</${tag}>`, valStart);
+  if (end === -1) return null;
+  const val = xml.substring(valStart, end);
+  return val || null;
+}
+
+/**
+ * Stream-parse a large DMF XML file synchronously (handles multi-GB files).
+ * Reads in chunks and extracts entity blocks via string matching.
+ * Memory usage: ~8 MB buffer + whatever the callback accumulates.
+ * @param {string} filePath - Path to the XML file
+ * @param {string} entityTag - Entity element name (e.g. 'SYSTEMSECURITYDUTYENTITY')
+ * @param {Function} extractFn - Called with inner XML string of each entity
+ * @returns {number} Number of entities processed
+ */
+function streamParseLargeDmfXmlSync(filePath, entityTag, extractFn) {
+  const fd = openSync(filePath, 'r');
+  const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB chunks
+  const readBuf = Buffer.alloc(CHUNK_SIZE);
+  let remainder = '';
+  let count = 0;
+  const openTag = `<${entityTag}>`;
+  const closeTag = `</${entityTag}>`;
+  const openLen = openTag.length;
+  const closeLen = closeTag.length;
+
+  try {
+    let bytesRead;
+    while ((bytesRead = readSync(fd, readBuf, 0, CHUNK_SIZE, null)) > 0) {
+      const text = remainder + readBuf.toString('utf-8', 0, bytesRead);
+      let pos = 0;
+
+      while (true) {
+        const entityStart = text.indexOf(openTag, pos);
+        if (entityStart === -1) { pos = text.length; break; }
+        const entityEnd = text.indexOf(closeTag, entityStart + openLen);
+        if (entityEnd === -1) {
+          // Incomplete entity — carry over to next chunk
+          remainder = text.substring(entityStart);
+          pos = text.length;
+          break;
+        }
+        extractFn(text.substring(entityStart + openLen, entityEnd));
+        count++;
+        pos = entityEnd + closeLen;
+      }
+
+      // If we consumed everything past the last entity, clear remainder
+      if (pos >= text.length) remainder = '';
+      else if (text.indexOf(openTag, pos) === -1) remainder = '';
+      // else remainder was already set in the inner loop break
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return count;
+}
+
 /** Parse a DMF XML file, returns array of entity elements */
 function parseDmfXml(xmlParser, filePath, entityNodeName, log) {
   if (!filePath) return [];
@@ -312,8 +380,8 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
   const stats = {
     aotRoles: 0, aotDuties: 0, aotPrivileges: 0, aotEntryPoints: 0,
-    dmfRoles: 0, dmfSubRoles: 0, dmfDuties: 0, dmfUsers: 0,
-    dmfUserRoles: 0, dmfCompanyAssignments: 0,
+    dmfRoles: 0, dmfSubRoles: 0, dmfDuties: 0, dmfDutyPrivileges: 0,
+    dmfUsers: 0, dmfUserRoles: 0, dmfCompanyAssignments: 0,
     directPrivileges: 0, directEntityPerms: 0,
     transitiveSubRoles: 0,
   };
@@ -591,7 +659,79 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         log(`    Role-duty assignments: ${stats.dmfDuties}`);
       }
 
-      // 2d: User Information
+      // 2d: Duty-Privilege Mappings (from System Security Duty DMF export)
+      const dutyPrivFile = findDmfFile(dmfInputDir,
+        'System Security Duty.xml', 'SystemSecurityDuty.xml');
+      if (dutyPrivFile) {
+        const fileSize = statSync(dutyPrivFile).size;
+        const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
+
+        // Collect unique duty-privilege pairs (works for both streaming and DOM paths)
+        const dutyPrivPairs = new Set();
+        const dutyNames = new Map();  // rawDutyId → label
+        const privLabels = new Map(); // privId → label
+
+        const collectEntity = (dutyId, dutyName, privId, privLabel) => {
+          if (!dutyId || !privId) return;
+          dutyPrivPairs.add(`${dutyId}\t${privId}`);
+          if (dutyName && !dutyNames.has(dutyId)) dutyNames.set(dutyId, dutyName);
+          if (privLabel && !privLabels.has(privId)) privLabels.set(privId, privLabel);
+        };
+
+        if (fileSize > 100 * 1024 * 1024) {
+          // Large file (>100 MB): stream to avoid OOM
+          log(`    Reading (streaming, ${sizeMB} MB): ${basename(dutyPrivFile)}`);
+          const entityCount = streamParseLargeDmfXmlSync(
+            dutyPrivFile, 'SYSTEMSECURITYDUTYENTITY',
+            (inner) => collectEntity(
+              extractField(inner, 'SECURITYDUTYIDENTIFIER'),
+              extractField(inner, 'SECURITYDUTYNAME'),
+              extractField(inner, 'SECURITYPRIVILEGEIDENTIFIER'),
+              extractField(inner, 'SECURITYPRIVILEGENAME'),
+            ),
+          );
+          log(`    Parsed ${entityCount.toLocaleString()} entities → ${dutyPrivPairs.size.toLocaleString()} unique duty-privilege pairs`);
+        } else {
+          // Small file: regular DOM parser
+          const entities = parseDmfXml(xmlParser, dutyPrivFile, 'SYSTEMSECURITYDUTYENTITY', log);
+          for (const e of entities) {
+            collectEntity(e.SECURITYDUTYIDENTIFIER, e.SECURITYDUTYNAME,
+              e.SECURITYPRIVILEGEIDENTIFIER, e.SECURITYPRIVILEGENAME);
+          }
+          log(`    Found ${dutyPrivPairs.size.toLocaleString()} unique duty-privilege pairs`);
+        }
+
+        // Build privilege lookup for fast existence checks
+        const existingPrivsUpper = new Map();
+        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+          existingPrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
+        }
+
+        // Insert unique pairs
+        let inserted = 0;
+        for (const pair of dutyPrivPairs) {
+          const [rawDutyId, rawPrivId] = pair.split('\t');
+          const resolvedDutyId = aotDutyUpper.get(rawDutyId.toUpperCase()) || rawDutyId;
+          const resolvedPrivId = existingPrivsUpper.get(rawPrivId.toUpperCase()) || rawPrivId;
+
+          // Ensure duty exists
+          if (!aotDutyUpper.has(rawDutyId.toUpperCase())) {
+            stmts.insertDuty.run(resolvedDutyId, dutyNames.get(rawDutyId) || null, null, null);
+            aotDutyUpper.set(resolvedDutyId.toUpperCase(), resolvedDutyId);
+          }
+          // Ensure privilege exists
+          if (!existingPrivsUpper.has(rawPrivId.toUpperCase())) {
+            stmts.insertPrivilege.run(resolvedPrivId, null, privLabels.get(rawPrivId) || null);
+            existingPrivsUpper.set(resolvedPrivId.toUpperCase(), resolvedPrivId);
+          }
+          stmts.insertDutyPriv.run(resolvedDutyId, resolvedPrivId);
+          inserted++;
+        }
+        stats.dmfDutyPrivileges = inserted;
+        log(`    Duty-privilege mappings: ${inserted.toLocaleString()}`);
+      }
+
+      // 2e: User Information
       const usersFile = findDmfFile(dmfInputDir,
         'User information.xml', 'UserInformation.xml', 'SystemUsers.xml');
       if (usersFile) {
@@ -617,7 +757,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         log(`    Users: ${stats.dmfUsers}`);
       }
 
-      // 2e: User-Role Assignments
+      // 2f: User-Role Assignments
       const userRolesFile = findDmfFile(dmfInputDir,
         'SystemSecurityUserRoleEntity.xml',
         'Security user role association.xml',
@@ -646,7 +786,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         }
         log(`    User-role assignments (enabled): ${stats.dmfUserRoles}`);
 
-        // 2f: Company-Scoped Role Restrictions
+        // 2g: Company-Scoped Role Restrictions
         const orgFile = findDmfFile(dmfInputDir,
           'SystemSecurityUserRoleOrganizationEntity.xml',
           'System security user role organization.xml');
@@ -784,8 +924,15 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   try {
     renameSync(tmpOutputPath, outputPath);
   } catch {
-    copyFileSync(tmpOutputPath, outputPath);
-    rmSync(tmpOutputPath, { force: true });
+    // On CIFS, renameSync may throw even when it succeeds — check before fallback
+    if (existsSync(outputPath) && !existsSync(tmpOutputPath)) {
+      // Rename actually worked (CIFS quirk)
+    } else if (existsSync(tmpOutputPath)) {
+      copyFileSync(tmpOutputPath, outputPath);
+      rmSync(tmpOutputPath, { force: true });
+    } else {
+      throw new Error(`Build output lost: neither ${tmpOutputPath} nor ${outputPath} exist after rename.`);
+    }
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -812,3 +959,6 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
   return { stats, counts, elapsed, fileSize };
 }
+
+// Exported for testing
+export { extractField, streamParseLargeDmfXmlSync as _streamParseLargeDmfXmlSync };

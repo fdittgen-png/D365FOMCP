@@ -22,18 +22,23 @@
 
 import { app } from '@azure/functions';
 import { createRequire } from 'module';
-import { mkdtempSync, rmSync, readdirSync, existsSync } from 'fs';
-import { join } from 'path';
+import { mkdtempSync, rmSync, readdirSync, existsSync, createWriteStream, copyFileSync, renameSync } from 'fs';
+import { join, dirname } from 'path';
 import { tmpdir } from 'os';
+import { execSync } from 'child_process';
 import { buildSecurityDatabase } from '../azure/sec-builder.js';
 import { getSecDb, reloadSecDb, query } from '../azure/shared.js';
+import { ensureContainer, generateUploadSasUrl, downloadBlobToFile, deleteBlob, getStorageAccountName } from '../azure/blob-helper.js';
+import { createJob, getJob, updateJob } from '../azure/build-jobs.js';
 
 const require = createRequire(import.meta.url);
 const AdmZip = require('adm-zip');
+const Database = require('better-sqlite3');
 
-// ── Azure RBAC role definition IDs ───────────────────────────────────────────
+// ── Constants ───────────────────────────────────────────────────────────────
 
-const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;      // 200 MB  (form file upload)
+const MAX_URL_DOWNLOAD_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB (URL download)
 
 const OWNER_ROLE_ID = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635';
 const CONTRIBUTOR_ROLE_ID = 'b24988ac-6180-42a0-ab88-20f7382dd24c';
@@ -152,6 +157,20 @@ const UPLOAD_HTML = `<!DOCTYPE html>
     .status h3 { font-size: 15px; margin-bottom: 8px; }
     pre { background: #f6f8fa; padding: 12px; border-radius: 4px; overflow-x: auto;
           font-size: 13px; line-height: 1.5; margin-top: 8px; }
+    .divider { text-align: center; margin: 20px 0; position: relative; color: #8b949e; font-size: 14px; }
+    .divider::before, .divider::after { content: ''; position: absolute; top: 50%;
+      width: calc(50% - 150px); height: 1px; background: #d0d7de; }
+    .divider::before { left: 0; }
+    .divider::after { right: 0; }
+    .divider span { background: #fff; padding: 0 12px; position: relative; }
+
+    .url-group { margin-bottom: 8px; }
+    .url-input { width: 100%; padding: 10px 14px; border: 1px solid #d0d7de; border-radius: 6px;
+                 font-size: 14px; font-family: inherit; transition: border-color 0.15s; }
+    .url-input:focus { outline: none; border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,0.15); }
+    .url-input:disabled { background: #f6f8fa; opacity: 0.6; }
+    .url-hint { font-size: 12px; color: #8b949e; margin-top: 6px; }
+
     .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #fff;
                border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -175,6 +194,8 @@ const UPLOAD_HTML = `<!DOCTYPE html>
           <code>SystemSecurityUserRoleOrganizationEntity.xml</code>,
           <code>User information.xml</code>,
           <code>SecurityDatabaseCustomizations.xml</code></li>
+      <li><strong>Optional (DMF &mdash; Duty&rarr;Privilege):</strong> <code>System Security Duty.xml</code>
+          &mdash; can be very large (1&ndash;2 GB). Use the URL option below for large files.</li>
       <li><strong>Optional (AOT):</strong> Place AOT security XMLs in an <code>aot/</code>
           subdirectory (preserving the PackagesLocalDirectory structure)</li>
     </ul>
@@ -184,9 +205,21 @@ const UPLOAD_HTML = `<!DOCTYPE html>
     <form id="uploadForm">
       <div class="upload-area {{UPLOAD_DISABLED}}" id="dropZone">
         <p>Drag &amp; drop a ZIP file here, or click to browse</p>
+        <p style="font-size:13px;color:#8b949e">(supports large files &mdash; streamed directly to server)</p>
         <div id="fileName" class="filename"></div>
       </div>
       <input type="file" id="zipFile" accept=".zip" {{INPUT_DISABLED}}>
+
+      <div class="divider"><span>or download ZIP from URL (supports large files)</span></div>
+
+      <div class="url-group">
+        <input type="url" id="zipUrl" name="zip_url" class="url-input"
+               placeholder="https://...blob.core.windows.net/exports/dmf-export.zip"
+               {{INPUT_DISABLED}}>
+        <p class="url-hint">Paste a direct-download URL to a DMF export ZIP (SharePoint, Azure Blob, D365 export URL).
+           Used by PowerAutomate &mdash; the server downloads and processes the file.</p>
+      </div>
+
       <div class="btn-row">
         <button type="submit" class="btn" id="submitBtn" disabled>
           Upload &amp; Rebuild Database
@@ -204,7 +237,14 @@ const UPLOAD_HTML = `<!DOCTYPE html>
     const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('zipFile');
     const fileNameEl = document.getElementById('fileName');
+    const zipUrlInput = document.getElementById('zipUrl');
     const canUpload = !fileInput.disabled;
+
+    function updateSubmitState() {
+      const hasFile = fileInput.files && fileInput.files.length > 0;
+      const hasUrl = zipUrlInput.value.trim().length > 0;
+      submitBtn.disabled = !(hasFile || hasUrl);
+    }
 
     if (canUpload) {
       dropZone.addEventListener('click', () => fileInput.click());
@@ -219,46 +259,102 @@ const UPLOAD_HTML = `<!DOCTYPE html>
         }
       });
       fileInput.addEventListener('change', onFileSelected);
+      zipUrlInput.addEventListener('input', updateSubmitState);
     }
 
     function onFileSelected() {
       const file = fileInput.files[0];
       if (file) {
         fileNameEl.textContent = file.name + ' (' + (file.size / (1024*1024)).toFixed(1) + ' MB)';
-        submitBtn.disabled = false;
         statusEl.className = 'status';
       }
+      updateSubmitState();
+    }
+
+    function showStatus(cls, html) { statusEl.className = 'status ' + cls; statusEl.innerHTML = html; }
+
+    // Async blob upload for large files: SAS → PUT blob → trigger build → poll status
+    async function asyncBlobUpload(file) {
+      showStatus('info', '<h3>Step 1/4: Requesting upload URL...</h3>');
+      const sasResp = await fetch(window.location.pathname + '/sas?filename=' + encodeURIComponent(file.name));
+      const sas = await sasResp.json();
+      if (!sasResp.ok) throw new Error(sas.error || 'Failed to get upload URL');
+
+      showStatus('info', '<h3>Step 2/4: Uploading to Azure Storage...</h3>'
+        + '<p>' + (file.size / (1024*1024)).toFixed(0) + ' MB &mdash; this may take several minutes. Do not close this page.</p>');
+      const putResp = await fetch(sas.upload_url, {
+        method: 'PUT', headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'application/zip' }, body: file,
+      });
+      if (!putResp.ok) throw new Error('Blob upload failed: HTTP ' + putResp.status);
+
+      showStatus('info', '<h3>Step 3/4: Building security database...</h3>');
+      const buildResp = await fetch(window.location.pathname + '/build', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: sas.job_id }),
+      });
+      const buildData = await buildResp.json();
+      if (!buildResp.ok) throw new Error(buildData.error || 'Build trigger failed');
+
+      // Poll for completion
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const pollResp = await fetch(window.location.pathname + '/status?job_id=' + sas.job_id);
+        const poll = await pollResp.json();
+        if (poll.status === 'completed') return poll;
+        if (poll.status === 'failed') throw new Error(poll.error || 'Build failed');
+        showStatus('info', '<h3>Step 3/4: Building security database...</h3><p>' + (poll.progress || poll.status) + '</p>');
+      }
+      throw new Error('Build timed out after 10 minutes');
     }
 
     form.addEventListener('submit', async e => {
       e.preventDefault();
       if (!canUpload) return;
       const file = fileInput.files[0];
-      if (!file) return;
+      const zipUrl = zipUrlInput.value.trim();
+      if (!file && !zipUrl) return;
 
       submitBtn.disabled = true;
       submitBtn.innerHTML = '<span class="spinner"></span> Building...';
-      statusEl.className = 'status info';
-      statusEl.innerHTML = '<h3>Processing</h3>Uploading ZIP and rebuilding the security database. This may take a minute...';
 
       try {
-        const formData = new FormData();
-        formData.append('zipfile', file);
-        const resp = await fetch(window.location.href, { method: 'POST', body: formData });
-        const result = await resp.json();
+        let result;
 
+        if (file && file.size > 150 * 1024 * 1024) {
+          // Large file: async blob upload (bypasses 230s Azure timeout)
+          const poll = await asyncBlobUpload(file);
+          showStatus('success', '<h3>Step 4/4: Database rebuilt successfully</h3>'
+            + '<pre>' + JSON.stringify(poll.result, null, 2) + '</pre>');
+          return;
+        }
+
+        showStatus('info', '<h3>Processing</h3>'
+          + (file ? 'Uploading and rebuilding...' : 'Downloading from URL and rebuilding...'));
+
+        let resp;
+        if (file) {
+          resp = await fetch(window.location.href, {
+            method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: file,
+          });
+        } else if (zipUrl) {
+          resp = await fetch(window.location.href, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ zip_url: zipUrl }),
+          });
+        }
+
+        const text = await resp.text();
+        try { result = JSON.parse(text); } catch {
+          throw new Error('HTTP ' + resp.status + ': ' + text.substring(0, 200));
+        }
         if (resp.ok) {
-          statusEl.className = 'status success';
-          statusEl.innerHTML = '<h3>Database rebuilt successfully</h3>'
-            + '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+          showStatus('success', '<h3>Database rebuilt successfully</h3>'
+            + '<pre>' + JSON.stringify(result, null, 2) + '</pre>');
         } else {
-          statusEl.className = 'status error';
-          statusEl.innerHTML = '<h3>' + (resp.status === 403 ? 'Access denied' : 'Build failed') + '</h3>'
-            + '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+          showStatus('error', '<h3>Build failed</h3><pre>' + JSON.stringify(result, null, 2) + '</pre>');
         }
       } catch (err) {
-        statusEl.className = 'status error';
-        statusEl.innerHTML = '<h3>Error</h3><p>' + err.message + '</p>';
+        showStatus('error', '<h3>Error</h3><p>' + err.message + '</p>');
       } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Upload & Rebuild Database';
@@ -278,6 +374,12 @@ const DMF_FILES = [
   'systemsecuritysubrolev2.xml',
   'system security role duty.xml',
   'systemsecurityroleduty.xml',
+  'system security duty.xml',       // duty→privilege mapping (can be multi-GB)
+  'systemsecurityduty.xml',
+  'system security privilege.xml',   // role→privilege mapping
+  'systemsecurityprivilege.xml',
+  'system security permissions.xml', // effective permissions
+  'systemsecuritypermissions.xml',
   'systemsecurityuserroleentity.xml',
   'security user role association.xml',
   'userroleassociation.xml',
@@ -287,6 +389,7 @@ const DMF_FILES = [
   'userinformation.xml',
   'systemusers.xml',
   'securitydatabasecustomizations.xml',
+  'security privilege metadata customizations entity.xml',
 ];
 
 function detectDmfDir(extractedDir) {
@@ -300,9 +403,90 @@ function detectDmfDir(extractedDir) {
 }
 
 function detectAotDir(extractedDir) {
+  // Preferred: explicit aot/ subdirectory
   const aotSub = join(extractedDir, 'aot');
   if (existsSync(aotSub)) return aotSub;
+  // Fallback: AxSecurity* directories directly at the root (flat AOT zip)
+  if (existsSync(join(extractedDir, 'AxSecurityRole')) ||
+      existsSync(join(extractedDir, 'AxSecurityDuty')) ||
+      existsSync(join(extractedDir, 'AxSecurityPrivilege'))) {
+    return extractedDir;
+  }
   return null;
+}
+
+/**
+ * Download a file from a URL to a local path using streaming (no memory buffering).
+ * Validates Content-Length against MAX_URL_DOWNLOAD_BYTES.
+ */
+async function downloadToFile(url, filePath, context) {
+  context.log(`Downloading from URL: ${url}`);
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`Download failed: ${resp.status} ${resp.statusText}`);
+
+  const contentLength = parseInt(resp.headers.get('content-length') || '0', 10);
+  if (contentLength > MAX_URL_DOWNLOAD_BYTES) {
+    throw new Error(`Remote file too large (${(contentLength / (1024 * 1024 * 1024)).toFixed(1)} GB). Maximum: ${MAX_URL_DOWNLOAD_BYTES / (1024 * 1024 * 1024)} GB.`);
+  }
+
+  const ws = createWriteStream(filePath);
+  let downloaded = 0;
+  for await (const chunk of resp.body) {
+    downloaded += chunk.length;
+    if (downloaded > MAX_URL_DOWNLOAD_BYTES) {
+      ws.destroy();
+      throw new Error('Download exceeded size limit.');
+    }
+    ws.write(chunk);
+  }
+  await new Promise((resolve, reject) => { ws.end(); ws.on('finish', resolve); ws.on('error', reject); });
+  context.log(`Downloaded ${(downloaded / (1024 * 1024)).toFixed(1)} MB to ${filePath}`);
+}
+
+/**
+ * Max uncompressed entry size to extract (500 MB).
+ * The "System Security Duty" DMF entity produces a 27+ GB XML file
+ * (denormalized effective privileges). It is skipped because:
+ *   - It would exceed /tmp disk space on Azure (~8 GB)
+ *   - The direct duty→privilege mappings come from AOT, not this entity
+ *   - Effective permissions are computed at query time by the MCP tools
+ */
+const MAX_ENTRY_SIZE = 500 * 1024 * 1024;
+
+/**
+ * Extract a ZIP file to a directory, skipping oversized entries.
+ * Prefers system `unzip` for speed, falls back to AdmZip.
+ */
+function extractZipSafe(zipPath, destDir, context) {
+  // First check for oversized entries and build exclude list
+  let excludes = [];
+  try {
+    const zip = new AdmZip(zipPath);
+    for (const entry of zip.getEntries()) {
+      if (entry.header.size > MAX_ENTRY_SIZE) {
+        excludes.push(entry.entryName);
+        context.log(`Skipping oversized entry: ${entry.entryName} (${(entry.header.size / (1024 * 1024 * 1024)).toFixed(1)} GB)`);
+      }
+    }
+  } catch { /* if we can't list, try extracting anyway */ }
+
+  try {
+    const excludeArgs = excludes.map(e => `-x "${e}"`).join(' ');
+    execSync(`unzip -o -q "${zipPath}" ${excludeArgs} -d "${destDir}"`, {
+      stdio: 'pipe',
+      timeout: 600000,
+    });
+    context.log('Extracted ZIP using system unzip' + (excludes.length ? ` (skipped ${excludes.length} oversized entries)` : ''));
+  } catch {
+    context.log('System unzip not available, falling back to AdmZip');
+    const zip = new AdmZip(zipPath);
+    const excludeSet = new Set(excludes.map(e => e.toLowerCase()));
+    for (const entry of zip.getEntries()) {
+      if (excludeSet.has(entry.entryName.toLowerCase())) continue;
+      if (entry.header.size > MAX_ENTRY_SIZE) continue;
+      zip.extractEntryTo(entry, destDir, true, true);
+    }
+  }
 }
 
 /** Build the DB info HTML from current sec_metadata. */
@@ -372,7 +556,8 @@ app.http('d365sec-upload', {
         .replace('{{AUTH_BAR}}', authBarHtml)
         .replace('{{DB_INFO}}', buildDbInfoHtml())
         .replace('{{UPLOAD_DISABLED}}', formAllowed ? '' : 'disabled')
-        .replace('{{INPUT_DISABLED}}', formAllowed ? '' : 'disabled');
+        .replace(/\{\{INPUT_DISABLED\}\}/g, formAllowed ? '' : 'disabled')
+        .replace('{{MAX_UPLOAD_MB}}', String(MAX_UPLOAD_BYTES / (1024 * 1024)));
 
       return { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: html };
     }
@@ -412,30 +597,77 @@ app.http('d365sec-upload', {
       const uploaderName = user?.principalName || 'anonymous (no Easy Auth)';
       context.log(`Upload authorized for ${uploaderName}`);
 
-      // Parse multipart form data
-      const formData = await request.formData();
-      const file = formData.get('zipfile');
-      if (!file) {
-        return { status: 400, jsonBody: { error: 'No ZIP file uploaded.' } };
-      }
-
-      if (file.size > MAX_UPLOAD_BYTES) {
-        return {
-          status: 413,
-          jsonBody: { error: `File too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum: ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.` },
-        };
-      }
-
-      context.log(`Received ZIP: ${file.name}, ${file.size} bytes`);
-
-      // Extract ZIP to temp directory
-      const buffer = Buffer.from(await file.arrayBuffer());
+      // ── Detect upload mode from Content-Type ────────────────────────────────
+      const contentType = (request.headers.get('content-type') || '').toLowerCase();
       const tmpDir = mkdtempSync(join(tmpdir(), 'sec-build-'));
 
       try {
-        const zip = new AdmZip(buffer);
-        zip.extractAllTo(tmpDir, true);
+        let zipUrl = null;
 
+        if (contentType.includes('application/json')) {
+          // ── Mode: JSON with zip_url (PowerAutomate / API) ─────────────────
+          const body = await request.json();
+          zipUrl = body.zip_url;
+          if (!zipUrl) {
+            return { status: 400, jsonBody: { error: 'Missing zip_url in request body.', hint: 'POST JSON: { "zip_url": "https://..." }' } };
+          }
+          context.log(`Mode: JSON zip_url`);
+
+        } else if (contentType.includes('application/zip') || contentType.includes('application/octet-stream')) {
+          // ── Mode: Raw ZIP body (browser streaming upload / programmatic) ──
+          zipUrl = request.headers.get('x-zip-url') || null;
+          const zipPath = join(tmpDir, 'upload.zip');
+          const ws = createWriteStream(zipPath);
+          let bytes = 0;
+          for await (const chunk of request.body) {
+            bytes += chunk.length;
+            if (bytes > MAX_URL_DOWNLOAD_BYTES) { ws.destroy(); throw new Error('Upload exceeds size limit.'); }
+            ws.write(chunk);
+          }
+          await new Promise((resolve, reject) => { ws.end(); ws.on('finish', resolve); ws.on('error', reject); });
+          context.log(`Mode: raw body, ${(bytes / (1024 * 1024)).toFixed(1)} MB` + (zipUrl ? ' + URL' : ''));
+          extractZipSafe(zipPath, tmpDir, context);
+
+        } else {
+          // ── Mode: Multipart form (HTML form upload) ───────────────────────
+          const formData = await request.formData();
+          const file = formData.get('zipfile');
+          zipUrl = formData.get('zip_url') || null;
+          if (typeof zipUrl === 'string') zipUrl = zipUrl.trim() || null;
+
+          if (!file && !zipUrl) {
+            return { status: 400, jsonBody: { error: 'No ZIP file or URL provided.' } };
+          }
+
+          if (file && file.size > 0) {
+            if (file.size > MAX_UPLOAD_BYTES) {
+              return {
+                status: 413,
+                jsonBody: {
+                  error: `File too large (${(file.size / (1024 * 1024)).toFixed(1)} MB). Maximum: ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB.`,
+                  hint: 'For large files, use the URL option instead of uploading directly.',
+                },
+              };
+            }
+            context.log(`Mode: form upload, ${file.name} (${file.size} bytes)` + (zipUrl ? ` + URL` : ''));
+            const buffer = Buffer.from(await file.arrayBuffer());
+            const zip = new AdmZip(buffer);
+            zip.extractAllTo(tmpDir, true);
+          } else {
+            context.log(`Mode: form with URL only`);
+          }
+        }
+
+        // ── Download from URL if provided ───────────────────────────────────
+        if (zipUrl) {
+          const urlZipPath = join(tmpDir, 'url-download.zip');
+          await downloadToFile(zipUrl, urlZipPath, context);
+          extractZipSafe(urlZipPath, tmpDir, context);
+          // Clean up the downloaded zip to save disk space
+          try { rmSync(urlZipPath, { force: true }); } catch { /* ignore */ }
+        }
+
+        // ── Detect content and build ────────────────────────────────────────
         const dmfDir = detectDmfDir(tmpDir);
         const aotDir = detectAotDir(tmpDir);
 
@@ -443,9 +675,9 @@ app.http('d365sec-upload', {
           return {
             status: 400,
             jsonBody: {
-              error: 'No recognized XML files found in the ZIP.',
-              hint: 'Place DMF XML exports in the ZIP root or a dmf/ subdirectory. '
-                  + 'Place AOT security XMLs in an aot/ subdirectory.',
+              error: 'No recognized XML files found.',
+              hint: 'The ZIP must contain DMF XML exports (e.g. System Security Role.xml) '
+                  + 'in the root or a dmf/ subdirectory.',
             },
           };
         }
@@ -456,12 +688,53 @@ app.http('d365sec-upload', {
         const logs = [];
         const log = (msg) => { logs.push(msg); context.log(msg); };
 
+        // Decide build mode (same logic as runBuildAsync)
+        let mode = 'full';
+        if (existsSync(dbPath)) {
+          try {
+            const existing = new Database(dbPath, { readonly: true, fileMustExist: true });
+            const hasAot = existing.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get().n > 0;
+            const hasDmfRoles = existing.prepare('SELECT COUNT(*) as n FROM roles').get().n > 0;
+            existing.close();
+            if (dmfDir && !aotDir && hasAot) mode = 'merge-dmf';
+            else if (aotDir && !dmfDir && hasDmfRoles) mode = 'merge-aot';
+          } catch { /* ignore */ }
+        }
+
+        const newBuildPath = join(tmpDir, 'new-build.sqlite');
         const result = buildSecurityDatabase({
           packagesPathArg: aotDir || 'skip',
           dmfInputDir: dmfDir || 'skip',
-          outputPath: dbPath,
+          outputPath: newBuildPath,
           log,
         });
+
+        let finalCounts = result.counts;
+        let modeLabel = 'full rebuild';
+
+        const ctx = { log };
+
+        if (mode === 'merge-dmf') {
+          reloadSecDb();
+          finalCounts = mergeBuildsInPlace(dbPath, newBuildPath, ctx);
+          modeLabel = 'merged (DMF into existing AOT)';
+        } else if (mode === 'merge-aot') {
+          reloadSecDb();
+          finalCounts = mergeAotUpdateInPlace(dbPath, newBuildPath, ctx);
+          modeLabel = 'merged (AOT into existing DMF)';
+        } else {
+          const inplaceTemp = join(dirname(dbPath), 'd365fo_sec.sqlite.new');
+          reloadSecDb();
+          copyFileSync(newBuildPath, inplaceTemp);
+          rmSync(dbPath, { force: true });
+          try { renameSync(inplaceTemp, dbPath); }
+          catch {
+            if (existsSync(inplaceTemp)) {
+              copyFileSync(inplaceTemp, dbPath);
+              rmSync(inplaceTemp, { force: true });
+            }
+          }
+        }
 
         reloadSecDb();
 
@@ -470,11 +743,11 @@ app.http('d365sec-upload', {
           jsonBody: {
             success: true,
             message: 'Security database rebuilt and reloaded.',
+            mode: modeLabel,
             uploadedBy: uploaderName,
             buildDate: new Date().toISOString(),
-            counts: result.counts,
+            counts: finalCounts,
             elapsed: `${result.elapsed}s`,
-            fileSize: `${result.fileSize} MB`,
           },
         };
       } finally {
@@ -484,5 +757,396 @@ app.http('d365sec-upload', {
       context.error('d365sec-upload error:', err);
       return { status: 500, jsonBody: { error: err.message } };
     }
+  },
+});
+
+// ── Async Build Pattern ─────────────────────────────────────────────────────
+// For large files and PowerAutomate:
+//   1. GET  /sas    → SAS upload URL + job ID
+//   2. Client uploads ZIP to blob (no timeout)
+//   3. POST /build  → triggers background build (returns 202 immediately)
+//   4. GET  /status → poll for completion
+
+/**
+ * Compute and persist the per-table counts metadata after a build/merge.
+ * Returns the counts object.
+ */
+function updateBuildMetadata(db, buildMode) {
+  const counts = {
+    roles: db.prepare('SELECT COUNT(*) as n FROM main.roles').get().n,
+    duties: db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n,
+    users: db.prepare('SELECT COUNT(*) as n FROM main.users').get().n,
+    privileges: db.prepare('SELECT COUNT(*) as n FROM main.privileges').get().n,
+    entryPoints: db.prepare('SELECT COUNT(*) as n FROM main.privilege_entry_points').get().n,
+    dutyPrivileges: db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get().n,
+    userRoles: db.prepare('SELECT COUNT(*) as n FROM main.user_roles').get().n,
+    roleDuties: db.prepare('SELECT COUNT(*) as n FROM main.role_duties').get().n,
+    subRoles: db.prepare('SELECT COUNT(*) as n FROM main.role_subroles').get().n,
+    companies: db.prepare('SELECT COUNT(DISTINCT company_id) as n FROM main.user_role_companies').get().n,
+  };
+  const upsertMeta = db.prepare("INSERT OR REPLACE INTO main.sec_metadata VALUES (?, ?)");
+  upsertMeta.run('build_date', new Date().toISOString());
+  upsertMeta.run('build_mode', buildMode);
+  for (const [k, v] of Object.entries(counts)) upsertMeta.run(k, String(v));
+  return counts;
+}
+
+/**
+ * Merge DMF data from a freshly-built DMF-only database INTO the existing
+ * production database in-place using SQLite ATTACH + transaction.
+ *
+ * No file copying, no renames — works around Azure CIFS rename quirks.
+ * Replaces DMF-sourced tables, preserves AOT-sourced tables (privileges,
+ * privilege_entry_points, duty_privileges, role_direct_*).
+ *
+ * The caller MUST ensure the singleton is closed before this runs.
+ */
+function mergeBuildsInPlace(dbPath, newBuildPath, context) {
+  context.log(`Merging DMF data from ${newBuildPath} INTO ${dbPath} (in-place)`);
+
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = DELETE'); // safest on CIFS
+  db.pragma('synchronous = NORMAL');
+
+  db.exec(`ATTACH DATABASE '${newBuildPath.replace(/'/g, "''")}' AS new_db`);
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+
+    const dmfTables = ['roles', 'role_subroles', 'role_duties', 'users', 'user_roles', 'user_role_companies'];
+    for (const t of dmfTables) {
+      const before = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      db.exec(`DELETE FROM main.${t}`);
+      db.exec(`INSERT INTO main.${t} SELECT * FROM new_db.${t}`);
+      const after = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      context.log(`  ${t}: ${before} → ${after}`);
+    }
+
+    // Add new custom duties from DMF (don't touch existing AOT duties)
+    const dutyBefore = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    db.exec('INSERT OR IGNORE INTO main.duties SELECT * FROM new_db.duties');
+    const dutyAfter = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    context.log(`  duties: ${dutyBefore} → ${dutyAfter} (added ${dutyAfter - dutyBefore} from DMF)`);
+
+    // Refresh search index for DMF object types
+    db.exec("DELETE FROM main.sec_search WHERE object_type IN ('role', 'user')");
+    db.exec(`
+      INSERT INTO main.sec_search (object_type, object_name, module_id, content)
+      SELECT 'role', role_name, module_id, role_name || ' ' || COALESCE(label, '') || ' ' || COALESCE(description, '') || ' ' || COALESCE(module_id, '')
+      FROM main.roles
+    `);
+    db.exec(`
+      INSERT INTO main.sec_search (object_type, object_name, module_id, content)
+      SELECT 'user', user_id, NULL, user_id || ' ' || COALESCE(person_name, '') || ' ' || COALESCE(email, '') || ' ' || COALESCE(default_company, '')
+      FROM main.users
+    `);
+
+    const counts = updateBuildMetadata(db, 'merged-dmf-into-aot');
+
+    db.exec('COMMIT');
+    db.exec('DETACH DATABASE new_db');
+    db.close();
+    return counts;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    try { db.exec('DETACH DATABASE new_db'); } catch { /* ignore */ }
+    db.close();
+    throw err;
+  }
+}
+
+/**
+ * Merge AOT data from a freshly-built AOT-only database INTO the existing
+ * production database in-place. Preserves DMF runtime tables and the bulky
+ * 34M effective duty_privileges view.
+ *
+ * Used by Flow B (AOT update) — typically after a D365 code deploy.
+ */
+function mergeAotUpdateInPlace(dbPath, newBuildPath, context) {
+  context.log(`Merging AOT data from ${newBuildPath} INTO ${dbPath} (in-place)`);
+
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = DELETE');
+  db.pragma('synchronous = NORMAL');
+
+  db.exec(`ATTACH DATABASE '${newBuildPath.replace(/'/g, "''")}' AS new_db`);
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+
+    // REPLACE: AOT-sourced tables
+    const replaceTables = ['privileges', 'privilege_entry_points', 'role_direct_privileges', 'role_direct_entity_permissions'];
+    for (const t of replaceTables) {
+      const before = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      db.exec(`DELETE FROM main.${t}`);
+      db.exec(`INSERT INTO main.${t} SELECT * FROM new_db.${t}`);
+      const after = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      context.log(`  ${t}: ${before} → ${after}`);
+    }
+
+    // ADD-ONLY: new AOT duties (preserve custom DMF duties)
+    const dutyBefore = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    db.exec('INSERT OR IGNORE INTO main.duties SELECT * FROM new_db.duties');
+    const dutyAfter = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    context.log(`  duties: ${dutyBefore} → ${dutyAfter} (added ${dutyAfter - dutyBefore} from AOT)`);
+
+    // ADD-ONLY: AOT direct duty-privilege pairs (preserves the 34M effective view)
+    const dpBefore = db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get().n;
+    db.exec('INSERT OR IGNORE INTO main.duty_privileges SELECT * FROM new_db.duty_privileges');
+    const dpAfter = db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get().n;
+    context.log(`  duty_privileges: ${dpBefore} → ${dpAfter} (added ${dpAfter - dpBefore} from AOT)`);
+
+    // Refresh search index for refreshed object types
+    db.exec("DELETE FROM main.sec_search WHERE object_type IN ('duty', 'privilege')");
+    db.exec(`
+      INSERT INTO main.sec_search (object_type, object_name, module_id, content)
+      SELECT 'duty', duty_id, module_id, duty_id || ' ' || COALESCE(duty_name, '') || ' ' || COALESCE(description, '') || ' ' || COALESCE(module_id, '')
+      FROM main.duties
+    `);
+    db.exec(`
+      INSERT INTO main.sec_search (object_type, object_name, module_id, content)
+      SELECT 'privilege', privilege_name, module_id, privilege_name || ' ' || COALESCE(label, '') || ' ' || COALESCE(module_id, '')
+      FROM main.privileges
+    `);
+
+    const counts = updateBuildMetadata(db, 'merged-aot-into-dmf');
+
+    db.exec('COMMIT');
+    db.exec('DETACH DATABASE new_db');
+    db.close();
+    return counts;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    try { db.exec('DETACH DATABASE new_db'); } catch { /* ignore */ }
+    db.close();
+    throw err;
+  }
+}
+
+/**
+ * Run the security database build in the background.
+ * Called from /build endpoint — runs after the HTTP response is sent.
+ */
+async function runBuildAsync(jobId, context) {
+  const job = getJob(jobId);
+  if (!job) return;
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'sec-build-'));
+  try {
+    // Download from source
+    if (job.sourceUrl) {
+      updateJob(jobId, { status: 'downloading', progress: 'Downloading ZIP from source URL...' });
+      const zipPath = join(tmpDir, 'download.zip');
+      await downloadToFile(job.sourceUrl, zipPath, { log: (msg) => context.log(msg) });
+      extractZipSafe(zipPath, tmpDir, { log: (msg) => context.log(msg) });
+      try { rmSync(zipPath, { force: true }); } catch { /* ignore */ }
+    } else if (job.blobName) {
+      updateJob(jobId, { status: 'downloading', progress: 'Downloading ZIP from blob storage...' });
+      const zipPath = join(tmpDir, 'upload.zip');
+      await downloadBlobToFile(job.blobName, zipPath);
+      updateJob(jobId, { status: 'extracting', progress: 'Extracting ZIP...' });
+      extractZipSafe(zipPath, tmpDir, { log: (msg) => context.log(msg) });
+      try { rmSync(zipPath, { force: true }); } catch { /* ignore */ }
+    }
+
+    const dmfDir = detectDmfDir(tmpDir);
+    const aotDir = detectAotDir(tmpDir);
+    if (!dmfDir && !aotDir) {
+      throw new Error('No recognized DMF XML or AOT files found in the ZIP.');
+    }
+
+    updateJob(jobId, { status: 'building', progress: 'Building security database...' });
+
+    const dbPath = process.env.SEC_DB_PATH || '/home/data/d365fo_sec.sqlite';
+
+    // Decide build mode based on what's in the upload:
+    //   has DMF + AOT: full rebuild (no merge)
+    //   has DMF only:  merge DMF into existing AOT (Flow A)
+    //   has AOT only:  merge AOT into existing DMF (Flow B)
+    let mode = 'full';
+    if (existsSync(dbPath)) {
+      try {
+        const existing = new Database(dbPath, { readonly: true, fileMustExist: true });
+        const hasAot = existing.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get().n > 0;
+        const hasDmfRoles = existing.prepare('SELECT COUNT(*) as n FROM roles').get().n > 0;
+        existing.close();
+        if (dmfDir && !aotDir && hasAot) mode = 'merge-dmf';
+        else if (aotDir && !dmfDir && hasDmfRoles) mode = 'merge-aot';
+      } catch { /* DB unreadable, full rebuild */ }
+    }
+
+    context.log(`Build mode: ${mode}`);
+
+    // Always build to temp (never directly overwrite dbPath)
+    const newBuildPath = join(tmpDir, 'new-build.sqlite');
+    const result = buildSecurityDatabase({
+      packagesPathArg: aotDir || 'skip',
+      dmfInputDir: dmfDir || 'skip',
+      outputPath: newBuildPath,
+      log: (msg) => {
+        context.log(msg);
+        updateJob(jobId, { progress: msg });
+      },
+    });
+
+    let finalCounts = result.counts;
+    let modeLabel = 'full rebuild';
+
+    if (mode === 'merge-dmf') {
+      updateJob(jobId, { progress: 'Merging DMF data into existing database (preserving AOT)...' });
+      reloadSecDb(); // Close singleton before in-place modification
+      finalCounts = mergeBuildsInPlace(dbPath, newBuildPath, context);
+      modeLabel = 'merged (DMF into existing AOT)';
+    } else if (mode === 'merge-aot') {
+      updateJob(jobId, { progress: 'Merging AOT data into existing database (preserving DMF)...' });
+      reloadSecDb();
+      finalCounts = mergeAotUpdateInPlace(dbPath, newBuildPath, context);
+      modeLabel = 'merged (AOT into existing DMF)';
+    } else {
+      // Full rebuild: replace dbPath with new build via same-directory rename
+      const inplaceTemp = join(dirname(dbPath), 'd365fo_sec.sqlite.new');
+      reloadSecDb();
+      copyFileSync(newBuildPath, inplaceTemp);
+      rmSync(dbPath, { force: true });
+      try { renameSync(inplaceTemp, dbPath); }
+      catch {
+        if (existsSync(inplaceTemp)) {
+          copyFileSync(inplaceTemp, dbPath);
+          rmSync(inplaceTemp, { force: true });
+        } else if (!existsSync(dbPath)) {
+          throw new Error('Full rebuild lost the new database file');
+        }
+      }
+    }
+
+    reloadSecDb();
+
+    updateJob(jobId, {
+      status: 'completed',
+      progress: 'Done',
+      result: {
+        mode: modeLabel,
+        counts: finalCounts,
+        elapsed: `${result.elapsed}s`,
+      },
+    });
+  } catch (err) {
+    context.error(`Build job ${jobId} failed:`, err);
+    updateJob(jobId, { status: 'failed', error: err.message });
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    if (job.blobName) deleteBlob(job.blobName).catch(() => {});
+  }
+}
+
+// ── GET /api/d365sec/upload/sas ─────────────────────────────────────────────
+
+app.http('d365sec-upload-sas', {
+  methods: ['GET'],
+  route: 'd365sec/upload/sas',
+  authLevel: 'anonymous',
+  handler: async (request, context) => {
+    try {
+      const filename = new URL(request.url).searchParams.get('filename') || 'export.zip';
+      const job = createJob();
+      const blobName = `${job.id}/${filename}`;
+      updateJob(job.id, { blobName });
+
+      await ensureContainer();
+      const uploadUrl = generateUploadSasUrl(blobName, 60);
+
+      return {
+        status: 200,
+        jsonBody: {
+          job_id: job.id,
+          upload_url: uploadUrl,
+          blob_name: blobName,
+          expires_in: 3600,
+        },
+      };
+    } catch (err) {
+      context.error('SAS generation error:', err);
+      return { status: 500, jsonBody: { error: err.message } };
+    }
+  },
+});
+
+// ── POST /api/d365sec/upload/build ──────────────────────────────────────────
+
+app.http('d365sec-upload-build', {
+  methods: ['POST'],
+  route: 'd365sec/upload/build',
+  authLevel: 'anonymous',
+  handler: async (request, context) => {
+    try {
+      const body = await request.json();
+
+      let job;
+      if (body.job_id) {
+        // Resume a job that was created via /sas
+        job = getJob(body.job_id);
+        if (!job) return { status: 404, jsonBody: { error: `Job ${body.job_id} not found.` } };
+        if (job.status !== 'pending') return { status: 409, jsonBody: { error: `Job already ${job.status}.` } };
+      } else if (body.source_url) {
+        // PowerAutomate shortcut: create job + start build from URL
+        job = createJob({ sourceUrl: body.source_url });
+      } else {
+        return {
+          status: 400,
+          jsonBody: {
+            error: 'Provide job_id (from /sas) or source_url (direct download URL).',
+            examples: [
+              { job_id: 'abc123' },
+              { source_url: 'https://d365-export-url/package.zip' },
+            ],
+          },
+        };
+      }
+
+      // Start build in background — return 202 immediately
+      setImmediate(() => runBuildAsync(job.id, context));
+
+      return {
+        status: 202,
+        jsonBody: {
+          job_id: job.id,
+          status: 'accepted',
+          status_url: `/api/d365sec/upload/status?job_id=${job.id}`,
+          message: 'Build started. Poll the status_url for progress.',
+        },
+      };
+    } catch (err) {
+      context.error('Build trigger error:', err);
+      const status = err.message.includes('already in progress') ? 409 : 500;
+      return { status, jsonBody: { error: err.message } };
+    }
+  },
+});
+
+// ── GET /api/d365sec/upload/status ──────────────────────────────────────────
+
+app.http('d365sec-upload-status', {
+  methods: ['GET'],
+  route: 'd365sec/upload/status',
+  authLevel: 'anonymous',
+  handler: async (request) => {
+    const jobId = new URL(request.url).searchParams.get('job_id');
+    if (!jobId) return { status: 400, jsonBody: { error: 'Missing job_id query parameter.' } };
+
+    const job = getJob(jobId);
+    if (!job) return { status: 404, jsonBody: { error: `Job ${jobId} not found.` } };
+
+    const response = {
+      job_id: job.id,
+      status: job.status,
+      progress: job.progress,
+      created_at: job.createdAt,
+      updated_at: job.updatedAt,
+    };
+
+    if (job.status === 'completed') response.result = job.result;
+    if (job.status === 'failed') response.error = job.error;
+
+    return { status: 200, jsonBody: response };
   },
 });

@@ -114,19 +114,18 @@ xref_find_event_handlers
 sec_lookup_role
 sec_lookup_duty
 sec_lookup_privilege
-sec_find_roles_by_duty
-sec_find_duties_by_privilege
 sec_lookup_user
+sec_role_hierarchy
 sec_find_users_by_role
-sec_find_users_by_duty
-sec_find_users_by_privilege
-sec_lookup_entity_permissions
+sec_find_roles_by_duty
+sec_find_roles_by_privilege
+sec_company_users
 sec_permission_trace
-sec_find_role_conflicts
-sec_check_permission
+sec_compare_roles
 sec_effective_permissions
-sec_raw_sql
+sec_search
 sec_stats
+sec_raw_sql
 ```
 
 #### D365-TaskRecorder Connection -- 1 tool

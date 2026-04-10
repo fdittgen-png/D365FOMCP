@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@azure/functions": "^4.9.0",
+    "@azure/storage-blob": "^12.31.0",
     "@modelcontextprotocol/sdk": "^1.27.0",
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.8.0",

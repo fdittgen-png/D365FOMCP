@@ -531,7 +531,7 @@ Total pipeline runtime: **~25-40 minutes** (including large database uploads).
 | Azure subscription with resource group `tis-{env}-mcpd365fo-rg` | TIS IT | Done |
 | Azure DevOps service connection `azure-mcpd365fo` | TIS IT | Done |
 | D365 PackagesLocalDirectory access (dev environment) | Eugene | Done |
-| DMF data project with 6 security entities configured in PROD | Eugene (CR 99351) | In progress |
+| DMF data project `secMCP_Repository` (6 security entities) configured in PROD | Eugene (CR 99351) | In progress |
 | SecurityDatabaseCustomizations export from PROD | Florian / Eugene | Done |
 | OTRS BI report credentials & access | TIS IT | Not started |
 | OTRS REST API credentials (service account) | TIS IT / OTRS admin | Not started |
