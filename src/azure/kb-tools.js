@@ -48,6 +48,14 @@ export function registerKbTools(server, db) {
 
   const q = (sql, params = []) => query(db, sql, params);
 
+  /** Safe number coercion for SQLite TEXT columns that may contain "Yes"/"No"
+   *  or other non-numeric strings. Returns null for non-parseable values. */
+  function toNum(v) {
+    if (v == null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function queryFormatted(sql, params = [], columns) {
     try {
       const rows = q(sql, params);
@@ -130,7 +138,7 @@ export function registerKbTools(server, db) {
         module_id: row.module_id ?? null,
         label: row.label ? resolve(row.label) : null,
         table_group: row.table_group ?? null,
-        save_per_company: row.save_per_company != null ? Number(row.save_per_company) : null,
+        save_per_company: toNum(row.save_per_company),
         cache_lookup: row.cache_lookup ?? null,
         clustered_index: row.clustered_index ?? null,
         replacement_key: row.replacement_key ?? null,
@@ -141,7 +149,7 @@ export function registerKbTools(server, db) {
           edt: f.edt ?? null,
           enum_type: f.enum_type ?? null,
           label: f.label ? resolve(f.label) : null,
-          mandatory: f.mandatory != null ? Number(f.mandatory) : null,
+          mandatory: toNum(f.mandatory),
         })),
         indexes: idxRows.map(i => ({
           name: i.index_name,
@@ -846,14 +854,14 @@ export function registerKbTools(server, db) {
         key_tables: tableRows.map(r => ({
           table_name: r.table_name,
           label: r.label ? resolve(r.label) : null,
-          field_count: r.field_count != null ? Number(r.field_count) : null,
-          save_per_company: r.save_per_company != null ? Number(r.save_per_company) : null,
+          field_count: toNum(r.field_count),
+          save_per_company: toNum(r.save_per_company),
           table_group: r.table_group ?? null,
         })),
         key_classes: classRows.map(r => ({
           class_name: r.class_name,
           extends_class: r.extends_class ?? null,
-          method_count: r.method_count != null ? Number(r.method_count) : null,
+          method_count: toNum(r.method_count),
         })),
         tables_truncated: tableRows.length >= tLim,
         classes_truncated: classRows.length >= cLim,
@@ -941,7 +949,7 @@ export function registerKbTools(server, db) {
           field_name: f.field_name,
           data_field: f.data_field ?? null,
           data_source: f.data_source ?? null,
-          is_mandatory: f.is_mandatory != null ? Number(f.is_mandatory) : null,
+          is_mandatory: toNum(f.is_mandatory),
         })),
       };
 
@@ -1000,8 +1008,8 @@ export function registerKbTools(server, db) {
         scenario: scenario ?? null,
         template_count: result.length,
         templates: result.map(row => ({
-          template_id: row.template_id ?? '',
-          title: row.title ?? '',
+          template_id: String(row.template_id ?? ''),
+          title: String(row.title ?? ''),
           description: row.description ?? null,
           sql_template: row.sql_template ?? '',
           tables_used: row.tables_used ?? null,
