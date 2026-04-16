@@ -1,118 +1,291 @@
 # MCP: Safe Deploy
 
-End-to-end safe deployment of MCP service code (`src/azure/`, `src/functions/`, `host.json`, etc.) to the Azure Function App. Use this for any change to the runtime, not just deploys triggered by the user.
+End-to-end safe deployment of MCP service code to the Azure Function App. Covers all 4 services (KB, XRef, Security, Task Recorder) deployed as a single package.
 
 ## Arguments
-- $ARGUMENTS: optional — `--skip-tests` to skip the test suite (not recommended), `--prod` (note: prod doesn't exist as of 2026-04-10)
+- $ARGUMENTS: optional flags and scope:
+  - `--skip-tests` — skip the test suite (not recommended)
+  - `--prod` — target production (DOES NOT EXIST as of 2026-04-16 — reject with explanation)
+  - `--dry-run` — run all pre-flight checks but do not deploy
+  - `--skip-capture` — skip the Phase 2 state snapshot (faster, less safe)
 
-## Workflow
+## Constants
 
-### Phase 1 — Pre-flight checks (mandatory)
+```
+RESOURCE_GROUP    = tis-d-mcpd365fo-rg
+FUNCTION_APP      = tis-d-mcpd365fo-func
+BASE_URL          = https://tis-d-mcpd365fo-func.azurewebsites.net
+NODE_TARGET       = 20.20.0
+EXPECTED_SERVICES = d365kb d365xref d365sec d365taskrecorder
+```
 
-Run all in parallel:
+---
 
-1. **Verify the dev environment exists** (PROD does NOT exist as of 2026-04-10):
-   ```bash
-   az group show --name tis-d-mcpd365fo-rg --query "name" -o tsv
-   ```
-2. **Module load smoke test** for every modified `.js` file in `src/`:
-   ```bash
-   for f in $(git diff --name-only HEAD -- 'src/**/*.js'); do
-     node -e "import('./$f').then(() => console.log('OK: $f')).catch(e => console.error('FAIL: $f -', e.message))" 2>&1 | grep -v WARNING
-   done
-   ```
-   **Hard stop on any FAIL.** A module that doesn't load will take down ALL 5 endpoints.
-3. **Run tests**: `npm test 2>&1 | tail -8` — must show `pass 254` (or whatever the current count is).
-4. **Check for the template-literal trap** in any HTML-template-bearing file:
-   ```bash
-   grep -nE '\$\{[A-Z_]+\}' src/functions/*.js
-   ```
-   If any matches, verify each is properly escaped or replaced. The bug pattern is `${VAR_NAME}` inside a backtick template literal where `VAR_NAME` isn't a real JS identifier in scope.
-5. **Check for fragile file operations** in changed files:
-   ```bash
-   git diff src/functions/d365sec-upload.js src/azure/sec-builder.js | grep -nE '(rmSync|renameSync|copyFileSync|unlinkSync)'
-   ```
-   Any new occurrences need a manual safety review. Default rule: never `rmSync(dest)` until you've verified the source is safely in place. For Azure CIFS persistence, prefer SQLite ATTACH-based in-place modifications over file rename gymnastics.
+## Phase 1 — Pre-flight checks (mandatory, parallel)
 
-### Phase 2 — Capture the current state (rollback insurance)
+Run ALL of these in parallel. **Hard stop on any failure.**
+
+### 1a. Azure auth + resource group
 
 ```bash
-# Snapshot current database stats so you can verify nothing was lost after deploy
+az account show --query "user.name" -o tsv 2>/dev/null || echo "FAIL: not logged in"
+az group show --name tis-d-mcpd365fo-rg --query "name" -o tsv
+```
+
+If not logged in, tell the user to run `! az login` and wait.
+
+### 1b. Module load smoke test
+
+Test EVERY function entry point — not just changed files. A transitive import failure (e.g., in shared.js or output-schemas.js) crashes all endpoints.
+
+```bash
+for f in src/functions/d365kb.js src/functions/d365xref.js src/functions/d365sec.js src/functions/d365sec-upload.js src/functions/d365taskrecorder.js; do
+  node -e "import('./$f').then(() => console.log('OK: $f')).catch(e => console.error('FAIL: $f -', e.message))" 2>&1 | grep -v WARNING
+done
+```
+
+**Hard stop on any FAIL.** A module that doesn't load takes down ALL endpoints — the Function App returns 404 for every route.
+
+### 1c. Run tests
+
+```bash
+npm test 2>&1 | tail -10
+```
+
+Must show **554 pass, 0 fail** (or the current count — never lower than the previous deploy). If tests fail, stop and fix before deploying.
+
+### 1d. Response contract validation
+
+```bash
+# No hand-rolled empty/not-found strings — must use shared.js helpers
+grep -nE "textResult\(\s*[\"'\`]No (results|methods|tables|roles|users|duties|privileges)" src/azure/*-tools.js
+grep -nE "textResult\(\s*\`[A-Z][a-z]+ \".+\" not found" src/azure/*-tools.js
+```
+
+Both must return **zero hits**.
+
+### 1e. Template-literal trap
+
+```bash
+grep -nE '\$\{[A-Z_]+\}' src/functions/*.js
+```
+
+Each match must be a real JS identifier in scope. The bug: `${VAR_NAME}` inside a backtick template literal where `VAR_NAME` isn't defined — throws `ReferenceError` at module load, crashing the entire Function App.
+
+### 1f. Fragile file operations
+
+```bash
+git diff HEAD -- src/functions/ src/azure/sec-builder.js | grep -nE '(rmSync|renameSync|copyFileSync|unlinkSync)' || echo "OK: no new fragile ops"
+```
+
+Any new occurrence needs manual review. Rule: never `rmSync(dest)` before verifying source is in place. On Azure CIFS, prefer SQLite ATTACH in-place modifications over file rename.
+
+### 1g. Verify critical assets exist
+
+```bash
+test -f host.json && echo "OK: host.json" || echo "FAIL: host.json missing"
+test -f www/taskrecorder.html && echo "OK: www/taskrecorder.html" || echo "FAIL: www/taskrecorder.html missing"
+test -f src/azure/output-schemas.js && echo "OK: output-schemas.js" || echo "FAIL: output-schemas.js missing"
+```
+
+The Task Recorder function reads `www/taskrecorder.html` at import time — missing it crashes the entire Function App.
+
+---
+
+## Phase 2 — Capture current state (rollback insurance)
+
+Skip with `--skip-capture`. Otherwise:
+
+```bash
+echo "=== Pre-deploy state ==="
+for svc in d365kb d365xref d365sec; do
+  printf "%-10s " "$svc"
+  curl -s -o /dev/null -w "HTTP %{http_code}" "https://tis-d-mcpd365fo-func.azurewebsites.net/api/$svc"
+  echo ""
+done
+```
+
+Capture sec database stats (the most fragile service):
+
+```bash
 curl -s -X POST "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec" \
   -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sec_raw_sql","arguments":{"sql":"SELECT key, value FROM sec_metadata WHERE key IN (\u0027build_date\u0027,\u0027dutyPrivileges\u0027,\u0027privileges\u0027,\u0027entryPoints\u0027,\u0027roles\u0027,\u0027users\u0027)"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sec_stats","arguments":{}}}'
 ```
-Save the output. After deploy, the same query should return the same counts (or higher).
 
-### Phase 3 — Deploy
+Save the output. After deploy, counts must match exactly (deploy doesn't touch databases).
+
+---
+
+## Phase 3 — Deploy
 
 ```powershell
 .\scripts\Deploy-SecService.ps1 -Environment d -SkipDbUpload -SkipValidation
 ```
 
-**Always pass `-SkipDbUpload`** unless you specifically need to upload a fresh local database (which is rare; the async build pattern is preferred). The deploy script's built-in validation is unreliable on cold starts — use Phase 4 instead.
+**Rules:**
+- **Always** pass `-SkipDbUpload` — the deploy should never touch databases. Use the async build pattern or `Deploy-Databases.ps1` for DB updates.
+- **Always** pass `-SkipValidation` — the script's built-in validation races with cold start. Use Phase 4 instead.
+- The script deploys ALL services (KB, XRef, Sec, TaskRecorder) as a single zip.
 
-### Phase 4 — Post-deploy verification
+**What the script does:**
+1. Copies `host.json`, `package.json`, `src/azure/`, `src/functions/`, `www/` to `.deploy-sec/`
+2. Runs `npm install --omit=dev`
+3. Cross-installs Linux `better-sqlite3` binary (`prebuild-install --platform linux --arch x64 --target 20.20.0`)
+4. Sets `SCM_DO_BUILD_DURING_DEPLOYMENT=false`
+5. Zips and deploys via `az functionapp deployment source config-zip`
+6. Cleans up temp files
 
-Wait 30 seconds for cold start, then:
+**Expected duration:** 2-4 minutes for the zip deploy.
+
+---
+
+## Phase 4 — Post-deploy verification
+
+Wait for cold start (the Function App needs to restart and load ~6 GB of SQLite databases):
 
 ```bash
-sleep 30
+echo "Waiting 45s for cold start..."
+sleep 45
 echo "=== Endpoint health ==="
-for path in d365kb d365xref d365sec d365sec/upload d365sec/upload/sas\?filename=t.zip d365sec/upload/status\?job_id=x d365taskrecorder/upload; do
-  printf "%-40s " "/$path"
+for path in d365kb d365xref d365sec d365sec/upload d365taskrecorder d365taskrecorder/upload; do
+  printf "%-35s " "/$path"
   curl -s -o /dev/null -w "HTTP %{http_code}\n" "https://tis-d-mcpd365fo-func.azurewebsites.net/api/$path"
 done
 ```
 
 **Expected:**
-| Endpoint | Expected status |
-|---|---|
-| `/d365kb`, `/d365xref`, `/d365sec`, `/d365taskrecorder` | 200 |
-| `/d365sec/upload`, `/d365taskrecorder/upload` | 200 |
-| `/d365sec/upload/sas?...` | 200 |
-| `/d365sec/upload/status?job_id=x` | 404 (job doesn't exist — endpoint works) |
 
-**Any 404 on the MCP endpoints (`/d365kb` through `/d365taskrecorder`) means the function module failed to load.** Most likely cause: template-literal trap or import error in the new code. Check Kudu logs or Application Insights immediately.
+| Endpoint | Status | Meaning |
+|---|---|---|
+| `/d365kb` | 200 | KB MCP healthy |
+| `/d365xref` | 200 | XRef MCP healthy |
+| `/d365sec` | 200 | Security MCP healthy |
+| `/d365sec/upload` | 200 | Upload UI renders |
+| `/d365taskrecorder` | 200 | Task Recorder MCP healthy |
+| `/d365taskrecorder/upload` | 200 | Task Recorder upload UI |
 
-### Phase 5 — Verify the database is still intact
+**If ANY MCP endpoint returns 404:**
+- The function module failed to load → ALL routes are dead
+- Most likely: template-literal trap, import error, or missing file
+- Check Application Insights or Kudu log stream
+- Roll back immediately (see Rollback section)
 
-```bash
-# Re-run the snapshot query and compare
-sec_raw_sql: SELECT key, value FROM sec_metadata WHERE key IN ('build_date','dutyPrivileges','privileges','entryPoints','roles','users')
-```
-
-Counts should match Phase 2 exactly (the deploy doesn't touch the database). If `dutyPrivileges` dropped from 34M to 6,300 (or zero), an in-place merge ran during cold start and may have corrupted state — investigate immediately.
-
-### Phase 6 — Functional smoke test
-
-For deploys touching the upload flow:
-- Open `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec/upload` in a browser
-- Verify the form renders (not the raw `${...}` placeholders)
-- Verify the database stats line shows correct numbers
-- Don't actually upload unless you have a test zip ready
-
-### Rollback
-
-If verification fails:
-```bash
-# Get the previous deployment version from git
-git log --oneline -5
-# Reset and redeploy
-git revert HEAD
-.\scripts\Deploy-SecService.ps1 -Environment d -SkipDbUpload -SkipValidation
-```
-
-For database corruption: re-upload the local known-good database via Kudu VFS (see `mcp-db-admin` skill).
+**If 502/503:**
+- Function worker crashed (OOM) or is still cold-starting
+- Wait 30 more seconds and retry
+- If persistent: `az functionapp restart --resource-group tis-d-mcpd365fo-rg --name tis-d-mcpd365fo-func`
 
 ---
 
-## Common deploy failures and fixes
+## Phase 5 — Verify database integrity
 
-| Symptom | Likely cause | Fix |
+```bash
+curl -s -X POST "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec" \
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sec_stats","arguments":{}}}'
+```
+
+Compare against Phase 2 snapshot:
+- `build_date` must be identical
+- Row counts (roles, duties, privileges, entry points, users) must match exactly
+- If `dutyPrivileges` dropped from millions to thousands → in-place merge corruption. Investigate immediately.
+
+---
+
+## Phase 6 — Functional smoke test (for upload flow changes)
+
+Only needed when `src/functions/d365sec-upload.js` or `www/` was modified:
+
+1. Open `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec/upload` in browser
+2. Verify the form renders (no raw `${...}` placeholders)
+3. Verify the database stats line shows correct numbers
+4. Open `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder/upload`
+5. Verify Task Recorder upload form renders
+
+---
+
+## Rollback
+
+### Code rollback (fast — 3 minutes)
+
+```bash
+git log --oneline -5                 # find the pre-deploy commit
+git revert HEAD --no-edit            # create revert commit
+npm test 2>&1 | tail -5             # verify revert is clean
+```
+
+Then redeploy:
+
+```powershell
+.\scripts\Deploy-SecService.ps1 -Environment d -SkipDbUpload -SkipValidation
+```
+
+### Database rollback (if corruption detected)
+
+1. Find a known-good local copy of the database
+2. Upload via Kudu VFS:
+
+```powershell
+.\scripts\Deploy-Databases.ps1 -Environment d -SecOnly
+```
+
+Or manually:
+
+```bash
+# Get Kudu creds
+az functionapp deployment list-publishing-credentials \
+  --resource-group tis-d-mcpd365fo-rg --name tis-d-mcpd365fo-func \
+  --query '{user:publishingUserName, pass:publishingPassword}' -o json
+
+# Upload (replace $USER:$PASS)
+curl -X PUT "https://tis-d-mcpd365fo-func.scm.azurewebsites.net/api/vfs/data/d365fo_sec.sqlite" \
+  -u "$USER:$PASS" -H "If-Match: *" \
+  --data-binary @/path/to/d365fo_sec.sqlite
+```
+
+3. Restart: `az functionapp restart --resource-group tis-d-mcpd365fo-rg --name tis-d-mcpd365fo-func`
+
+---
+
+## Common failures
+
+| Symptom | Cause | Fix |
 |---|---|---|
-| All endpoints return 404 after deploy | Module load error in any file under `src/functions/` | Check for template-literal trap (`${var}` in backtick string), syntax errors, missing imports. Roll back. |
-| `/d365sec` returns 200 but queries fail with "unable to open database file" | Database lost or corrupted during deploy | Re-upload via Kudu VFS. Should never happen because deploy uses `-SkipDbUpload`. |
-| Cold start takes >60 s | Container restart on a B-tier plan with the 6.2 GB DB | Normal. Wait. |
-| HTTP 502 on a request | Function worker crashed (likely OOM during a build) | Restart the function app. Investigate the recent operation. |
-| `/upload/sas` returns 500 | Storage account credentials issue OR the storage account doesn't exist | Check `AzureWebJobsStorage` env var; verify CORS rules. |
+| All endpoints 404 | Module load error in `src/functions/` | Template-literal trap, missing import, syntax error. Roll back. |
+| `/d365sec` 200 but queries fail "unable to open database" | Database file lost or corrupted | Re-upload via `Deploy-Databases.ps1 -SecOnly` |
+| Cold start >60s | Normal for P0v3 with 6+ GB databases | Wait. Premium plan Always On keeps it warm after first load. |
+| HTTP 502 | Worker OOM during build/merge | Restart function app. Reduce concurrent operations. |
+| `/upload/sas` returns 500 | `AzureWebJobsStorage` misconfigured | Check env var in Azure Portal → Function App → Configuration |
+| `prebuild-install` fails in deploy script | Network issue or Node version mismatch | Verify `--target 20.20.0` matches Azure Function runtime. Check proxy settings. |
+
+---
+
+## Database-only deployment
+
+When only updating databases (no code change):
+
+```powershell
+# All databases
+.\scripts\Deploy-Databases.ps1 -Environment d
+
+# Security only (most common)
+.\scripts\Deploy-Databases.ps1 -Environment d -SecOnly
+
+# Skip restart (for staging multiple DBs)
+.\scripts\Deploy-Databases.ps1 -Environment d -KbOnly -SkipRestart
+.\scripts\Deploy-Databases.ps1 -Environment d -XrefOnly -SkipRestart
+.\scripts\Deploy-Databases.ps1 -Environment d -SecOnly  # restarts on last one
+```
+
+---
+
+## Infrastructure deployment (rare)
+
+Only needed when Bicep templates change:
+
+```powershell
+.\scripts\Deploy-Infrastructure.ps1 -Environment d
+```
+
+Then deploy code on top: `.\scripts\Deploy-SecService.ps1 -Environment d -SkipDbUpload`
