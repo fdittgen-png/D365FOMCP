@@ -846,14 +846,14 @@ export function registerKbTools(server, db) {
         key_tables: tableRows.map(r => ({
           table_name: r.table_name,
           label: r.label ? resolve(r.label) : null,
-          field_count: r.field_count ?? null,
-          save_per_company: r.save_per_company ?? null,
+          field_count: r.field_count != null ? Number(r.field_count) : null,
+          save_per_company: r.save_per_company != null ? Number(r.save_per_company) : null,
           table_group: r.table_group ?? null,
         })),
         key_classes: classRows.map(r => ({
           class_name: r.class_name,
           extends_class: r.extends_class ?? null,
-          method_count: r.method_count ?? null,
+          method_count: r.method_count != null ? Number(r.method_count) : null,
         })),
         tables_truncated: tableRows.length >= tLim,
         classes_truncated: classRows.length >= cLim,
@@ -941,7 +941,7 @@ export function registerKbTools(server, db) {
           field_name: f.field_name,
           data_field: f.data_field ?? null,
           data_source: f.data_source ?? null,
-          is_mandatory: f.is_mandatory ?? null,
+          is_mandatory: f.is_mandatory != null ? Number(f.is_mandatory) : null,
         })),
       };
 
@@ -1000,10 +1000,10 @@ export function registerKbTools(server, db) {
         scenario: scenario ?? null,
         template_count: result.length,
         templates: result.map(row => ({
-          template_id: row.template_id,
-          title: row.title,
+          template_id: row.template_id ?? '',
+          title: row.title ?? '',
           description: row.description ?? null,
-          sql_template: row.sql_template,
+          sql_template: row.sql_template ?? '',
           tables_used: row.tables_used ?? null,
         })),
       };
