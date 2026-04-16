@@ -43,8 +43,8 @@ export const d365LookupTableIndexSchema = z.object({
 });
 
 export const d365LookupTableRelationSchema = z.object({
-  relation_name: z.string(),
-  related_table: z.string(),
+  relation_name: z.string().nullable(),
+  related_table: z.string().nullable(),
   join_fields: z.array(z.object({
     field: z.string().nullable(),
     related_field: z.string().nullable(),
@@ -54,8 +54,8 @@ export const d365LookupTableRelationSchema = z.object({
 });
 
 export const d365LookupTableIncomingRelationSchema = z.object({
-  source_table: z.string(),
-  relation_name: z.string(),
+  source_table: z.string().nullable(),
+  relation_name: z.string().nullable(),
   join_fields: z.array(z.object({
     field: z.string().nullable(),
     related_field: z.string().nullable(),
@@ -206,9 +206,9 @@ export const secEffectivePermissionsOutput = z.object({
 
 // d365_get_join_keys — join relationships between two tables
 export const d365GetJoinKeysRelationSchema = z.object({
-  source_table: z.string(),
-  related_table: z.string(),
-  relation_name: z.string(),
+  source_table: z.string().nullable(),
+  related_table: z.string().nullable(),
+  relation_name: z.string().nullable(),
   relationship_type: z.string().nullable(),
   join_pairs: z.array(z.object({
     source_field: z.string().nullable(),
@@ -288,8 +288,8 @@ export const d365GetMethodSourceOutput = z.object({
 
 // d365_find_referencing_tables — tables referencing this table
 export const d365FindReferencingTableSchema = z.object({
-  source_table: z.string(),
-  relation_name: z.string(),
+  source_table: z.string().nullable(),
+  relation_name: z.string().nullable(),
   relationship_type: z.string().nullable(),
   join_fields: z.array(z.object({
     field: z.string().nullable(),
