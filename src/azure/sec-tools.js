@@ -9,91 +9,307 @@
  *   registerSecTools(server, db);
  */
 
-import { query, formatMarkdownTable, textResult } from './shared.js';
+import {
+  query,
+  formatMarkdownTable,
+  textResult,
+  emptyResult,
+  notFoundResult,
+  truncationNote,
+  errorResult,
+  structuredResult,
+  formatPermission,
+  formatCrudFlag,
+  contextAround,
+  READ_ONLY_DB_ANNOTATIONS,
+} from './shared.js';
 import { z } from 'zod';
+import {
+  secLookupUserOutput,
+  secEffectivePermissionsOutput,
+  secLookupRoleOutput,
+  secLookupDutyOutput,
+  secLookupPrivilegeOutput,
+  secRoleHierarchyOutput,
+  secFindUsersByRoleOutput,
+  secFindRolesByDutyOutput,
+  secFindRolesByPrivilegeOutput,
+  secCompanyUsersOutput,
+  secPermissionTraceOutput,
+  secCompareRolesOutput,
+  secSearchOutput,
+  secStatsOutput,
+  rawSqlOutput,
+  secLicenceAssessmentOutput,
+  secSodCheckOutput,
+  secWhatIfOutput,
+  secObjectAccessOutput,
+} from './output-schemas.js';
+import { readFileSync } from 'fs';
 
-// ── Register all 15 Security tools ──────────────────────────────────────────
+// ── Licence tier cost table (Microsoft published pricing, GBP, March 2026) ──
+// Sorted by monthly_cost ascending. The UserLicenseType enum value in D365's
+// SecurityRole table maps to one of these names. The assessment picks the
+// highest-cost tier across all of a user's assigned Grant roles.
+
+const LICENCE_TIERS = [
+  { name: 'None',       cost: 0.00 },
+  { name: 'SelfServe',  cost: 0.00 },
+  { name: 'Server',     cost: 0.00 },
+  { name: 'Universal',  cost: 5.80 },
+  { name: 'TeamMembers', cost: 5.80 },  // alias used in some DMF exports
+  { name: 'Activity',   cost: 25.30 },
+  { name: 'Task',       cost: 30.00 },
+  { name: 'Functional', cost: 100.00 },
+  { name: 'HR',         cost: 100.00 },
+  { name: 'Project',    cost: 100.00 },
+  { name: 'Commerce',   cost: 135.00 },
+  { name: 'Enterprise', cost: 135.70 },
+  { name: 'Finance',    cost: 135.70 },
+  { name: 'SCM',        cost: 135.70 },
+];
+const TIER_COST_MAP = new Map(LICENCE_TIERS.map(t => [t.name?.toLowerCase(), t.cost]));
+
+function tierCost(tierName) {
+  if (!tierName) return 0;
+  return TIER_COST_MAP.get(tierName.toLowerCase()) ?? 0;
+}
+
+function highestTier(tierNames) {
+  let best = null;
+  let bestCost = -1;
+  for (const t of tierNames) {
+    const c = tierCost(t);
+    if (c > bestCost) { bestCost = c; best = t; }
+  }
+  return { name: best, cost: bestCost > 0 ? bestCost : 0 };
+}
+
+// ── SoD rules loader ────────────────────────────────────────────────────────
+
+let _sodRuleset = null;
+let _sodRulesetError = null;
+
+function loadSodRuleset() {
+  if (_sodRuleset !== null || _sodRulesetError !== null) return;
+  const path = process.env.SOD_RULES_FILE;
+  if (!path) { _sodRulesetError = 'SOD_RULES_FILE not configured'; return; }
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed.rules || !Array.isArray(parsed.rules)) {
+      _sodRulesetError = 'SOD_RULES_FILE must contain a "rules" array';
+      return;
+    }
+    _sodRuleset = parsed;
+  } catch (e) {
+    _sodRulesetError = `Failed to load SOD_RULES_FILE (${path}): ${e.code || e.message}`;
+  }
+}
+
+/** Exported for tests to inject rules directly. */
+export function _injectSodRuleset(ruleset) {
+  _sodRuleset = ruleset;
+  _sodRulesetError = null;
+}
+export function _clearSodRuleset() {
+  _sodRuleset = null;
+  _sodRulesetError = null;
+}
+
+// ── Shared: expand roles through sub-role hierarchy ─────────────────────────
+
+function expandRoles(q, roleIds) {
+  if (!roleIds.length) return new Set();
+  const placeholders = roleIds.map(() => '?').join(',');
+  const expanded = q(`
+    WITH RECURSIVE role_tree AS (
+      SELECT role_id FROM roles WHERE role_id IN (${placeholders})
+      UNION ALL
+      SELECT rs.child_role_id FROM role_subroles rs
+      JOIN role_tree rt ON rs.parent_role_id = rt.role_id
+    )
+    SELECT DISTINCT role_id FROM role_tree
+  `, roleIds);
+  return new Set(expanded.map(r => r.role_id));
+}
+
+// ── Shared: collect effective duties for a set of role IDs ──────────────────
+
+function effectiveDuties(q, allRoleIds) {
+  if (!allRoleIds.size) return { dutySet: new Set(), dutyToRoles: new Map() };
+  const arr = [...allRoleIds];
+  const ph = arr.map(() => '?').join(',');
+  const rows = q(`
+    SELECT rd.duty_id, rd.role_id
+    FROM role_duties rd
+    WHERE rd.role_id IN (${ph}) AND rd.permission_type = 'Grant'
+  `, arr);
+  const dutySet = new Set();
+  const dutyToRoles = new Map();
+  for (const r of rows) {
+    dutySet.add(r.duty_id);
+    if (!dutyToRoles.has(r.duty_id)) dutyToRoles.set(r.duty_id, new Set());
+    dutyToRoles.get(r.duty_id).add(r.role_id);
+  }
+  return { dutySet, dutyToRoles };
+}
+
+// ── Shared: run SoD detection for a set of duties ───────────────────────────
+
+const RISK_WEIGHTS = { Critical: 3, High: 2, Medium: 1 };
+
+function detectSodViolations(dutySet, dutyToRoles, roleNameMap) {
+  if (!_sodRuleset) return [];
+  const violations = [];
+  for (const rule of _sodRuleset.rules) {
+    const matchedA = rule.duty_group_a.duties.filter(d => dutySet.has(d));
+    const matchedB = rule.duty_group_b.duties.filter(d => dutySet.has(d));
+    if (matchedA.length && matchedB.length) {
+      const rolesA = new Set();
+      for (const d of matchedA) for (const rid of (dutyToRoles.get(d) || [])) rolesA.add(roleNameMap.get(rid) || rid);
+      const rolesB = new Set();
+      for (const d of matchedB) for (const rid of (dutyToRoles.get(d) || [])) rolesB.add(roleNameMap.get(rid) || rid);
+      violations.push({
+        rule_id: rule.id,
+        rule_name: rule.name,
+        risk_level: rule.risk_level || 'Medium',
+        category: rule.category || '',
+        group_a_name: rule.duty_group_a.name,
+        group_a_matched: matchedA,
+        group_a_roles: [...rolesA],
+        group_b_name: rule.duty_group_b.name,
+        group_b_matched: matchedB,
+        group_b_roles: [...rolesB],
+      });
+    }
+  }
+  return violations;
+}
+
+// ── Register all 19 Security tools ──────────────────────────────────────────
 
 export function registerSecTools(server, db) {
+
+  loadSodRuleset();
 
   const q = (sql, params = []) => query(db, sql, params);
 
   // ── 1. sec_lookup_role ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_lookup_role',
-    'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.',
-    { role_name: z.string().max(500).describe('Role name (case-insensitive)') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: { role_name: z.string().max(500).describe('Role name (case-insensitive)') },
+      outputSchema: secLookupRoleOutput.shape,
+    },
     async ({ role_name }) => {
       const rn = role_name.trim();
       const role = q(`SELECT * FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
 
       if (!role.length) {
         const fuzzy = q(`SELECT role_name FROM roles WHERE role_name LIKE ? LIMIT 10`, [`%${rn}%`]);
-        if (fuzzy.length) {
-          return textResult(`Role "${rn}" not found. Did you mean:\n${fuzzy.map(r => `- ${r.role_name}`).join('\n')}`);
-        }
-        return textResult(`Role "${rn}" not found.`);
+        return notFoundResult('Role', rn, fuzzy.map(r => r.role_name));
       }
 
       const r = role[0];
-      let out = `# ${r.role_name}\n`;
-      out += `| Property | Value |\n|---|---|\n`;
-      out += `| Module | ${r.module_id || 'N/A'} |\n`;
-      out += `| License Type | ${r.license_type || 'N/A'} |\n`;
-      out += `| Permission | ${r.permission_type} |\n`;
-      out += `| Source | ${r.source} |\n`;
-      out += `| Description | ${r.description || 'N/A'} |\n\n`;
-
-      // Sub-roles
       const subs = q(`SELECT r.role_name, rs.is_transitive
         FROM role_subroles rs JOIN roles r ON r.role_id = rs.child_role_id
         WHERE rs.parent_role_id = ? ORDER BY r.role_name`, [r.role_id]);
-      if (subs.length) {
-        out += `## Sub-Roles (${subs.length})\n`;
-        out += formatMarkdownTable(subs, ['role_name', 'is_transitive']) + '\n\n';
-      }
-
-      // Duties
       const duties = q(`SELECT d.duty_id, d.duty_name, rd.permission_type
         FROM role_duties rd JOIN duties d ON d.duty_id = rd.duty_id
         WHERE rd.role_id = ? ORDER BY d.duty_id`, [r.role_id]);
-      if (duties.length) {
-        out += `## Duties (${duties.length})\n`;
-        out += formatMarkdownTable(duties, ['duty_id', 'duty_name', 'permission_type']) + '\n\n';
-      }
-
-      // Direct privileges
       const dirPrivs = q(`SELECT privilege_name FROM role_direct_privileges
         WHERE role_id = ? ORDER BY privilege_name`, [r.role_id]);
-      if (dirPrivs.length) {
-        out += `## Direct Privileges (${dirPrivs.length})\n`;
-        out += dirPrivs.map(p => `- ${p.privilege_name}`).join('\n') + '\n\n';
-      }
-
-      // Direct entity permissions
       const dirPerms = q(`SELECT entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke FROM role_direct_entity_permissions
         WHERE role_id = ? ORDER BY entity_name`, [r.role_id]);
-      if (dirPerms.length) {
-        out += `## Direct Entity Permissions (${dirPerms.length})\n`;
-        out += formatMarkdownTable(dirPerms,
+      const userCount = q(`SELECT COUNT(*) as n FROM user_roles WHERE role_id = ?`, [r.role_id]);
+
+      const typed = {
+        role_id: r.role_id,
+        role_name: r.role_name,
+        module_id: r.module_id ?? null,
+        label: r.label ?? null,
+        description: r.description ?? null,
+        license_type: r.license_type ?? null,
+        permission_type: r.permission_type ?? null,
+        source: r.source ?? null,
+        sub_roles: subs.map(s => ({
+          role_name: s.role_name,
+          is_transitive: s.is_transitive ?? null,
+        })),
+        duties: duties.map(d => ({
+          duty_id: d.duty_id,
+          duty_name: d.duty_name ?? null,
+          permission_type: d.permission_type ?? null,
+        })),
+        direct_privileges: dirPrivs.map(p => p.privilege_name),
+        direct_entity_permissions: dirPerms.map(p => ({
+          entity_name: p.entity_name,
+          grant_read: p.grant_read ?? null,
+          grant_create: p.grant_create ?? null,
+          grant_update: p.grant_update ?? null,
+          grant_delete: p.grant_delete ?? null,
+          grant_correct: p.grant_correct ?? null,
+          grant_invoke: p.grant_invoke ?? null,
+        })),
+        assigned_user_count: userCount[0]?.n || 0,
+      };
+
+      let out = `## ${typed.role_name}\n`;
+      out += `| Property | Value |\n|---|---|\n`;
+      out += `| Module | ${typed.module_id || 'N/A'} |\n`;
+      out += `| License Type | ${typed.license_type || 'N/A'} |\n`;
+      out += `| Permission | ${formatPermission(typed.permission_type)} |\n`;
+      out += `| Source | ${typed.source ?? ''} |\n`;
+      out += `| Description | ${typed.description || 'N/A'} |\n\n`;
+
+      if (typed.sub_roles.length) {
+        out += `## Sub-Roles (${typed.sub_roles.length})\n`;
+        out += formatMarkdownTable(typed.sub_roles, ['role_name', 'is_transitive']) + '\n\n';
+      }
+
+      if (typed.duties.length) {
+        out += `## Duties (${typed.duties.length})\n`;
+        out += formatMarkdownTable(
+          typed.duties.map(d => ({
+            duty_id: d.duty_id,
+            duty_name: d.duty_name ?? '',
+            permission_type: formatPermission(d.permission_type),
+          })),
+          ['duty_id', 'duty_name', 'permission_type'],
+        ) + '\n\n';
+      }
+
+      if (typed.direct_privileges.length) {
+        out += `## Direct Privileges (${typed.direct_privileges.length})\n`;
+        out += typed.direct_privileges.map(p => `- ${p}`).join('\n') + '\n\n';
+      }
+
+      if (typed.direct_entity_permissions.length) {
+        out += `## Direct Entity Permissions (${typed.direct_entity_permissions.length})\n`;
+        out += formatMarkdownTable(typed.direct_entity_permissions,
           ['entity_name', 'grant_read', 'grant_create', 'grant_update', 'grant_delete', 'grant_correct', 'grant_invoke']) + '\n\n';
       }
 
-      // Users with this role
-      const userCount = q(`SELECT COUNT(*) as n FROM user_roles WHERE role_id = ?`, [r.role_id]);
-      out += `## Assigned Users: ${userCount[0]?.n || 0}\n`;
+      out += `## Assigned Users: ${typed.assigned_user_count}\n`;
 
-      return textResult(out);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 2. sec_lookup_duty ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_lookup_duty',
-    'Get duty details: parent roles, privileges granted, and entry points.',
-    { duty_name: z.string().max(500).describe('Duty ID or name (case-insensitive)') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Get duty details: parent roles, privileges granted, and entry points. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: { duty_name: z.string().max(500).describe('Duty ID or name (case-insensitive)') },
+      outputSchema: secLookupDutyOutput.shape,
+    },
     async ({ duty_name }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT * FROM duties WHERE duty_id = ? COLLATE NOCASE
@@ -102,48 +318,68 @@ export function registerSecTools(server, db) {
       if (!duty.length) {
         const fuzzy = q(`SELECT duty_id, duty_name FROM duties
           WHERE duty_id LIKE ? OR duty_name LIKE ? LIMIT 10`, [`%${dn}%`, `%${dn}%`]);
-        if (fuzzy.length) {
-          return textResult(`Duty "${dn}" not found. Did you mean:\n` +
-            formatMarkdownTable(fuzzy, ['duty_id', 'duty_name']));
-        }
-        return textResult(`Duty "${dn}" not found.`);
+        return notFoundResult('Duty', dn, fuzzy.map(r => r.duty_id));
       }
 
       const d = duty[0];
-      let out = `# ${d.duty_id}\n`;
-      if (d.duty_name) out += `**${d.duty_name}**\n`;
-      if (d.module_id) out += `Module: ${d.module_id}\n`;
-      if (d.description) out += `${d.description}\n`;
-      out += '\n';
-
-      // Parent roles
       const roles = q(`SELECT r.role_name, rd.permission_type
         FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id
         WHERE rd.duty_id = ? ORDER BY r.role_name`, [d.duty_id]);
-      if (roles.length) {
-        out += `## Roles containing this duty (${roles.length})\n`;
-        out += formatMarkdownTable(roles, ['role_name', 'permission_type']) + '\n\n';
-      }
-
-      // Privileges
       const privs = q(`SELECT dp.privilege_name, p.label
         FROM duty_privileges dp LEFT JOIN privileges p ON p.privilege_name = dp.privilege_name
         WHERE dp.duty_id = ? ORDER BY dp.privilege_name`, [d.duty_id]);
-      if (privs.length) {
-        out += `## Privileges (${privs.length})\n`;
-        out += formatMarkdownTable(privs, ['privilege_name', 'label']) + '\n\n';
+
+      const typed = {
+        duty_id: d.duty_id,
+        duty_name: d.duty_name ?? null,
+        module_id: d.module_id ?? null,
+        description: d.description ?? null,
+        roles: roles.map(r => ({
+          role_name: r.role_name,
+          permission_type: r.permission_type ?? null,
+        })),
+        privileges: privs.map(p => ({
+          privilege_name: p.privilege_name,
+          label: p.label ?? null,
+        })),
+      };
+
+      let out = `## ${typed.duty_id}\n`;
+      if (typed.duty_name) out += `**${typed.duty_name}**\n`;
+      if (typed.module_id) out += `Module: ${typed.module_id}\n`;
+      if (typed.description) out += `${typed.description}\n`;
+      out += '\n';
+
+      if (typed.roles.length) {
+        out += `## Roles containing this duty (${typed.roles.length})\n`;
+        out += formatMarkdownTable(
+          typed.roles.map(r => ({
+            role_name: r.role_name,
+            permission_type: formatPermission(r.permission_type),
+          })),
+          ['role_name', 'permission_type'],
+        ) + '\n\n';
       }
 
-      return textResult(out);
+      if (typed.privileges.length) {
+        out += `## Privileges (${typed.privileges.length})\n`;
+        out += formatMarkdownTable(typed.privileges, ['privilege_name', 'label']) + '\n\n';
+      }
+
+      return structuredResult(typed, out);
     }
   );
 
   // ── 3. sec_lookup_privilege ─────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_lookup_privilege',
-    'Get privilege details: entry points with CRUD grants, parent duties, and parent roles.',
-    { privilege_name: z.string().max(500).describe('Privilege name (case-insensitive)') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Get privilege details: entry points with CRUD grants, parent duties, and parent roles. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: { privilege_name: z.string().max(500).describe('Privilege name (case-insensitive)') },
+      outputSchema: secLookupPrivilegeOutput.shape,
+    },
     async ({ privilege_name }) => {
       const pn = privilege_name.trim();
       const priv = q(`SELECT * FROM privileges WHERE privilege_name = ? COLLATE NOCASE`, [pn]);
@@ -151,123 +387,280 @@ export function registerSecTools(server, db) {
       if (!priv.length) {
         const fuzzy = q(`SELECT privilege_name, label FROM privileges
           WHERE privilege_name LIKE ? LIMIT 10`, [`%${pn}%`]);
-        if (fuzzy.length) {
-          return textResult(`Privilege "${pn}" not found. Did you mean:\n` +
-            formatMarkdownTable(fuzzy, ['privilege_name', 'label']));
-        }
-        return textResult(`Privilege "${pn}" not found.`);
+        return notFoundResult('Privilege', pn, fuzzy.map(r => r.privilege_name));
       }
 
       const p = priv[0];
-      let out = `# ${p.privilege_name}\n`;
-      if (p.label) out += `**${p.label}**\n`;
-      if (p.module_id) out += `Module: ${p.module_id}\n\n`;
-
-      // Entry points
       const eps = q(`SELECT * FROM privilege_entry_points
         WHERE privilege_name = ? ORDER BY entry_point_name`, [p.privilege_name]);
-      if (eps.length) {
-        out += `## Entry Points (${eps.length})\n`;
-        out += formatMarkdownTable(eps,
-          ['entry_point_name', 'object_type', 'object_name',
-           'grant_read', 'grant_create', 'grant_update', 'grant_delete', 'grant_invoke']) + '\n\n';
-      }
-
-      // Parent duties
       const duties = q(`SELECT dp.duty_id, d.duty_name
         FROM duty_privileges dp LEFT JOIN duties d ON d.duty_id = dp.duty_id
         WHERE dp.privilege_name = ? ORDER BY dp.duty_id`, [p.privilege_name]);
-      if (duties.length) {
-        out += `## Parent Duties (${duties.length})\n`;
-        out += formatMarkdownTable(duties, ['duty_id', 'duty_name']) + '\n\n';
-      }
-
-      // Trace to roles
       const roles = q(`SELECT DISTINCT r.role_name, rd.permission_type
         FROM duty_privileges dp
         JOIN role_duties rd ON rd.duty_id = dp.duty_id
         JOIN roles r ON r.role_id = rd.role_id
         WHERE dp.privilege_name = ?
         ORDER BY r.role_name`, [p.privilege_name]);
-      if (roles.length) {
-        out += `## Roles granting this privilege (${roles.length})\n`;
-        out += formatMarkdownTable(roles, ['role_name', 'permission_type']) + '\n\n';
+
+      const typed = {
+        privilege_name: p.privilege_name,
+        module_id: p.module_id ?? null,
+        label: p.label ?? null,
+        entry_points: eps.map(ep => ({
+          entry_point_name: ep.entry_point_name,
+          object_type: ep.object_type ?? null,
+          object_name: ep.object_name ?? null,
+          grant_read: ep.grant_read ?? null,
+          grant_create: ep.grant_create ?? null,
+          grant_update: ep.grant_update ?? null,
+          grant_delete: ep.grant_delete ?? null,
+          grant_correct: ep.grant_correct ?? null,
+          grant_invoke: ep.grant_invoke ?? null,
+        })),
+        parent_duties: duties.map(d => ({
+          duty_id: d.duty_id,
+          duty_name: d.duty_name ?? null,
+        })),
+        granting_roles: roles.map(r => ({
+          role_name: r.role_name,
+          permission_type: r.permission_type ?? null,
+        })),
+      };
+
+      let out = `## ${typed.privilege_name}\n`;
+      if (typed.label) out += `**${typed.label}**\n`;
+      if (typed.module_id) out += `Module: ${typed.module_id}\n\n`;
+
+      if (typed.entry_points.length) {
+        out += `## Entry Points (${typed.entry_points.length})\n`;
+        out += formatMarkdownTable(typed.entry_points,
+          ['entry_point_name', 'object_type', 'object_name',
+           'grant_read', 'grant_create', 'grant_update', 'grant_delete', 'grant_invoke']) + '\n\n';
       }
 
-      return textResult(out);
+      if (typed.parent_duties.length) {
+        out += `## Parent Duties (${typed.parent_duties.length})\n`;
+        out += formatMarkdownTable(typed.parent_duties, ['duty_id', 'duty_name']) + '\n\n';
+      }
+
+      if (typed.granting_roles.length) {
+        out += `## Roles granting this privilege (${typed.granting_roles.length})\n`;
+        out += formatMarkdownTable(
+          typed.granting_roles.map(r => ({
+            role_name: r.role_name,
+            permission_type: formatPermission(r.permission_type),
+          })),
+          ['role_name', 'permission_type'],
+        ) + '\n\n';
+      }
+
+      return structuredResult(typed, out);
     }
   );
 
   // ── 4. sec_lookup_user ──────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_lookup_user',
-    'Get user profile: roles, company scoping, enabled status, and email.',
-    { user_id: z.string().max(500).describe('User ID (case-insensitive)') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Get user profile: roles, company scoping, enabled status, and email. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: { user_id: z.string().max(500).describe('User ID (case-insensitive)') },
+      outputSchema: secLookupUserOutput.shape,
+    },
     async ({ user_id }) => {
       const uid = user_id.trim();
       const user = q(`SELECT * FROM users WHERE user_id = ? COLLATE NOCASE`, [uid]);
 
       if (!user.length) {
-        // Try partial match on user_id, person_name, or email
         const fuzzy = q(`SELECT user_id, person_name, email FROM users
           WHERE user_id LIKE ? OR person_name LIKE ? OR email LIKE ? LIMIT 10`,
           [`%${uid}%`, `%${uid}%`, `%${uid}%`]);
-        if (fuzzy.length) {
-          return textResult(`User "${uid}" not found. Did you mean:\n` +
-            formatMarkdownTable(fuzzy, ['user_id', 'person_name', 'email']));
-        }
-        return textResult(`User "${uid}" not found.`);
+        return notFoundResult('User', uid, fuzzy.map(r => r.user_id));
       }
 
       const u = user[0];
-      let out = `# ${u.user_id}\n`;
-      out += `| Property | Value |\n|---|---|\n`;
-      out += `| Name | ${u.person_name || 'N/A'} |\n`;
-      out += `| Email | ${u.email || 'N/A'} |\n`;
-      out += `| Enabled | ${u.enabled ? 'Yes' : 'No'} |\n`;
-      out += `| Default Company | ${u.default_company || 'N/A'} |\n\n`;
 
-      // Roles
-      const roles = q(`SELECT r.role_name, r.permission_type, r.license_type
-        FROM user_roles ur JOIN roles r ON r.role_id = ur.role_id
-        WHERE ur.user_id = ? ORDER BY r.role_name`, [u.user_id]);
-      if (roles.length) {
-        out += `## Roles (${roles.length})\n`;
-        out += formatMarkdownTable(roles, ['role_name', 'permission_type', 'license_type']) + '\n\n';
-      }
+      // Direct role assignments. Each row carries the role's company-scope
+      // (P4-08) as a comma-joined string from `user_role_companies`. An empty
+      // companies value means "(all)" — no restriction.
+      const roleRows = q(`SELECT r.role_id, r.role_name, r.permission_type, r.license_type,
+          GROUP_CONCAT(urc.company_id, ',') AS companies_csv
+        FROM user_roles ur
+        JOIN roles r ON r.role_id = ur.role_id COLLATE NOCASE
+        LEFT JOIN user_role_companies urc
+          ON urc.user_id = ur.user_id COLLATE NOCASE
+         AND urc.role_id = ur.role_id COLLATE NOCASE
+        WHERE ur.user_id = ? COLLATE NOCASE
+        GROUP BY r.role_id
+        ORDER BY r.role_name`, [u.user_id]);
 
-      // Company-scoped restrictions
-      const companies = q(`SELECT urc.role_id, r.role_name, urc.company_id
+      const companyRows = q(`SELECT urc.role_id, r.role_name, urc.company_id
         FROM user_role_companies urc
-        JOIN roles r ON r.role_id = urc.role_id
-        WHERE urc.user_id = ?
+        JOIN roles r ON r.role_id = urc.role_id COLLATE NOCASE
+        WHERE urc.user_id = ? COLLATE NOCASE
         ORDER BY r.role_name, urc.company_id`, [u.user_id]);
-      if (companies.length) {
-        out += `## Company-Scoped Roles (${companies.length})\n`;
-        out += formatMarkdownTable(companies, ['role_name', 'company_id']) + '\n\n';
+
+      // P4-03 / CR-SEC-001: transitive sub-role expansion via recursive CTE.
+      // Schema confirmed against live DB: `role_subroles(parent_role_id,
+      // child_role_id, is_transitive)`. The CTE seeds at the user's direct
+      // role ids and walks down each sub-role chain. Excluding the direct
+      // ids from the result keeps the section focused on what the user
+      // *gains* through inheritance.
+      const directRoleIds = roleRows.map(r => r.role_id);
+      let subRoleRows = [];
+      if (directRoleIds.length > 0) {
+        const placeholders = directRoleIds.map(() => '?').join(',');
+        subRoleRows = q(`
+          WITH RECURSIVE rt(parent_id, child_id) AS (
+            SELECT parent_role_id, child_role_id
+            FROM role_subroles
+            WHERE parent_role_id IN (${placeholders}) COLLATE NOCASE
+            UNION ALL
+            SELECT rt.parent_id, rs.child_role_id
+            FROM role_subroles rs
+            JOIN rt ON rs.parent_role_id = rt.child_id COLLATE NOCASE
+          )
+          SELECT DISTINCT child.role_name AS sub_role_name,
+                          parent.role_name AS parent_role_name,
+                          child.permission_type
+          FROM rt
+          JOIN roles child ON child.role_id = rt.child_id COLLATE NOCASE
+          JOIN roles parent ON parent.role_id = rt.parent_id COLLATE NOCASE
+          WHERE rt.child_id NOT IN (${placeholders}) COLLATE NOCASE
+          ORDER BY parent.role_name, child.role_name
+        `, [...directRoleIds, ...directRoleIds]);
       }
 
-      return textResult(out);
+      // P4-03 / CR-SEC-004: Deny overrides.
+      // Any role in the user's effective chain (direct OR via sub-role) that
+      // declares a duty as Deny applies that Deny to the user. Surface them so
+      // an agent answering "why is X blocked from Y?" sees the chain at a glance.
+      let denyRows = [];
+      if (directRoleIds.length > 0) {
+        const placeholders = directRoleIds.map(() => '?').join(',');
+        denyRows = q(`
+          SELECT DISTINCT r.role_name, rd.duty_id, d.duty_name
+          FROM role_duties rd
+          JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
+          LEFT JOIN duties d ON d.duty_id = rd.duty_id COLLATE NOCASE
+          WHERE rd.role_id IN (${placeholders})
+            AND rd.permission_type = 'Deny'
+          ORDER BY r.role_name, rd.duty_id
+        `, directRoleIds);
+      }
+
+      const typed = {
+        user_id: u.user_id,
+        person_name: u.person_name ?? null,
+        email: u.email ?? null,
+        enabled: Boolean(u.enabled),
+        default_company: u.default_company ?? null,
+        role_count: roleRows.length,
+        roles: roleRows.map(r => ({
+          role_name: r.role_name,
+          permission_type: r.permission_type ?? null,
+          license_type: r.license_type ?? null,
+          companies: r.companies_csv
+            ? [...new Set(r.companies_csv.split(',').filter(Boolean))].sort()
+            : [],
+        })),
+        company_scoped_role_count: companyRows.length,
+        company_scoped_roles: companyRows.map(r => ({
+          role_name: r.role_name,
+          company_id: r.company_id,
+        })),
+        effective_sub_role_count: subRoleRows.length,
+        effective_sub_roles: subRoleRows.map(r => ({
+          role_name: r.sub_role_name,
+          parent_role_name: r.parent_role_name,
+          permission_type: r.permission_type ?? null,
+        })),
+        deny_override_count: denyRows.length,
+        deny_overrides: denyRows.map(r => ({
+          role_name: r.role_name,
+          duty_id: r.duty_id,
+          duty_name: r.duty_name ?? null,
+        })),
+      };
+
+      // Markdown fallback rendered from the typed object.
+      let out = `## ${typed.user_id}\n`;
+      out += `| Property | Value |\n|---|---|\n`;
+      out += `| Name | ${typed.person_name || 'N/A'} |\n`;
+      out += `| Email | ${typed.email || 'N/A'} |\n`;
+      out += `| Enabled | ${typed.enabled ? 'Yes' : 'No'} |\n`;
+      out += `| Default Company | ${typed.default_company || 'N/A'} |\n\n`;
+
+      if (typed.role_count > 0) {
+        out += `## Assigned Roles (${typed.role_count})\n`;
+        out += formatMarkdownTable(
+          typed.roles.map(r => ({
+            role_name: r.role_name,
+            permission_type: formatPermission(r.permission_type),
+            license_type: r.license_type ?? '',
+            companies: r.companies.length > 0 ? r.companies.join(', ') : '(all)',
+          })),
+          ['role_name', 'permission_type', 'license_type', 'companies'],
+        ) + '\n\n';
+      }
+
+      out += `## Effective Sub-Roles (${typed.effective_sub_role_count})\n`;
+      if (typed.effective_sub_role_count > 0) {
+        out += formatMarkdownTable(typed.effective_sub_roles,
+          ['role_name', 'parent_role_name', 'permission_type']) + '\n\n';
+      } else {
+        out += '_No sub-role inheritance for this user._\n\n';
+      }
+
+      if (typed.deny_override_count > 0) {
+        out += `## Deny Overrides (${typed.deny_override_count})\n`;
+        out += `_⛔ The following roles in this user's chain declare Deny on a duty. These actively REMOVE permissions and are excluded from \`sec_effective_permissions\`._\n\n`;
+        out += formatMarkdownTable(
+          typed.deny_overrides.map(d => ({
+            role_name: d.role_name,
+            duty_id: d.duty_id,
+            duty_name: d.duty_name ?? '',
+            permission: formatPermission('Deny'),
+          })),
+          ['role_name', 'duty_id', 'duty_name', 'permission'],
+        ) + '\n\n';
+      }
+
+      // The PM-05 "Company-Scoped Roles" section is now redundant with the
+      // Companies column inside Assigned Roles — keep it as a flat list for
+      // backward compat and to make grep-style searches easy.
+      if (typed.company_scoped_role_count > 0) {
+        out += `## Company-Scoped Role Pairs (${typed.company_scoped_role_count})\n`;
+        out += formatMarkdownTable(typed.company_scoped_roles, ['role_name', 'company_id']) + '\n\n';
+      }
+
+      return structuredResult(typed, out);
     }
   );
 
   // ── 5. sec_role_hierarchy ───────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_role_hierarchy',
-    'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from).',
     {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
       role_name: z.string().max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
     },
+      outputSchema: secRoleHierarchyOutput.shape,
+    },
     async ({ role_name, direction }) => {
+      const dir = direction || 'children';
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
-      if (!role.length) return textResult(`Role "${role_name}" not found.`);
+      if (!role.length) return notFoundResult('Role', role_name);
       const r = role[0];
 
       let rows;
-      if (direction === 'children') {
+      if (dir === 'children') {
         rows = q(`SELECT child.role_name, rs.is_transitive
           FROM role_subroles rs JOIN roles child ON child.role_id = rs.child_role_id
           WHERE rs.parent_role_id = ? ORDER BY child.role_name`, [r.role_id]);
@@ -277,29 +670,52 @@ export function registerSecTools(server, db) {
           WHERE rs.child_role_id = ? ORDER BY parent.role_name`, [r.role_id]);
       }
 
-      if (!rows.length) return textResult(`No ${direction} found for role "${r.role_name}".`);
+      if (!rows.length) return emptyResult(`${dir} of role "${r.role_name}"`);
 
-      let out = `# ${r.role_name} — ${direction}\n`;
-      out += formatMarkdownTable(rows, ['role_name', 'is_transitive']);
-      return textResult(out);
+      const typed = {
+        role_name: r.role_name,
+        direction: dir,
+        result_count: rows.length,
+        entries: rows.map(row => ({
+          role_name: row.role_name,
+          is_transitive: row.is_transitive ?? null,
+        })),
+      };
+
+      let out = `## ${typed.role_name} — ${typed.direction}\n`;
+      out += formatMarkdownTable(typed.entries, ['role_name', 'is_transitive']);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 6. sec_find_users_by_role ───────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_find_users_by_role',
-    'Find all users assigned to a role, optionally filtered to a specific company.',
     {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Find all users assigned to a role, optionally filtered to a specific company. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
       role_name: z.string().max(500).describe('Role name'),
       company_id: z.string().max(500).optional().describe('Filter to users scoped to this company'),
       limit: z.number().optional().default(100).describe('Max results'),
     },
+      outputSchema: secFindUsersByRoleOutput.shape,
+    },
     async ({ role_name, company_id, limit: rawLimit }) => {
-      const limit = rawLimit || 100;
-      const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
-      if (!role.length) return textResult(`Role "${role_name}" not found.`);
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
+      const role = q(`SELECT role_id, role_name, permission_type FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
+      if (!role.length) return notFoundResult('Role', role_name);
       const r = role[0];
+
+      // P4-02 / CR-SEC-002: a role whose top-level `permission_type` is 'Deny'
+      // applies its assignments as denials, not grants. Effective-membership
+      // queries must exclude Deny roles (they remove permissions, they don't
+      // grant them). `sec_permission_trace` keeps Deny roles annotated; this
+      // tool does not.
+      if (r.permission_type === 'Deny') {
+        return emptyResult(`users effectively granted role "${r.role_name}" (this role is a Deny role and does not grant access — use sec_permission_trace to inspect overrides)`);
+      }
 
       let sql, params;
       if (company_id) {
@@ -319,48 +735,98 @@ export function registerSecTools(server, db) {
       }
 
       const rows = q(sql, params);
-      if (!rows.length) return textResult(`No users found with role "${r.role_name}"` +
-        (company_id ? ` in company ${company_id}` : '') + '.');
+      if (!rows.length) return emptyResult(`users with role "${r.role_name}"` +
+        (company_id ? ` in company ${company_id}` : ''));
 
-      let out = `# Users with role: ${r.role_name}`;
-      if (company_id) out += ` (company: ${company_id})`;
-      out += `\n${rows.length} user(s)\n\n`;
-      out += formatMarkdownTable(rows);
-      if (rows.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
-      return textResult(out);
+      const typed = {
+        role_name: r.role_name,
+        company_id: company_id ? company_id.trim() : null,
+        limit,
+        result_count: rows.length,
+        truncated: rows.length >= limit,
+        deny_role: false,
+        users: rows.map(row => ({
+          user_id: row.user_id,
+          person_name: row.person_name ?? null,
+          email: row.email ?? null,
+          enabled: row.enabled ?? null,
+          company_id: row.company_id ?? null,
+        })),
+      };
+
+      let out = `## Users with role: ${typed.role_name}`;
+      if (typed.company_id) out += ` (company: ${typed.company_id})`;
+      out += `\n${typed.result_count} user(s)\n\n`;
+      out += `_Note: Deny overrides are not applied here. Use \`sec_permission_trace\` for the full picture._\n\n`;
+      out += formatMarkdownTable(typed.users);
+      if (typed.truncated) out += truncationNote('user', limit);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 7. sec_find_roles_by_duty ───────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_find_roles_by_duty',
-    'Find all roles that contain a specific duty.',
-    { duty_name: z.string().max(500).describe('Duty ID or name') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Find all roles that contain a specific duty. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: { duty_name: z.string().max(500).describe('Duty ID or name') },
+      outputSchema: secFindRolesByDutyOutput.shape,
+    },
     async ({ duty_name }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT duty_id FROM duties
         WHERE duty_id = ? COLLATE NOCASE OR duty_name = ? COLLATE NOCASE`, [dn, dn]);
-      if (!duty.length) return textResult(`Duty "${dn}" not found.`);
+      if (!duty.length) return notFoundResult('Duty', dn);
 
+      // P4-02 / CR-SEC-002: only Grant assignments count — a role that
+      // declares this duty as Deny is *removing* it, not granting it. To
+      // see the full picture (Grant + Deny rows), use `sec_permission_trace`.
       const rows = q(`SELECT r.role_name, r.permission_type, r.license_type, rd.permission_type as duty_permission
-        FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id
-        WHERE rd.duty_id = ? ORDER BY r.role_name`, [duty[0].duty_id]);
+        FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
+        WHERE rd.duty_id = ? COLLATE NOCASE
+          AND rd.permission_type = 'Grant'
+        ORDER BY r.role_name`, [duty[0].duty_id]);
 
-      if (!rows.length) return textResult(`No roles contain duty "${dn}".`);
+      if (!rows.length) return emptyResult(`roles granting duty "${dn}"`);
 
-      let out = `# Roles containing duty: ${duty[0].duty_id}\n${rows.length} role(s)\n\n`;
-      out += formatMarkdownTable(rows, ['role_name', 'permission_type', 'license_type', 'duty_permission']);
-      return textResult(out);
+      const typed = {
+        duty_id: duty[0].duty_id,
+        result_count: rows.length,
+        roles: rows.map(r => ({
+          role_name: r.role_name,
+          permission_type: r.permission_type ?? null,
+          license_type: r.license_type ?? null,
+          duty_permission: r.duty_permission ?? null,
+        })),
+      };
+
+      let out = `## Roles granting duty: ${typed.duty_id}\n${typed.result_count} role(s)\n\n`;
+      out += `_Note: Deny overrides are excluded from this result. Use \`sec_permission_trace\` to see the full picture._\n\n`;
+      out += formatMarkdownTable(
+        typed.roles.map(r => ({
+          role_name: r.role_name,
+          permission_type: formatPermission(r.permission_type),
+          license_type: r.license_type ?? '',
+          duty_permission: formatPermission(r.duty_permission),
+        })),
+        ['role_name', 'permission_type', 'license_type', 'duty_permission'],
+      );
+      return structuredResult(typed, out);
     }
   );
 
   // ── 8. sec_find_roles_by_privilege ──────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_find_roles_by_privilege',
-    'Find all roles that grant a privilege (via the duty chain or directly).',
-    { privilege_name: z.string().max(500).describe('Privilege name') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Find all roles that grant a privilege (via the duty chain or directly). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: { privilege_name: z.string().max(500).describe('Privilege name') },
+      outputSchema: secFindRolesByPrivilegeOutput.shape,
+    },
     async ({ privilege_name }) => {
       const pn = privilege_name.trim();
 
@@ -374,42 +840,66 @@ export function registerSecTools(server, db) {
         ORDER BY r.role_name`, [pn]);
 
       // Direct assignments
-      const direct = q(`SELECT r.role_name, 'Direct' as via
+      const direct = q(`SELECT r.role_name
         FROM role_direct_privileges rdp JOIN roles r ON r.role_id = rdp.role_id
         WHERE rdp.privilege_name = ? COLLATE NOCASE
         ORDER BY r.role_name`, [pn]);
 
       if (!viaChain.length && !direct.length) {
-        return textResult(`No roles grant privilege "${pn}".`);
+        return emptyResult(`roles granting privilege "${pn}"`);
       }
 
-      let out = `# Roles granting privilege: ${pn}\n\n`;
+      const typed = {
+        privilege_name: pn,
+        via_chain_count: viaChain.length,
+        direct_count: direct.length,
+        via_chain: viaChain.map(v => ({
+          role_name: v.role_name,
+          permission_type: v.permission_type ?? null,
+          duty_id: v.duty_id,
+        })),
+        direct: direct.map(d => ({ role_name: d.role_name })),
+      };
 
-      if (viaChain.length) {
-        out += `## Via Duty Chain (${viaChain.length})\n`;
-        out += formatMarkdownTable(viaChain, ['role_name', 'permission_type', 'duty_id']) + '\n\n';
+      let out = `## Roles granting privilege: ${typed.privilege_name}\n\n`;
+      if (typed.via_chain_count > 0) {
+        out += `## Via Duty Chain (${typed.via_chain_count})\n`;
+        out += formatMarkdownTable(
+          typed.via_chain.map(v => ({
+            role_name: v.role_name,
+            permission_type: formatPermission(v.permission_type),
+            duty_id: v.duty_id,
+          })),
+          ['role_name', 'permission_type', 'duty_id'],
+        ) + '\n\n';
+      }
+      if (typed.direct_count > 0) {
+        out += `## Direct Assignment (${typed.direct_count})\n`;
+        out += formatMarkdownTable(
+          typed.direct.map(d => ({ role_name: d.role_name, via: 'Direct' })),
+          ['role_name', 'via'],
+        ) + '\n\n';
       }
 
-      if (direct.length) {
-        out += `## Direct Assignment (${direct.length})\n`;
-        out += formatMarkdownTable(direct, ['role_name', 'via']) + '\n\n';
-      }
-
-      return textResult(out);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 9. sec_company_users ────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_company_users',
-    'List all users and their roles for a specific company (legal entity).',
     {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'List all users and their roles for a specific company (legal entity). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
       company_id: z.string().max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
       limit: z.number().optional().default(200).describe('Max results'),
     },
+      outputSchema: secCompanyUsersOutput.shape,
+    },
     async ({ company_id, limit: rawLimit }) => {
-      const limit = rawLimit || 200;
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
       const cid = company_id.trim().toUpperCase();
 
       const rows = q(`SELECT u.user_id, u.person_name, u.email, r.role_name, r.permission_type
@@ -420,29 +910,55 @@ export function registerSecTools(server, db) {
         ORDER BY u.user_id, r.role_name
         LIMIT ?`, [cid, limit]);
 
-      if (!rows.length) return textResult(`No users found for company "${cid}".`);
+      if (!rows.length) return emptyResult(`users assigned to company "${cid}"`);
 
-      let out = `# Company: ${cid}\n${rows.length} user-role assignment(s)\n\n`;
-      out += formatMarkdownTable(rows, ['user_id', 'person_name', 'role_name', 'permission_type']);
-      if (rows.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
-      return textResult(out);
+      const typed = {
+        company_id: cid,
+        limit,
+        result_count: rows.length,
+        truncated: rows.length >= limit,
+        assignments: rows.map(r => ({
+          user_id: r.user_id,
+          person_name: r.person_name ?? null,
+          email: r.email ?? null,
+          role_name: r.role_name,
+          permission_type: r.permission_type ?? null,
+        })),
+      };
+
+      let out = `## Company: ${typed.company_id}\n${typed.result_count} user-role assignment(s)\n\n`;
+      out += formatMarkdownTable(
+        typed.assignments.map(r => ({
+          user_id: r.user_id,
+          person_name: r.person_name ?? '',
+          role_name: r.role_name,
+          permission_type: formatPermission(r.permission_type),
+        })),
+        ['user_id', 'person_name', 'role_name', 'permission_type'],
+      );
+      if (typed.truncated) out += truncationNote('user', limit);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 10. sec_permission_trace ────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_permission_trace',
-    'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object.',
     {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
       role_name: z.string().max(500).describe('Role name'),
       object_name: z.string().max(500).optional().describe('Filter to entry points targeting this object'),
       limit: z.number().optional().default(500).describe('Max results'),
     },
+      outputSchema: secPermissionTraceOutput.shape,
+    },
     async ({ role_name, object_name, limit: rawLimit }) => {
-      const limit = rawLimit || 500;
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 500;
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
-      if (!role.length) return textResult(`Role "${role_name}" not found.`);
+      if (!role.length) return notFoundResult('Role', role_name);
 
       let objectFilter = '';
       const objParam = object_name ? `%${object_name.trim()}%` : null;
@@ -487,133 +1003,209 @@ export function registerSecTools(server, db) {
       `, params);
 
       if (!trace.length) {
-        return textResult(`No permission chain found for "${role[0].role_name}"` +
-          (object_name ? ` targeting "${object_name}"` : '') + '.');
+        return emptyResult(`permission chain for "${role[0].role_name}"` +
+          (object_name ? ` targeting "${object_name}"` : ''));
       }
 
-      let out = `# Permission Trace: ${role[0].role_name}\n`;
-      out += `${trace.length} entry point(s)` + (object_name ? ` matching "${object_name}"` : '') + '\n\n';
-      out += formatMarkdownTable(trace, [
-        'duty_id', 'priv_name', 'object_type', 'object_name',
+      const denyCount = trace.filter(t => t.permission_type === 'Deny').length;
+      const grantCount = trace.length - denyCount;
+
+      const typed = {
+        role_name: role[0].role_name,
+        object_name: object_name ?? null,
+        limit,
+        result_count: trace.length,
+        truncated: trace.length >= limit,
+        grant_count: grantCount,
+        deny_count: denyCount,
+        rows: trace.map(t => ({
+          permission_type: t.permission_type ?? null,
+          duty_id: t.duty_id ?? null,
+          priv_name: t.priv_name,
+          object_type: t.object_type ?? null,
+          object_name: t.object_name ?? null,
+          grant_read: t.grant_read ?? null,
+          grant_create: t.grant_create ?? null,
+          grant_update: t.grant_update ?? null,
+          grant_delete: t.grant_delete ?? null,
+          grant_correct: t.grant_correct ?? null,
+          grant_invoke: t.grant_invoke ?? null,
+        })),
+      };
+
+      // P4-02 / CR-SEC-002: `sec_permission_trace` is the ONLY permission
+      // tool that intentionally surfaces Deny rows — it's the agent's window
+      // into "why is this user blocked from X?". Annotate Deny rows with a
+      // ⛔ marker as the first table column so the visual scan is unmissable.
+      // P4-07: render CRUD flags as Y/N via formatCrudFlag.
+      const annotated = typed.rows.map(t => ({
+        Deny: t.permission_type === 'Deny' ? '⛔ DENIED' : '',
+        duty_id: t.duty_id ?? '',
+        priv_name: t.priv_name,
+        object_type: t.object_type ?? '',
+        object_name: t.object_name ?? '',
+        grant_read: formatCrudFlag(t.grant_read),
+        grant_create: formatCrudFlag(t.grant_create),
+        grant_update: formatCrudFlag(t.grant_update),
+        grant_delete: formatCrudFlag(t.grant_delete),
+      }));
+
+      let out = `## Permission Trace: ${typed.role_name}\n`;
+      out += `${typed.result_count} entry point(s)` + (typed.object_name ? ` matching "${typed.object_name}"` : '') + '\n';
+      out += `Grant rows: ${typed.grant_count} • Deny rows: ${typed.deny_count}\n\n`;
+      // P4-07: explicit CRUD legend so an agent doesn't have to guess.
+      out += `**Legend:** Y = granted • N = not granted • (empty) = no specification\n\n`;
+      if (typed.deny_count > 0) {
+        out += `_⛔ Deny rows actively REMOVE the listed CRUD on the entry point. They are excluded from \`sec_effective_permissions\`. Inspect carefully when answering "why does X have access to Y?"._\n\n`;
+      }
+      out += formatMarkdownTable(annotated, [
+        'Deny', 'duty_id', 'priv_name', 'object_type', 'object_name',
         'grant_read', 'grant_create', 'grant_update', 'grant_delete',
       ]);
-      if (trace.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
-      return textResult(out);
+      if (typed.truncated) out += truncationNote('user', limit);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 11. sec_compare_roles ───────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_compare_roles',
-    'Compare two roles side by side: shared vs unique duties and privileges.',
     {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Compare two roles side by side: shared vs unique duties and privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
       role1: z.string().max(500).describe('First role name'),
       role2: z.string().max(500).describe('Second role name'),
+    },
+      outputSchema: secCompareRolesOutput.shape,
     },
     async ({ role1, role2 }) => {
       const r1 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role1.trim()]);
       const r2 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role2.trim()]);
-      if (!r1.length) return textResult(`Role "${role1}" not found.`);
-      if (!r2.length) return textResult(`Role "${role2}" not found.`);
+      if (!r1.length) return notFoundResult('Role', role1);
+      if (!r2.length) return notFoundResult('Role', role2);
 
-      const duties1 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ?`, [r1[0].role_id]).map(r => r.duty_id));
-      const duties2 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ?`, [r2[0].role_id]).map(r => r.duty_id));
+      // P4-02 / CR-SEC-002: comparison must be against effective grants only.
+      // Deny rows would falsely show up as "shared" duties when in fact one
+      // role grants and the other denies the same duty id.
+      const duties1 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ? AND permission_type = 'Grant'`, [r1[0].role_id]).map(r => r.duty_id));
+      const duties2 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ? AND permission_type = 'Grant'`, [r2[0].role_id]).map(r => r.duty_id));
 
-      const shared = [...duties1].filter(d => duties2.has(d));
-      const only1 = [...duties1].filter(d => !duties2.has(d));
-      const only2 = [...duties2].filter(d => !duties1.has(d));
+      const dShared = [...duties1].filter(d => duties2.has(d));
+      const dOnly1 = [...duties1].filter(d => !duties2.has(d));
+      const dOnly2 = [...duties2].filter(d => !duties1.has(d));
 
-      let out = `# Role Comparison\n`;
-      out += `| | ${r1[0].role_name} | ${r2[0].role_name} |\n|---|---|---|\n`;
-      out += `| Total Duties | ${duties1.size} | ${duties2.size} |\n`;
-      out += `| Shared | ${shared.length} | ${shared.length} |\n`;
-      out += `| Unique | ${only1.length} | ${only2.length} |\n\n`;
-
-      if (shared.length > 0 && shared.length <= 50) {
-        out += `## Shared Duties (${shared.length})\n`;
-        out += shared.map(d => `- ${d}`).join('\n') + '\n\n';
-      }
-      if (only1.length > 0 && only1.length <= 50) {
-        out += `## Only in ${r1[0].role_name} (${only1.length})\n`;
-        out += only1.map(d => `- ${d}`).join('\n') + '\n\n';
-      }
-      if (only2.length > 0 && only2.length <= 50) {
-        out += `## Only in ${r2[0].role_name} (${only2.length})\n`;
-        out += only2.map(d => `- ${d}`).join('\n') + '\n\n';
-      }
-
-      // Direct privilege comparison
       const privs1 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r1[0].role_id]).map(r => r.privilege_name));
       const privs2 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r2[0].role_id]).map(r => r.privilege_name));
 
-      if (privs1.size > 0 || privs2.size > 0) {
-        const sharedPrivs = [...privs1].filter(p => privs2.has(p));
-        const onlyPrivs1 = [...privs1].filter(p => !privs2.has(p));
-        const onlyPrivs2 = [...privs2].filter(p => !privs1.has(p));
+      const pShared = [...privs1].filter(p => privs2.has(p));
+      const pOnly1 = [...privs1].filter(p => !privs2.has(p));
+      const pOnly2 = [...privs2].filter(p => !privs1.has(p));
 
+      const typed = {
+        role1: r1[0].role_name,
+        role2: r2[0].role_name,
+        duties_total_1: duties1.size,
+        duties_total_2: duties2.size,
+        duties_shared: dShared,
+        duties_only_1: dOnly1,
+        duties_only_2: dOnly2,
+        direct_privs_total_1: privs1.size,
+        direct_privs_total_2: privs2.size,
+        direct_privs_shared: pShared,
+        direct_privs_only_1: pOnly1,
+        direct_privs_only_2: pOnly2,
+      };
+
+      let out = `## Role Comparison\n`;
+      out += `| | ${typed.role1} | ${typed.role2} |\n|---|---|---|\n`;
+      out += `| Total Duties | ${typed.duties_total_1} | ${typed.duties_total_2} |\n`;
+      out += `| Shared | ${typed.duties_shared.length} | ${typed.duties_shared.length} |\n`;
+      out += `| Unique | ${typed.duties_only_1.length} | ${typed.duties_only_2.length} |\n\n`;
+
+      if (typed.duties_shared.length > 0 && typed.duties_shared.length <= 50) {
+        out += `## Shared Duties (${typed.duties_shared.length})\n`;
+        out += typed.duties_shared.map(d => `- ${d}`).join('\n') + '\n\n';
+      }
+      if (typed.duties_only_1.length > 0 && typed.duties_only_1.length <= 50) {
+        out += `## Only in ${typed.role1} (${typed.duties_only_1.length})\n`;
+        out += typed.duties_only_1.map(d => `- ${d}`).join('\n') + '\n\n';
+      }
+      if (typed.duties_only_2.length > 0 && typed.duties_only_2.length <= 50) {
+        out += `## Only in ${typed.role2} (${typed.duties_only_2.length})\n`;
+        out += typed.duties_only_2.map(d => `- ${d}`).join('\n') + '\n\n';
+      }
+
+      if (typed.direct_privs_total_1 > 0 || typed.direct_privs_total_2 > 0) {
         out += `## Direct Privileges\n`;
-        out += `| | ${r1[0].role_name} | ${r2[0].role_name} |\n|---|---|---|\n`;
-        out += `| Total | ${privs1.size} | ${privs2.size} |\n`;
-        out += `| Shared | ${sharedPrivs.length} | ${sharedPrivs.length} |\n`;
-        out += `| Unique | ${onlyPrivs1.length} | ${onlyPrivs2.length} |\n\n`;
+        out += `| | ${typed.role1} | ${typed.role2} |\n|---|---|---|\n`;
+        out += `| Total | ${typed.direct_privs_total_1} | ${typed.direct_privs_total_2} |\n`;
+        out += `| Shared | ${typed.direct_privs_shared.length} | ${typed.direct_privs_shared.length} |\n`;
+        out += `| Unique | ${typed.direct_privs_only_1.length} | ${typed.direct_privs_only_2.length} |\n\n`;
 
-        if (sharedPrivs.length > 0 && sharedPrivs.length <= 50) {
-          out += `### Shared Direct Privileges (${sharedPrivs.length})\n`;
-          out += sharedPrivs.map(p => `- ${p}`).join('\n') + '\n\n';
+        if (typed.direct_privs_shared.length > 0 && typed.direct_privs_shared.length <= 50) {
+          out += `### Shared Direct Privileges (${typed.direct_privs_shared.length})\n`;
+          out += typed.direct_privs_shared.map(p => `- ${p}`).join('\n') + '\n\n';
         }
-        if (onlyPrivs1.length > 0 && onlyPrivs1.length <= 50) {
-          out += `### Only in ${r1[0].role_name} (${onlyPrivs1.length})\n`;
-          out += onlyPrivs1.map(p => `- ${p}`).join('\n') + '\n\n';
+        if (typed.direct_privs_only_1.length > 0 && typed.direct_privs_only_1.length <= 50) {
+          out += `### Only in ${typed.role1} (${typed.direct_privs_only_1.length})\n`;
+          out += typed.direct_privs_only_1.map(p => `- ${p}`).join('\n') + '\n\n';
         }
-        if (onlyPrivs2.length > 0 && onlyPrivs2.length <= 50) {
-          out += `### Only in ${r2[0].role_name} (${onlyPrivs2.length})\n`;
-          out += onlyPrivs2.map(p => `- ${p}`).join('\n') + '\n\n';
+        if (typed.direct_privs_only_2.length > 0 && typed.direct_privs_only_2.length <= 50) {
+          out += `### Only in ${typed.role2} (${typed.direct_privs_only_2.length})\n`;
+          out += typed.direct_privs_only_2.map(p => `- ${p}`).join('\n') + '\n\n';
         }
       }
 
-      return textResult(out);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 12. sec_effective_permissions ───────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_effective_permissions',
-    'Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name or company.',
     {
-      user_id: z.string().max(500).optional().describe('User ID (provide this OR role_name)'),
-      role_name: z.string().max(500).optional().describe('Role name (provide this OR user_id)'),
-      object_name: z.string().max(500).optional().describe('Filter to entry points for this object'),
-      limit: z.number().optional().default(200).describe('Max results'),
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
+        user_id: z.string().max(500).optional().describe('User ID (provide this OR role_name)'),
+        role_name: z.string().max(500).optional().describe('Role name (provide this OR user_id)'),
+        object_name: z.string().max(500).optional().describe('Filter to entry points for this object'),
+        limit: z.number().optional().default(200).describe('Max results'),
+      },
+      outputSchema: secEffectivePermissionsOutput.shape,
     },
     async ({ user_id, role_name, object_name, limit: rawLimit }) => {
-      const limit = rawLimit || 200;
-      // Resolve role IDs
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
+
       let roleIds = [];
-      let heading = '';
+      let subjectType, subjectId, subjectLabel;
 
       if (user_id) {
         const uid = user_id.trim();
         const user = q(`SELECT user_id, person_name FROM users WHERE user_id = ? COLLATE NOCASE`, [uid]);
-        if (!user.length) return textResult(`User "${uid}" not found.`);
-        heading = `User: ${user[0].user_id} (${user[0].person_name || 'N/A'})`;
-
+        if (!user.length) return notFoundResult('User', uid);
+        subjectType = 'user';
+        subjectId = user[0].user_id;
+        subjectLabel = `User: ${user[0].user_id} (${user[0].person_name || 'N/A'})`;
         roleIds = q(`SELECT role_id FROM user_roles WHERE user_id = ?`, [user[0].user_id])
           .map(r => r.role_id);
       } else if (role_name) {
         const rn = role_name.trim();
         const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
-        if (!role.length) return textResult(`Role "${rn}" not found.`);
-        heading = `Role: ${role[0].role_name}`;
+        if (!role.length) return notFoundResult('Role', rn);
+        subjectType = 'role';
+        subjectId = role[0].role_id;
+        subjectLabel = `Role: ${role[0].role_name}`;
         roleIds = [role[0].role_id];
       } else {
-        return textResult('Provide either user_id or role_name.');
+        return errorResult('invalid-input', 'Provide either user_id or role_name.');
       }
 
-      if (!roleIds.length) return textResult('No roles found.');
+      if (!roleIds.length) return emptyResult('roles assigned to the target');
 
-      // Expand sub-roles recursively using CTE
       const placeholders = roleIds.map(() => '?').join(',');
       const allRoleIds = new Set(roleIds);
       const expanded = q(`
@@ -633,7 +1225,6 @@ export function registerSecTools(server, db) {
       const objParam = object_name ? `%${object_name.trim()}%` : null;
       if (objParam) objectFilter = ' AND ep.object_name LIKE ?';
 
-      // Params must match placeholder order: first IN + filter, second IN + filter, LIMIT
       const queryParams = [];
       queryParams.push(...allRoleArr);
       if (objParam) queryParams.push(objParam);
@@ -641,133 +1232,240 @@ export function registerSecTools(server, db) {
       if (objParam) queryParams.push(objParam);
       queryParams.push(limit);
 
+      // P4-02 / CR-SEC-002: only `permission_type = 'Grant'` rows from
+      // role_duties contribute to effective permissions. Deny rows actively
+      // remove permissions and are inspected via `sec_permission_trace`.
       const perms = q(`
         SELECT DISTINCT ep.object_name, ep.object_type,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke,
                rd.permission_type as duty_perm
         FROM role_duties rd
-        JOIN duty_privileges dp ON dp.duty_id = rd.duty_id
-        JOIN privilege_entry_points ep ON ep.privilege_name = dp.privilege_name
-        WHERE rd.role_id IN (${allPlaceholders}) ${objectFilter}
+        JOIN duty_privileges dp ON dp.duty_id = rd.duty_id COLLATE NOCASE
+        JOIN privilege_entry_points ep ON ep.privilege_name = dp.privilege_name COLLATE NOCASE
+        WHERE rd.role_id IN (${allPlaceholders})
+          AND rd.permission_type = 'Grant'
+          ${objectFilter}
         UNION ALL
         SELECT DISTINCT ep.object_name, ep.object_type,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke,
                'Grant' as duty_perm
         FROM role_direct_privileges rp
-        JOIN privilege_entry_points ep ON ep.privilege_name = rp.privilege_name
+        JOIN privilege_entry_points ep ON ep.privilege_name = rp.privilege_name COLLATE NOCASE
         WHERE rp.role_id IN (${allPlaceholders}) ${objectFilter}
         ORDER BY object_name
         LIMIT ?
       `, queryParams);
 
       if (!perms.length) {
-        return textResult(`No effective permissions found for ${heading}` +
-          (object_name ? ` on "${object_name}"` : '') + '.');
+        return emptyResult(`effective permissions for ${subjectLabel}` +
+          (object_name ? ` on "${object_name}"` : ''));
       }
 
-      let out = `# Effective Permissions\n${heading}\n`;
-      out += `${perms.length} entry point(s)` + (object_name ? ` matching "${object_name}"` : '') + '\n\n';
-      out += formatMarkdownTable(perms, [
+      const typed = {
+        subject_type: subjectType,
+        subject_id: subjectId,
+        subject_label: subjectLabel,
+        role_count: allRoleArr.length,
+        object_filter: object_name ?? null,
+        entry_point_count: perms.length,
+        truncated: perms.length >= limit,
+        permissions: perms.map(p => ({
+          object_name: p.object_name,
+          object_type: p.object_type ?? null,
+          grant_read: p.grant_read ?? null,
+          grant_create: p.grant_create ?? null,
+          grant_update: p.grant_update ?? null,
+          grant_delete: p.grant_delete ?? null,
+          grant_correct: p.grant_correct ?? null,
+          grant_invoke: p.grant_invoke ?? null,
+          duty_perm: p.duty_perm ?? null,
+        })),
+      };
+
+      // Markdown fallback from the typed object.
+      let out = `## Effective Permissions\n${typed.subject_label}\n`;
+      out += `${typed.entry_point_count} entry point(s)` + (typed.object_filter ? ` matching "${typed.object_filter}"` : '') + '\n';
+      out += `Roles expanded (incl. sub-roles): ${typed.role_count}\n\n`;
+      out += `_Note: Deny overrides are excluded from this result. Use \`sec_permission_trace\` to see the full picture._\n\n`;
+      // P4-07: explicit CRUD legend + Y/N rendering.
+      out += `**Legend:** Y = granted • N = not granted • (empty) = no specification\n\n`;
+      const renderedPerms = typed.permissions.map(p => ({
+        object_name: p.object_name,
+        object_type: p.object_type ?? '',
+        grant_read: formatCrudFlag(p.grant_read),
+        grant_create: formatCrudFlag(p.grant_create),
+        grant_update: formatCrudFlag(p.grant_update),
+        grant_delete: formatCrudFlag(p.grant_delete),
+        duty_perm: formatPermission(p.duty_perm),
+      }));
+      out += formatMarkdownTable(renderedPerms, [
         'object_name', 'object_type', 'grant_read', 'grant_create',
         'grant_update', 'grant_delete', 'duty_perm',
       ]);
-      if (perms.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
-      return textResult(out);
+      if (typed.truncated) out += truncationNote('user', limit);
+
+      return structuredResult(typed, out);
     }
   );
 
   // ── 13. sec_search ──────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_search',
-    'Full-text search across roles, duties, privileges, and users.',
     {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Full-text search across roles, duties, privileges, and users. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
       query: z.string().max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
       limit: z.number().optional().default(20).describe('Max results'),
     },
+      outputSchema: secSearchOutput.shape,
+    },
     async ({ query: searchQuery, object_type, limit: rawLimit }) => {
-      const limit = rawLimit || 20;
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 20;
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
-      if (!terms.length) return textResult('Empty search query.');
+      if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
 
-      const likeParts = terms.map(() => '(object_name LIKE ? OR content LIKE ?)');
-      const likeParams = terms.flatMap(t => [`%${t}%`, `%${t}%`]);
+      // Try FTS5 first (10-50x faster), fall back to LIKE if FTS5 table
+      // doesn't exist (e.g., older DB builds or in-memory test DBs).
+      let results;
+      try {
+        // FTS5 MATCH: each term becomes a prefix-match token.
+        const ftsExpr = terms.map(t => `"${t.replace(/"/g, '""')}"*`).join(' AND ');
+        let ftsSql = `
+          SELECT s.object_type, s.object_name, s.module_id, s.content
+          FROM sec_search_fts f
+          JOIN sec_search s ON s.rowid = f.rowid
+          WHERE sec_search_fts MATCH ?`;
+        const ftsParams = [ftsExpr];
+        if (object_type) {
+          ftsSql += ' AND s.object_type = ?';
+          ftsParams.push(object_type);
+        }
+        ftsSql += ' LIMIT ?';
+        ftsParams.push(limit);
+        results = q(ftsSql, ftsParams);
+      } catch {
+        // FTS5 table missing — fall back to LIKE scan.
+        const likeParts = terms.map(() => '(object_name LIKE ? OR content LIKE ?)');
+        const likeParams = terms.flatMap(t => [`%${t}%`, `%${t}%`]);
 
-      let sql = `SELECT object_type, object_name, module_id, content
-        FROM sec_search WHERE ${likeParts.join(' AND ')}`;
-      if (object_type) {
-        sql += ' AND object_type = ?';
-        likeParams.push(object_type);
+        let sql = `SELECT object_type, object_name, module_id, content
+          FROM sec_search WHERE ${likeParts.join(' AND ')}`;
+        if (object_type) {
+          sql += ' AND object_type = ?';
+          likeParams.push(object_type);
+        }
+        sql += ' LIMIT ?';
+        likeParams.push(limit);
+        results = q(sql, likeParams);
       }
-      sql += ' LIMIT ?';
-      likeParams.push(limit);
+      if (!results.length) return emptyResult(`matches for "${searchQuery}"`);
 
-      const results = q(sql, likeParams);
-      if (!results.length) return textResult(`No results for "${searchQuery}".`);
+      // P4-09: center the snippet on the first matching term so matches at
+      // position > 120 are no longer hidden. Use the first user term as the
+      // anchor (multi-term queries highlight the first term only — good
+      // enough for the search use case).
+      const anchor = terms[0];
+      const typed = {
+        query: searchQuery,
+        object_type: object_type ?? null,
+        limit,
+        result_count: results.length,
+        truncated: results.length >= limit,
+        results: results.map(r => ({
+          object_type: r.object_type ?? null,
+          object_name: r.object_name,
+          module_id: r.module_id ?? null,
+          match_context: r.content ? contextAround(r.content, anchor, 60) : null,
+        })),
+      };
 
-      const rows = results.map(r => ({
-        ...r,
-        match_context: r.content ? r.content.substring(0, 120) + (r.content.length > 120 ? '...' : '') : ''
-      }));
-
-      let out = formatMarkdownTable(rows, ['object_type', 'object_name', 'module_id', 'match_context']);
-      if (results.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
-      return textResult(out);
+      let out = formatMarkdownTable(
+        typed.results.map(r => ({
+          object_type: r.object_type ?? '',
+          object_name: r.object_name,
+          module_id: r.module_id ?? '',
+          match_context: r.match_context ?? '',
+        })),
+        ['object_type', 'object_name', 'module_id', 'match_context'],
+      );
+      if (typed.truncated) out += truncationNote('user', limit);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 14. sec_stats ───────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_stats',
-    'Get summary statistics for the security database: role counts, user counts, company count, etc.',
-    {},
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Get summary statistics for the security database: role counts, user counts, company count, etc. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {},
+      outputSchema: secStatsOutput.shape,
+    },
     async () => {
       const meta = q('SELECT key, value FROM sec_metadata ORDER BY key');
 
-      const grantRoles = q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Grant'`)[0]?.n || 0;
-      const denyRoles = q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Deny'`)[0]?.n || 0;
-      const totalDuties = q(`SELECT COUNT(*) as n FROM duties`)[0]?.n || 0;
-      const totalPrivileges = q(`SELECT COUNT(*) as n FROM privileges`)[0]?.n || 0;
-      const totalEntryPoints = q(`SELECT COUNT(*) as n FROM privilege_entry_points`)[0]?.n || 0;
-      const enabledUsers = q(`SELECT COUNT(*) as n FROM users WHERE enabled = 1`)[0]?.n || 0;
-      const disabledUsers = q(`SELECT COUNT(*) as n FROM users WHERE enabled = 0`)[0]?.n || 0;
-      const userRoleAssignments = q(`SELECT COUNT(*) as n FROM user_roles`)[0]?.n || 0;
-      const companies = q(`SELECT COUNT(DISTINCT company_id) as n FROM user_role_companies`)[0]?.n || 0;
+      const typed = {
+        build_info: meta.map(r => ({ key: r.key, value: String(r.value) })),
+        grant_roles: q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Grant'`)[0]?.n || 0,
+        deny_roles: q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Deny'`)[0]?.n || 0,
+        total_duties: q(`SELECT COUNT(*) as n FROM duties`)[0]?.n || 0,
+        total_privileges: q(`SELECT COUNT(*) as n FROM privileges`)[0]?.n || 0,
+        total_entry_points: q(`SELECT COUNT(*) as n FROM privilege_entry_points`)[0]?.n || 0,
+        enabled_users: q(`SELECT COUNT(*) as n FROM users WHERE enabled = 1`)[0]?.n || 0,
+        disabled_users: q(`SELECT COUNT(*) as n FROM users WHERE enabled = 0`)[0]?.n || 0,
+        user_role_assignments: q(`SELECT COUNT(*) as n FROM user_roles`)[0]?.n || 0,
+        companies: q(`SELECT COUNT(DISTINCT company_id) as n FROM user_role_companies`)[0]?.n || 0,
+      };
 
-      let out = '# Security Database Statistics\n\n';
+      // P4-10: render Build Info as a bulleted list rather than a generic
+      // |key|value| table. Build metadata has a fixed small set of keys and
+      // every key has a one-line value — bullets are easier to scan than a
+      // table whose columns add no information.
+      let out = '## Security Database Statistics\n\n';
       out += '## Build Info\n';
-      out += formatMarkdownTable(meta, ['key', 'value']) + '\n\n';
+      for (const row of typed.build_info) {
+        out += `- **${row.key}:** ${row.value}\n`;
+      }
+      out += '\n';
 
       out += '## Breakdown\n';
       out += `| Metric | Value |\n|---|---|\n`;
-      out += `| Grant Roles | ${grantRoles} |\n`;
-      out += `| Deny Roles | ${denyRoles} |\n`;
-      out += `| Total Duties | ${totalDuties} |\n`;
-      out += `| Total Privileges | ${totalPrivileges} |\n`;
-      out += `| Total Entry Points | ${totalEntryPoints} |\n`;
-      out += `| Enabled Users | ${enabledUsers} |\n`;
-      out += `| Disabled Users | ${disabledUsers} |\n`;
-      out += `| User-Role Assignments | ${userRoleAssignments} |\n`;
-      out += `| Companies | ${companies} |\n`;
+      out += `| Grant Roles | ${typed.grant_roles} |\n`;
+      out += `| Deny Roles | ${typed.deny_roles} |\n`;
+      out += `| Total Duties | ${typed.total_duties} |\n`;
+      out += `| Total Privileges | ${typed.total_privileges} |\n`;
+      out += `| Total Entry Points | ${typed.total_entry_points} |\n`;
+      out += `| Enabled Users | ${typed.enabled_users} |\n`;
+      out += `| Disabled Users | ${typed.disabled_users} |\n`;
+      out += `| User-Role Assignments | ${typed.user_role_assignments} |\n`;
+      out += `| Companies | ${typed.companies} |\n`;
 
-      return textResult(out);
+      return structuredResult(typed, out);
     }
   );
 
   // ── 15. sec_raw_sql ─────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'sec_raw_sql',
-    'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)',
-    { sql: z.string().max(50000).describe('SQL SELECT query') },
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a Markdown rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)',
+      inputSchema: { sql: z.string().max(50000).describe('SQL SELECT query') },
+      outputSchema: rawSqlOutput.shape,
+    },
     async ({ sql: rawSql }) => {
+      const SAFETY_CAP = 500;
       const trimmed = rawSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
-        return textResult('ERROR: Only SELECT/WITH/PRAGMA queries are allowed.');
+        return errorResult('invalid-input', 'Only SELECT, WITH, and PRAGMA queries are allowed.');
       }
 
       // Reject dangerous keywords
@@ -775,24 +1473,521 @@ export function registerSecTools(server, db) {
       for (const kw of forbidden) {
         const regex = new RegExp(`\\b${kw}\\b`, 'i');
         if (regex.test(trimmed)) {
-          return textResult(`ERROR: Keyword "${kw}" is not allowed in read-only queries.`);
+          return errorResult('invalid-input', `Forbidden keyword "${kw}" detected. Only read-only queries are allowed.`);
         }
       }
 
       let limited = trimmed;
       if (!/\bLIMIT\b/i.test(limited)) {
-        limited += ' LIMIT 500';
+        limited += ` LIMIT ${SAFETY_CAP}`;
       }
 
       try {
         const rows = q(limited);
-        if (!rows.length) return textResult('No results found.');
+        if (!rows.length) return emptyResult('rows matching your query');
+        const columns = Object.keys(rows[0]);
+        const truncated = rows.length >= SAFETY_CAP;
+        const typed = {
+          row_count: rows.length,
+          truncated,
+          columns,
+          rows,
+        };
         let out = formatMarkdownTable(rows);
-        if (rows.length >= 500) out += `\n\n> ⚠️ Showing first 500 results. There may be more — add a LIMIT clause or refine your query.`;
-        return textResult(out);
+        if (truncated) out += truncationNote('hard', SAFETY_CAP);
+        return structuredResult(typed, out);
       } catch (err) {
-        return textResult(`SQL Error: ${err.message}`);
+        return errorResult('db-error', 'Check your SQL syntax and table/column names. Only read-only SELECT queries are supported.', err);
       }
+    }
+  );
+
+  // ── 16. sec_licence_assessment ────────────────────────────────────────────
+
+  server.registerTool(
+    'sec_licence_assessment',
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Assess the minimum required D365 licence tier for one or all users based on their assigned security roles. Each role carries a UserLicenseType; the user requires the highest-cost tier across all Grant roles. Returns per-user breakdown and a tier summary.',
+      inputSchema: {
+        user_id: z.string().max(500).optional().describe('Assess a single user (omit for all enabled users)'),
+        limit: z.number().optional().default(500).describe('Max users to return'),
+      },
+      outputSchema: secLicenceAssessmentOutput.shape,
+    },
+    async ({ user_id, limit: rawLimit }) => {
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 500;
+      const single = !!user_id;
+
+      let userFilter = 'WHERE u.enabled = 1';
+      const params = [];
+      if (single) {
+        userFilter = 'WHERE u.user_id = ? COLLATE NOCASE';
+        params.push(user_id.trim());
+      }
+
+      const users = q(`
+        SELECT u.user_id, u.person_name,
+               GROUP_CONCAT(r.role_name, '||') as role_names,
+               GROUP_CONCAT(r.license_type, '||') as license_types,
+               COUNT(ur.role_id) as role_count
+        FROM users u
+        LEFT JOIN user_roles ur ON ur.user_id = u.user_id
+        LEFT JOIN roles r ON r.role_id = ur.role_id AND r.permission_type = 'Grant'
+        ${userFilter}
+        GROUP BY u.user_id
+        ORDER BY u.user_id
+        LIMIT ?
+      `, [...params, limit]);
+
+      if (single && !users.length) return notFoundResult('User', user_id);
+      if (!users.length) return emptyResult('enabled users');
+
+      const userRows = users.map(u => {
+        const types = (u.license_types || '').split('||').filter(Boolean);
+        const names = (u.role_names || '').split('||').filter(Boolean);
+        const tier = highestTier(types);
+        // Driving role: the one at the highest tier cost
+        let drivingRole = null;
+        for (let i = 0; i < types.length; i++) {
+          if (tierCost(types[i]) === tier.cost && tier.cost > 0) { drivingRole = names[i]; break; }
+        }
+        return {
+          user_id: u.user_id,
+          person_name: u.person_name ?? null,
+          required_tier: tier.name,
+          monthly_cost: tier.cost,
+          driving_role: drivingRole,
+          role_count: u.role_count || 0,
+        };
+      });
+
+      // Tier summary
+      const tierCounts = new Map();
+      for (const u of userRows) {
+        const t = u.required_tier || 'None';
+        if (!tierCounts.has(t)) tierCounts.set(t, 0);
+        tierCounts.set(t, tierCounts.get(t) + 1);
+      }
+      const tierSummary = [...tierCounts.entries()]
+        .map(([tier, count]) => ({ tier, user_count: count, monthly_cost_per_user: tierCost(tier) }))
+        .sort((a, b) => b.monthly_cost_per_user - a.monthly_cost_per_user);
+
+      const typed = {
+        mode: single ? 'single' : 'all',
+        user_count: userRows.length,
+        limit,
+        truncated: userRows.length >= limit,
+        tier_summary: tierSummary,
+        users: userRows,
+      };
+
+      let out = '## Licence Assessment\n';
+      out += `${typed.user_count} user(s) assessed\n\n`;
+      out += '### Tier Summary\n';
+      out += formatMarkdownTable(tierSummary, ['tier', 'user_count', 'monthly_cost_per_user']) + '\n\n';
+      out += '### Per-User Breakdown\n';
+      out += formatMarkdownTable(
+        userRows.map(u => ({
+          user_id: u.user_id,
+          person_name: u.person_name ?? '',
+          required_tier: u.required_tier ?? 'None',
+          monthly_cost: u.monthly_cost.toFixed(2),
+          driving_role: u.driving_role ?? '',
+          role_count: u.role_count,
+        })),
+        ['user_id', 'person_name', 'required_tier', 'monthly_cost', 'driving_role', 'role_count'],
+      );
+      if (typed.truncated) out += truncationNote('user', limit);
+      return structuredResult(typed, out);
+    }
+  );
+
+  // ── 17. sec_sod_check ─────────────────────────────────────────────────────
+
+  server.registerTool(
+    'sec_sod_check',
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Check Segregation of Duties (SoD) violations for one or all users. Uses an external JSON ruleset (SOD_RULES_FILE env var). Each rule defines two duty groups; a violation occurs when a user holds at least one duty from each group.',
+      inputSchema: {
+        user_id: z.string().max(500).optional().describe('Check a single user (omit for all enabled users)'),
+        category: z.string().max(200).optional().describe('Filter rules by category (e.g., accounts_payable)'),
+        limit: z.number().optional().default(100).describe('Max users to return'),
+      },
+      outputSchema: secSodCheckOutput.shape,
+    },
+    async ({ user_id, category, limit: rawLimit }) => {
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
+      if (!_sodRuleset) {
+        return errorResult('invalid-input', _sodRulesetError || 'SoD ruleset not loaded. Set SOD_RULES_FILE env var to a JSON file path.');
+      }
+
+      // Build role_id → role_name map
+      const allRoles = q('SELECT role_id, role_name FROM roles');
+      const roleNameMap = new Map(allRoles.map(r => [r.role_id, r.role_name]));
+
+      // Get target users
+      const single = !!user_id;
+      let userQuery = 'SELECT user_id, person_name FROM users WHERE enabled = 1 LIMIT ?';
+      let userParams = [limit];
+      if (single) {
+        userQuery = 'SELECT user_id, person_name FROM users WHERE user_id = ? COLLATE NOCASE';
+        userParams = [user_id.trim()];
+      }
+      const users = q(userQuery, userParams);
+      if (single && !users.length) return notFoundResult('User', user_id);
+      if (!users.length) return emptyResult('enabled users');
+
+      // Filter rules by category if specified
+      let activeRules = _sodRuleset.rules;
+      if (category) {
+        activeRules = activeRules.filter(r => r.category?.toLowerCase() === category.toLowerCase());
+        if (!activeRules.length) return emptyResult(`SoD rules in category "${category}"`);
+      }
+      const filteredRuleset = { rules: activeRules };
+      // Temporarily swap for detectSodViolations
+      const origRuleset = _sodRuleset;
+      _sodRuleset = filteredRuleset;
+
+      const allResults = [];
+      let totalViolations = 0;
+      let totalScore = 0;
+      let usersWithViolations = 0;
+
+      for (const user of users) {
+        const roleIds = q('SELECT role_id FROM user_roles WHERE user_id = ?', [user.user_id]).map(r => r.role_id);
+        const allRoleIds = expandRoles(q, roleIds);
+        const { dutySet, dutyToRoles } = effectiveDuties(q, allRoleIds);
+        const violations = detectSodViolations(dutySet, dutyToRoles, roleNameMap);
+        if (violations.length) {
+          const score = violations.reduce((s, v) => s + (RISK_WEIGHTS[v.risk_level] || 1), 0);
+          totalViolations += violations.length;
+          totalScore += score;
+          usersWithViolations++;
+          allResults.push({
+            user_id: user.user_id,
+            person_name: user.person_name ?? null,
+            violation_count: violations.length,
+            risk_score: score,
+            violations,
+          });
+        }
+      }
+
+      _sodRuleset = origRuleset; // restore
+
+      const typed = {
+        user_id: single ? users[0].user_id : null,
+        mode: single ? 'single' : 'all',
+        user_count: users.length,
+        violation_count: totalViolations,
+        risk_score: totalScore,
+        users_with_violations: usersWithViolations,
+        violations: allResults,
+      };
+
+      if (!allResults.length) {
+        let out = '## SoD Check\n';
+        out += `${users.length} user(s) checked — no violations found.\n`;
+        return structuredResult(typed, out);
+      }
+
+      let out = '## SoD Check\n';
+      out += `${typed.user_count} user(s) checked • ${typed.violation_count} violation(s) • Risk score: ${typed.risk_score}\n\n`;
+      for (const ur of allResults) {
+        out += `### ${ur.user_id} (${ur.person_name || 'N/A'}) — ${ur.violation_count} violation(s)\n`;
+        out += formatMarkdownTable(
+          ur.violations.map(v => ({
+            rule_id: v.rule_id,
+            rule_name: v.rule_name,
+            risk: v.risk_level,
+            group_a: `${v.group_a_name}: ${v.group_a_matched.join(', ')}`,
+            group_b: `${v.group_b_name}: ${v.group_b_matched.join(', ')}`,
+          })),
+          ['rule_id', 'rule_name', 'risk', 'group_a', 'group_b'],
+        ) + '\n\n';
+      }
+      return structuredResult(typed, out);
+    }
+  );
+
+  // ── 18. sec_what_if ───────────────────────────────────────────────────────
+
+  server.registerTool(
+    'sec_what_if',
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Simulate adding or removing roles from a user. Returns the projected licence tier change (with monthly/annual cost delta) and SoD impact (new vs resolved violations). Requires SOD_RULES_FILE for SoD analysis.',
+      inputSchema: {
+        user_id: z.string().max(500).describe('User ID to simulate changes for'),
+        add_roles: z.array(z.string().max(500)).optional().default([]).describe('Role names to add'),
+        remove_roles: z.array(z.string().max(500)).optional().default([]).describe('Role names to remove'),
+      },
+      outputSchema: secWhatIfOutput.shape,
+    },
+    async ({ user_id, add_roles: addRolesRaw, remove_roles: removeRolesRaw }) => {
+      const addRoles = Array.isArray(addRolesRaw) ? addRolesRaw : [];
+      const removeRoles = Array.isArray(removeRolesRaw) ? removeRolesRaw : [];
+
+      const uid = user_id.trim();
+      const user = q('SELECT user_id, person_name FROM users WHERE user_id = ? COLLATE NOCASE', [uid]);
+      if (!user.length) return notFoundResult('User', uid);
+
+      const warnings = [];
+
+      // Resolve role names to IDs
+      const allRolesDb = q('SELECT role_id, role_name, license_type, permission_type FROM roles');
+      const roleByName = new Map(allRolesDb.map(r => [r.role_name.toLowerCase(), r]));
+      const roleNameMap = new Map(allRolesDb.map(r => [r.role_id, r.role_name]));
+
+      const addRoleIds = [];
+      for (const rn of addRoles) {
+        const r = roleByName.get(rn.toLowerCase());
+        if (!r) { warnings.push(`Unknown role: ${rn}`); continue; }
+        addRoleIds.push(r.role_id);
+      }
+      const removeRoleIds = new Set();
+      for (const rn of removeRoles) {
+        const r = roleByName.get(rn.toLowerCase());
+        if (!r) { warnings.push(`Unknown role: ${rn}`); continue; }
+        removeRoleIds.add(r.role_id);
+      }
+
+      // Current roles
+      const currentRoleIds = q('SELECT role_id FROM user_roles WHERE user_id = ?', [user[0].user_id])
+        .map(r => r.role_id);
+
+      // Projected roles (set operation)
+      const projectedRoleIds = [
+        ...currentRoleIds.filter(rid => !removeRoleIds.has(rid)),
+        ...addRoleIds.filter(rid => !currentRoleIds.includes(rid)),
+      ];
+
+      // Licence tier: current
+      const currentTypes = currentRoleIds
+        .map(rid => allRolesDb.find(r => r.role_id === rid))
+        .filter(r => r && r.permission_type === 'Grant')
+        .map(r => r.license_type);
+      const currentTier = highestTier(currentTypes);
+
+      // Licence tier: projected
+      const projectedTypes = projectedRoleIds
+        .map(rid => allRolesDb.find(r => r.role_id === rid))
+        .filter(r => r && r.permission_type === 'Grant')
+        .map(r => r.license_type);
+      const projectedTier = highestTier(projectedTypes);
+
+      const monthlyDelta = projectedTier.cost - currentTier.cost;
+      const annualDelta = Math.round(monthlyDelta * 12 * 100) / 100;
+
+      // SoD impact
+      let sodCurrent = [], sodProjected = [], sodNew = [], sodResolved = [];
+      if (_sodRuleset) {
+        const currentExpanded = expandRoles(q, currentRoleIds);
+        const { dutySet: currentDuties, dutyToRoles: currentDtr } = effectiveDuties(q, currentExpanded);
+        sodCurrent = detectSodViolations(currentDuties, currentDtr, roleNameMap);
+
+        const projectedExpanded = expandRoles(q, projectedRoleIds);
+        const { dutySet: projDuties, dutyToRoles: projDtr } = effectiveDuties(q, projectedExpanded);
+        sodProjected = detectSodViolations(projDuties, projDtr, roleNameMap);
+
+        const currentIds = new Set(sodCurrent.map(v => v.rule_id));
+        const projectedIds = new Set(sodProjected.map(v => v.rule_id));
+        sodNew = sodProjected.filter(v => !currentIds.has(v.rule_id));
+        sodResolved = sodCurrent.filter(v => !projectedIds.has(v.rule_id));
+      } else {
+        warnings.push('SOD_RULES_FILE not configured — SoD impact not computed.');
+      }
+
+      const currentRoleNames = currentRoleIds.map(rid => roleNameMap.get(rid) || rid);
+      const projectedRoleNames = projectedRoleIds.map(rid => roleNameMap.get(rid) || rid);
+
+      const typed = {
+        user_id: user[0].user_id,
+        person_name: user[0].person_name ?? null,
+        add_roles: addRoles,
+        remove_roles: removeRoles,
+        current_tier: currentTier.name,
+        current_monthly_cost: currentTier.cost,
+        projected_tier: projectedTier.name,
+        projected_monthly_cost: projectedTier.cost,
+        monthly_delta: Math.round(monthlyDelta * 100) / 100,
+        annual_delta: annualDelta,
+        current_role_count: currentRoleIds.length,
+        projected_role_count: projectedRoleIds.length,
+        current_roles: currentRoleNames,
+        projected_roles: projectedRoleNames,
+        sod_current_violations: sodCurrent.length,
+        sod_projected_violations: sodProjected.length,
+        sod_new: sodNew,
+        sod_resolved: sodResolved,
+        warnings,
+      };
+
+      let out = `## What-If: ${typed.user_id}\n`;
+      out += `Adding: ${addRoles.length ? addRoles.join(', ') : '(none)'} • Removing: ${removeRoles.length ? removeRoles.join(', ') : '(none)'}\n\n`;
+
+      out += '### Licence Impact\n';
+      out += `| | Current | Projected |\n|---|---|---|\n`;
+      out += `| Tier | ${typed.current_tier || 'None'} | ${typed.projected_tier || 'None'} |\n`;
+      out += `| Monthly Cost | ${typed.current_monthly_cost.toFixed(2)} | ${typed.projected_monthly_cost.toFixed(2)} |\n`;
+      out += `| Roles | ${typed.current_role_count} | ${typed.projected_role_count} |\n\n`;
+
+      if (monthlyDelta !== 0) {
+        const direction = monthlyDelta > 0 ? '📈 Cost increase' : '📉 Cost saving';
+        out += `${direction}: **${Math.abs(typed.monthly_delta).toFixed(2)}/month** (${Math.abs(typed.annual_delta).toFixed(2)}/year)\n\n`;
+      } else {
+        out += 'No licence cost change.\n\n';
+      }
+
+      if (_sodRuleset) {
+        out += '### SoD Impact\n';
+        out += `Current violations: ${sodCurrent.length} • Projected: ${sodProjected.length}\n`;
+        if (sodNew.length) {
+          out += `\n**New violations (${sodNew.length}):**\n`;
+          out += formatMarkdownTable(
+            sodNew.map(v => ({ rule_id: v.rule_id, rule_name: v.rule_name, risk: v.risk_level })),
+            ['rule_id', 'rule_name', 'risk'],
+          ) + '\n';
+        }
+        if (sodResolved.length) {
+          out += `\n**Resolved violations (${sodResolved.length}):**\n`;
+          out += formatMarkdownTable(
+            sodResolved.map(v => ({ rule_id: v.rule_id, rule_name: v.rule_name, risk: v.risk_level })),
+            ['rule_id', 'rule_name', 'risk'],
+          ) + '\n';
+        }
+        if (!sodNew.length && !sodResolved.length) {
+          out += 'No SoD impact.\n';
+        }
+        out += '\n';
+      }
+
+      if (warnings.length) {
+        out += '### Warnings\n' + warnings.map(w => `- ${w}`).join('\n') + '\n';
+      }
+
+      return structuredResult(typed, out);
+    }
+  );
+
+  // ── 19. sec_object_access ─────────────────────────────────────────────────
+
+  server.registerTool(
+    'sec_object_access',
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Reverse permission chain: given an object name (menu item, form, table), find all privileges, duties, roles, and users that grant access to it. Walks entry_points → privileges → duties → roles → users.',
+      inputSchema: {
+        object_name: z.string().max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
+        limit: z.number().optional().default(200).describe('Max access paths to return'),
+      },
+      outputSchema: secObjectAccessOutput.shape,
+    },
+    async ({ object_name, limit: rawLimit }) => {
+      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
+      const objName = object_name.trim();
+
+      // Step 1: find entry points matching the object
+      const paths = q(`
+        SELECT r.role_name, r.permission_type,
+               rd.duty_id, ep.privilege_name,
+               ep.entry_point_name, ep.object_type,
+               ep.grant_read, ep.grant_create, ep.grant_update, ep.grant_delete
+        FROM privilege_entry_points ep
+        JOIN duty_privileges dp ON dp.privilege_name = ep.privilege_name COLLATE NOCASE
+        JOIN role_duties rd ON rd.duty_id = dp.duty_id COLLATE NOCASE
+        JOIN roles r ON r.role_id = rd.role_id
+        WHERE (ep.object_name LIKE ? COLLATE NOCASE OR ep.entry_point_name LIKE ? COLLATE NOCASE)
+          AND rd.permission_type = 'Grant'
+        UNION ALL
+        SELECT r.role_name, r.permission_type,
+               '(direct)' as duty_id, rp.privilege_name,
+               ep.entry_point_name, ep.object_type,
+               ep.grant_read, ep.grant_create, ep.grant_update, ep.grant_delete
+        FROM privilege_entry_points ep
+        JOIN role_direct_privileges rp ON rp.privilege_name = ep.privilege_name COLLATE NOCASE
+        JOIN roles r ON r.role_id = rp.role_id
+        WHERE (ep.object_name LIKE ? COLLATE NOCASE OR ep.entry_point_name LIKE ? COLLATE NOCASE)
+        ORDER BY role_name
+        LIMIT ?
+      `, [`%${objName}%`, `%${objName}%`, `%${objName}%`, `%${objName}%`, limit]);
+
+      if (!paths.length) return emptyResult(`access paths for "${objName}"`);
+
+      // Step 2: find users who hold these roles
+      const roleNames = [...new Set(paths.map(p => p.role_name))];
+      const rolePh = roleNames.map(() => '?').join(',');
+      const users = roleNames.length ? q(`
+        SELECT DISTINCT u.user_id, u.person_name, r.role_name
+        FROM user_roles ur
+        JOIN users u ON u.user_id = ur.user_id AND u.enabled = 1
+        JOIN roles r ON r.role_id = ur.role_id
+        WHERE r.role_name IN (${rolePh}) COLLATE NOCASE
+        ORDER BY u.user_id
+        LIMIT ?
+      `, [...roleNames, 500]) : [];
+
+      const typed = {
+        object_name: objName,
+        limit,
+        result_count: paths.length,
+        truncated: paths.length >= limit,
+        user_count: new Set(users.map(u => u.user_id)).size,
+        role_count: roleNames.length,
+        paths: paths.map(p => ({
+          role_name: p.role_name,
+          permission_type: p.permission_type ?? null,
+          duty_id: p.duty_id ?? null,
+          privilege_name: p.privilege_name,
+          entry_point_name: p.entry_point_name,
+          object_type: p.object_type ?? null,
+          grant_read: p.grant_read ?? null,
+          grant_create: p.grant_create ?? null,
+          grant_update: p.grant_update ?? null,
+          grant_delete: p.grant_delete ?? null,
+        })),
+        users: users.map(u => ({
+          user_id: u.user_id,
+          person_name: u.person_name ?? null,
+          role_name: u.role_name,
+        })),
+      };
+
+      let out = `## Object Access: ${typed.object_name}\n`;
+      out += `${typed.result_count} access path(s) • ${typed.role_count} role(s) • ${typed.user_count} user(s)\n\n`;
+
+      out += '### Access Paths\n';
+      out += formatMarkdownTable(
+        typed.paths.map(p => ({
+          role: p.role_name,
+          duty: p.duty_id ?? '',
+          privilege: p.privilege_name,
+          entry_point: p.entry_point_name,
+          type: p.object_type ?? '',
+          R: formatCrudFlag(p.grant_read),
+          C: formatCrudFlag(p.grant_create),
+          U: formatCrudFlag(p.grant_update),
+          D: formatCrudFlag(p.grant_delete),
+        })),
+        ['role', 'duty', 'privilege', 'entry_point', 'type', 'R', 'C', 'U', 'D'],
+      ) + '\n\n';
+
+      if (users.length) {
+        out += '### Users with Access\n';
+        out += formatMarkdownTable(
+          typed.users.map(u => ({
+            user_id: u.user_id,
+            person_name: u.person_name ?? '',
+            role: u.role_name,
+          })),
+          ['user_id', 'person_name', 'role'],
+        );
+      }
+
+      if (typed.truncated) out += truncationNote('user', limit);
+      return structuredResult(typed, out);
     }
   );
 

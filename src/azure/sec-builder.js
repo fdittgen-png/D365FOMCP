@@ -23,15 +23,21 @@ const Database = require('better-sqlite3');
 const SCHEMA = `
 -- ROLES
 CREATE TABLE IF NOT EXISTS roles (
-  role_id          TEXT PRIMARY KEY,
-  role_name        TEXT NOT NULL,
-  module_id        TEXT,
-  label            TEXT,
-  description      TEXT,
-  license_type     TEXT,
-  permission_type  TEXT DEFAULT 'Grant',
-  is_profile       INTEGER DEFAULT 0,
-  source           TEXT DEFAULT 'aot'
+  role_id              TEXT PRIMARY KEY,
+  role_name            TEXT NOT NULL,
+  module_id            TEXT,
+  label                TEXT,
+  description          TEXT,
+  license_type         TEXT,
+  -- permission_type is the effective Grant/Deny used by every reader.
+  -- dmf_permission_type is the raw value from the DMF export (P4-05 /
+  -- CR-SEC-005). When both are present the DMF value wins; when DMF is
+  -- NULL the regex fallback in detectPermissionType populates
+  -- permission_type. Existing dbs upgrade via ALTER TABLE below.
+  permission_type      TEXT DEFAULT 'Grant',
+  dmf_permission_type  TEXT,
+  is_profile           INTEGER DEFAULT 0,
+  source               TEXT DEFAULT 'aot'
 );
 CREATE INDEX IF NOT EXISTS idx_roles_name ON roles(role_name);
 CREATE INDEX IF NOT EXISTS idx_roles_module ON roles(module_id);
@@ -149,6 +155,15 @@ CREATE INDEX IF NOT EXISTS idx_sec_search_type ON sec_search(object_type);
 CREATE INDEX IF NOT EXISTS idx_sec_search_name ON sec_search(object_name);
 CREATE INDEX IF NOT EXISTS idx_sec_search_content_nocase ON sec_search(content COLLATE NOCASE);
 
+-- FTS5 full-text index over sec_search. Content-external: the FTS index
+-- does NOT duplicate the rows — it references sec_search via rowid. This
+-- keeps the DB size manageable while enabling 10-50x faster multi-word
+-- queries via MATCH instead of multiple LIKE '%term%' scans.
+CREATE VIRTUAL TABLE IF NOT EXISTS sec_search_fts USING fts5(
+  object_name, content,
+  content='sec_search', content_rowid='rowid'
+);
+
 CREATE TABLE IF NOT EXISTS sec_metadata (
   key              TEXT PRIMARY KEY,
   value            TEXT
@@ -223,7 +238,14 @@ function findAxDirs(basePath, dirName) {
           walk(fullPath, depth + 1);
         }
       }
-    } catch { /* ignore permission errors */ }
+    } catch (err) {
+      // P6-01: walking the AOT package tree can hit ENOENT (deleted while
+      // iterating) or EACCES (locked file). These are intentional skips,
+      // not silent — emit a debug-level warning so the build log shows the
+      // skipped path instead of pretending nothing happened.
+      try { console.warn('cleanup-warn', 'aot-walk-skip', dir, err.message); }
+      catch { /* logger unavailable */ }
+    }
   }
   walk(basePath, 0);
   return results;
@@ -293,12 +315,41 @@ function resolveLabel(labelMap, raw) {
   return raw;
 }
 
-/** Detect Grant/Deny permission type from name */
+/** Detect Grant/Deny permission type from name (regex fallback). */
 function detectPermissionType(name) {
   if (!name) return 'Grant';
   if (/^(TBG[\s_])?Deny[\s_]/i.test(name)) return 'Deny';
   return 'Grant';
 }
+
+/**
+ * P4-05 / CR-SEC-005: pick the effective permission type for a role.
+ * Priority:
+ *   1. The raw DMF value if present and recognized as Grant or Deny
+ *      (case-insensitive). Non-English DMF exports may use different
+ *      casing — normalize once.
+ *   2. The regex fallback against `detectPermissionType(name)`.
+ *
+ * Returns one of `'Grant' | 'Deny'`. Logs (once per process) when a
+ * non-null DMF value is unrecognized so the next builder run surfaces
+ * the schema drift instead of silently downgrading to the regex.
+ */
+let _warnedUnknownPerm = false;
+function getEffectivePermissionType(rawDmfPerm, roleName) {
+  if (rawDmfPerm) {
+    const s = String(rawDmfPerm).trim().toLowerCase();
+    if (s === 'grant' || s === 'allow') return 'Grant';
+    if (s === 'deny' || s === 'block') return 'Deny';
+    if (!_warnedUnknownPerm) {
+      _warnedUnknownPerm = true;
+      try { console.warn(`[sec-builder] unknown DMF permission type "${rawDmfPerm}" for role "${roleName}" — falling back to regex`); }
+      catch { /* logger unavailable */ }
+    }
+  }
+  return detectPermissionType(roleName);
+}
+// Exported for tests
+export { getEffectivePermissionType };
 
 /** Find a DMF file by trying multiple name variants */
 function findDmfFile(dir, ...names) {
@@ -437,8 +488,14 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   db.exec(SCHEMA);
 
   // Prepared statements
+  // P4-05: roles is now a 10-column table (added `dmf_permission_type`).
+  // Use named columns instead of positional `VALUES (?,...)` so future
+  // schema additions don't silently shift positions.
   const stmts = {
-    insertRole: db.prepare('INSERT OR REPLACE INTO roles VALUES (?,?,?,?,?,?,?,?,?)'),
+    insertRole: db.prepare(`INSERT OR REPLACE INTO roles
+      (role_id, role_name, module_id, label, description, license_type,
+       permission_type, dmf_permission_type, is_profile, source)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`),
     insertDuty: db.prepare('INSERT OR REPLACE INTO duties VALUES (?,?,?,?)'),
     insertRoleDuty: db.prepare('INSERT OR REPLACE INTO role_duties VALUES (?,?,?)'),
     insertPrivilege: db.prepare('INSERT OR REPLACE INTO privileges VALUES (?,?,?)'),
@@ -499,9 +556,11 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         if (!r || !r.Name) return;
         const mod = getModuleFromPath(filePath, packagesPaths);
         const duties = ensureArray(r.Duties?.AxSecurityDutyReference).map(d => d.Name).filter(Boolean);
+        // P4-05: AOT path has no DMF source for permission_type, so dmf_permission_type
+        // stays NULL and the regex fallback (`detectPermissionType`) is the effective value.
         stmts.insertRole.run(
           r.Name, r.Name, mod, rl(r.Label) || null, rl(r.Description) || null,
-          null, detectPermissionType(r.Name), 0, 'aot'
+          null, detectPermissionType(r.Name), null, 0, 'aot'
         );
         for (const dutyName of duties) {
           stmts.insertRoleDuty.run(r.Name, dutyName, 'Grant');
@@ -565,9 +624,13 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     }
 
     // Pre-prepare statements used inside DMF loops
+    // P4-05: updateRole now also stores the raw DMF permission_type alongside
+    // the effective one. Bind order: id, name, label, description, license,
+    // effective_permission_type, dmf_permission_type, where_id.
     const dmfStmts = {
       updateRole: db.prepare(`UPDATE roles SET role_id = ?, role_name = ?, label = COALESCE(label, ?),
-        description = COALESCE(description, ?), license_type = ?, permission_type = ?, source = 'aot+dmf'
+        description = COALESCE(description, ?), license_type = ?,
+        permission_type = ?, dmf_permission_type = ?, source = 'aot+dmf'
         WHERE role_id = ?`),
       rekeyRoleDuties: db.prepare('UPDATE OR IGNORE role_duties SET role_id = ? WHERE role_id = ?'),
       deleteOldRoleDuties: db.prepare('DELETE FROM role_duties WHERE role_id = ?'),
@@ -578,18 +641,43 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
     const dmfTransaction = db.transaction(() => {
       // 2a: Roles
+      // P4-04 / CR-SEC-003: track per-skip diagnostics so missing roles
+      // (e.g. "TBG Ledger Calendar Security Role") can be traced from the
+      // build log without re-running the importer. Counters land in
+      // `stats.roles` and individual skip reasons accumulate in
+      // `stats.skippedRoles` (capped at 100 to bound memory).
+      stats.roles = { totalInDmf: 0, imported: 0, mergedWithAot: 0, skipped: 0 };
+      stats.skippedRoles = [];
+      const SKIP_LOG_CAP = 100;
+      const recordSkip = (id, name, reason) => {
+        stats.roles.skipped++;
+        if (stats.skippedRoles.length < SKIP_LOG_CAP) {
+          stats.skippedRoles.push({ id: id ?? null, name: name ?? null, reason });
+        }
+      };
+
       const rolesFile = findDmfFile(dmfInputDir, 'System Security Role.xml', 'SystemSecurityRole.xml');
       if (rolesFile) {
         const entities = parseDmfXml(xmlParser, rolesFile, 'SYSTEMSECURITYROLEENTITY', log);
+        const seenIds = new Set();
         let mergedCount = 0;
         for (const e of entities) {
+          stats.roles.totalInDmf++;
           const roleId = e.SECURITYROLEIDENTIFIER;
           const roleName = e.SECURITYROLENAME;
-          if (!roleId || !roleName) continue;
+          if (!roleId) { recordSkip(null, roleName, 'missing-id'); continue; }
+          if (!roleName) { recordSkip(roleId, null, 'missing-name'); continue; }
+          if (seenIds.has(roleId.toUpperCase())) {
+            recordSkip(roleId, roleName, 'duplicate');
+            continue;
+          }
+          seenIds.add(roleId.toUpperCase());
           const existingAotId = aotIdUpper.get(roleId.toUpperCase());
           if (existingAotId) {
+            const rawDmfPerm = e.PERMISSIONTYPE || e.SECURITYROLEPERMISSIONTYPE || e.ROLEPERMISSIONTYPE || null;
+            const effectivePerm = getEffectivePermissionType(rawDmfPerm, roleName);
             dmfStmts.updateRole.run(roleId, roleName, e.DESCRIPTION || null, e.DESCRIPTION || null,
-              e.USERLICENSETYPE || null, detectPermissionType(roleName), existingAotId);
+              e.USERLICENSETYPE || null, effectivePerm, rawDmfPerm, existingAotId);
             if (roleId !== existingAotId) {
               dmfStmts.rekeyRoleDuties.run(roleId, existingAotId);
               dmfStmts.deleteOldRoleDuties.run(existingAotId);
@@ -598,14 +686,26 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
             aotIdUpper.set(roleId.toUpperCase(), roleId);
             mergedCount++;
           } else {
+            // P4-05 / CR-SEC-005: capture the raw DMF permission type when it
+            // is present (any of `PERMISSIONTYPE`, `SECURITYROLEPERMISSIONTYPE`,
+            // `ROLEPERMISSIONTYPE` — DMF field naming varies across versions).
+            // The regex fallback fills `permission_type` so existing readers
+            // keep working; the new column is the source of truth for non-
+            // English / non-conventional names.
+            const rawDmfPerm = e.PERMISSIONTYPE || e.SECURITYROLEPERMISSIONTYPE || e.ROLEPERMISSIONTYPE || null;
+            const effectivePerm = getEffectivePermissionType(rawDmfPerm, roleName);
             stmts.insertRole.run(
               roleId, roleName, null, e.DESCRIPTION || null, e.DESCRIPTION || null,
-              e.USERLICENSETYPE || null, detectPermissionType(roleName), 0, 'dmf'
+              e.USERLICENSETYPE || null, effectivePerm, rawDmfPerm, 0, 'dmf'
             );
           }
           stats.dmfRoles++;
+          stats.roles.imported++;
         }
-        log(`    Roles: ${stats.dmfRoles} (${mergedCount} merged with AOT)`);
+        stats.roles.mergedWithAot = mergedCount;
+        const sample = stats.skippedRoles.slice(0, 10).map(s => `${s.id || '(no-id)'}/${s.name || '(no-name)'}: ${s.reason}`).join('; ');
+        log(`    Roles: total_in_dmf=${stats.roles.totalInDmf}, imported=${stats.roles.imported} (${mergedCount} merged with AOT), skipped=${stats.roles.skipped}` +
+            (stats.roles.skipped > 0 ? ` (first ${Math.min(10, stats.roles.skipped)}: ${sample})` : ''));
       }
 
       // 2b: Sub-Roles
@@ -753,6 +853,96 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         }
         stats.dmfDutyPrivileges = inserted;
         log(`    Duty-privilege mappings: ${inserted.toLocaleString()}`);
+      }
+
+      // 2d-bis: Duty-Privilege Mappings from System Security Duty V2 (CR-SEC-006)
+      // -------------------------------------------------------------------------
+      // The V1 `System Security Duty.xml` exports duty→privilege pairs but does
+      // NOT cover all DMF-only duties. As of build 2026-03-25, 1,562 of 2,623
+      // duties (~60%) had zero privileges in the live DB — including the entire
+      // CollectionLetter family. The V2 entity (`SYSTEMSECURITYDUTYV2ENTITY` in
+      // `System Security Duty V2.xml`) is the authoritative source for duty→
+      // privilege pairs across the full duty catalog.
+      //
+      // Field shape per the DMF target entity:
+      //   SECURITYDUTYIDENTIFIER     — duty id (matches V1 + AOT)
+      //   SECURITYPRIVILEGEIDENTIFIER — privilege name
+      // Same identifiers as V1; only the wrapping entity tag differs.
+      const dutyPrivV2File = findDmfFile(dmfInputDir,
+        'System Security Duty V2.xml', 'SystemSecurityDutyV2.xml');
+      stats.dmfDutyPrivilegesV2 = 0;
+      stats.dmfDutyV2Skipped = 0;
+      stats.dmfDutyV2Missing = !dutyPrivV2File;
+      if (dutyPrivV2File) {
+        const fileSize = statSync(dutyPrivV2File).size;
+        const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
+
+        // Reuse the V1 collector pattern but with a V2 entity tag and a fresh
+        // pair set — pairs added here go through the same insert pipeline.
+        const v2Pairs = new Set();
+        const v2DutyNames = new Map();
+        const v2PrivLabels = new Map();
+
+        const collectV2 = (dutyId, dutyName, privId, privLabel) => {
+          if (!dutyId || !privId) {
+            stats.dmfDutyV2Skipped++;
+            return;
+          }
+          v2Pairs.add(`${dutyId}\t${privId}`);
+          if (dutyName && !v2DutyNames.has(dutyId)) v2DutyNames.set(dutyId, dutyName);
+          if (privLabel && !v2PrivLabels.has(privId)) v2PrivLabels.set(privId, privLabel);
+        };
+
+        if (fileSize > 100 * 1024 * 1024) {
+          log(`    Reading V2 (streaming, ${sizeMB} MB): ${basename(dutyPrivV2File)}`);
+          const cnt = streamParseLargeDmfXmlSync(
+            dutyPrivV2File, 'SYSTEMSECURITYDUTYV2ENTITY',
+            (inner) => collectV2(
+              extractField(inner, 'SECURITYDUTYIDENTIFIER'),
+              extractField(inner, 'SECURITYDUTYNAME'),
+              extractField(inner, 'SECURITYPRIVILEGEIDENTIFIER'),
+              extractField(inner, 'SECURITYPRIVILEGENAME'),
+            ),
+          );
+          log(`    V2 parsed ${cnt.toLocaleString()} entities → ${v2Pairs.size.toLocaleString()} unique pairs`);
+        } else {
+          const entities = parseDmfXml(xmlParser, dutyPrivV2File, 'SYSTEMSECURITYDUTYV2ENTITY', log);
+          for (const e of entities) {
+            collectV2(e.SECURITYDUTYIDENTIFIER, e.SECURITYDUTYNAME,
+              e.SECURITYPRIVILEGEIDENTIFIER, e.SECURITYPRIVILEGENAME);
+          }
+          log(`    V2 found ${v2Pairs.size.toLocaleString()} unique duty-privilege pairs`);
+        }
+
+        // Refresh the privilege lookup — V1 ingestion above may have added rows.
+        const v2PrivsUpper = new Map();
+        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+          v2PrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
+        }
+
+        let v2Inserted = 0;
+        for (const pair of v2Pairs) {
+          const [rawDutyId, rawPrivId] = pair.split('\t');
+          const resolvedDutyId = aotDutyUpper.get(rawDutyId.toUpperCase()) || rawDutyId;
+          const resolvedPrivId = v2PrivsUpper.get(rawPrivId.toUpperCase()) || rawPrivId;
+
+          if (!aotDutyUpper.has(rawDutyId.toUpperCase())) {
+            stmts.insertDuty.run(resolvedDutyId, v2DutyNames.get(rawDutyId) || null, null, null);
+            aotDutyUpper.set(resolvedDutyId.toUpperCase(), resolvedDutyId);
+          }
+          if (!v2PrivsUpper.has(rawPrivId.toUpperCase())) {
+            stmts.insertPrivilege.run(resolvedPrivId, null, v2PrivLabels.get(rawPrivId) || null);
+            v2PrivsUpper.set(resolvedPrivId.toUpperCase(), resolvedPrivId);
+          }
+          // INSERT OR REPLACE on the (duty_id, privilege_name) PK is idempotent —
+          // V1 + V2 overlap is fine; the pair is a deduplicated set.
+          stmts.insertDutyPriv.run(resolvedDutyId, resolvedPrivId);
+          v2Inserted++;
+        }
+        stats.dmfDutyPrivilegesV2 = v2Inserted;
+        log(`    Duty-privilege mappings (V2): inserted=${v2Inserted.toLocaleString()}, skipped=${stats.dmfDutyV2Skipped}`);
+      } else {
+        log(`    Duty V2 DMF not found — duty_privileges may be incomplete (CR-SEC-006). Looked for: System Security Duty V2.xml`);
       }
 
       // 2e: User Information
@@ -912,6 +1102,10 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     }
   });
   searchTransaction();
+
+  // Populate the FTS5 index from sec_search rows.
+  log('  Populating FTS5 index...');
+  db.exec(`INSERT INTO sec_search_fts(sec_search_fts) VALUES('rebuild')`);
 
   // ── Phase 5: Metadata & Finalize ───────────────────────────────────────────
 

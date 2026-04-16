@@ -107,3 +107,14 @@ If `TOC_ReadOnlyPrivilege` is the **only** privilege defining the menu item, no 
 - Summary table of findings
 - Security recommendations if any gaps or over-provisioning detected
 - **For "lost access" tickets**: explicit before/after comparison if a recent role change is detected
+
+---
+
+## Related tools (new)
+
+These tools extend the analysis when needed:
+
+- **`sec_licence_assessment`** — assess a user's minimum required licence tier from their roles. Use when investigating cost optimization or over-provisioning. See also `/d365-licence-audit`.
+- **`sec_sod_check`** — check for Segregation of Duties violations using external rules. Use when auditing a user or investigating compliance. Requires `SOD_RULES_FILE`. See also `/d365-sod`.
+- **`sec_what_if`** — simulate role add/remove and see licence tier + SoD impact before making changes. Use when recommending remediation. See also `/d365-what-if`.
+- **`sec_object_access`** — reverse permission chain: given an object, find all roles and users that can access it. Use when answering "who can access X?" questions.

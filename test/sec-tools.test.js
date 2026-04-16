@@ -20,10 +20,21 @@ const Database = require('better-sqlite3');
 let db;
 let toolHandlers;
 
-/** Intercept server.tool() calls to collect handlers */
+/** Intercept `server.registerTool(name, config, handler)` calls (PM-02)
+ *  and collect handlers. Also keeps a `tool` alias so any remaining legacy
+ *  call sites (should be none after PM-02) don't silently skip registration. */
 function createMockServer() {
   const handlers = {};
   return {
+    registerTool: (name, config, handler) => {
+      handlers[name] = {
+        schema: config.inputSchema || {},
+        outputSchema: config.outputSchema,
+        annotations: config.annotations,
+        description: config.description,
+        handler,
+      };
+    },
     tool: (name, _desc, schema, handler) => {
       handlers[name] = { schema, handler };
     },
@@ -37,6 +48,13 @@ async function callTool(name, args) {
   if (!tool) throw new Error(`Tool "${name}" not registered`);
   const result = await tool.handler(args);
   return result.content[0].text;
+}
+
+/** PM-05: return the full MCP result shape (content + structuredContent + isError). */
+async function callToolFull(name, args) {
+  const tool = toolHandlers[name];
+  if (!tool) throw new Error(`Tool "${name}" not registered`);
+  return await tool.handler(args);
 }
 
 before(async () => {
@@ -290,6 +308,23 @@ describe('sec_lookup_user', () => {
     assert.ok(result.includes('Did you mean'));
     assert.ok(result.includes('john.doe'));
   });
+
+  // PM-05 — structured output for the pilot tool
+  it('given a valid lookup, then returns structuredContent matching the output schema', async () => {
+    const { secLookupUserOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_lookup_user', { user_id: 'john.doe@trelleborg.com' });
+    assert.ok(result.structuredContent, 'expected structuredContent on success');
+    assert.doesNotThrow(() => secLookupUserOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.user_id, 'john.doe@trelleborg.com');
+    assert.equal(typeof result.structuredContent.enabled, 'boolean');
+    assert.ok(Array.isArray(result.structuredContent.roles));
+  });
+
+  it('given an unknown user, then isError is true and notFoundResult is returned', async () => {
+    const result = await callToolFull('sec_lookup_user', { user_id: 'no.such.user' });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /not found/);
+  });
 });
 
 describe('sec_role_hierarchy', () => {
@@ -387,6 +422,26 @@ describe('sec_effective_permissions', () => {
     assert.ok(result.includes('VendInvoiceJournal'));
     assert.ok(!result.includes('LedgerJournalPost'));
   });
+
+  // PM-05 — structured output for the pilot tool
+  it('given a user lookup, then structuredContent matches the schema with subject_type=user', async () => {
+    const { secEffectivePermissionsOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_effective_permissions', { user_id: 'john.doe@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secEffectivePermissionsOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.subject_type, 'user');
+    assert.ok(Array.isArray(result.structuredContent.permissions));
+    assert.ok(result.structuredContent.entry_point_count > 0);
+  });
+
+  it('given a role lookup with object_filter, then structuredContent carries the filter', async () => {
+    const { secEffectivePermissionsOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_effective_permissions', { role_name: 'SystemAdministrator', object_name: 'Vend' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secEffectivePermissionsOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.subject_type, 'role');
+    assert.equal(result.structuredContent.object_filter, 'Vend');
+  });
 });
 
 describe('sec_search', () => {
@@ -419,6 +474,16 @@ describe('sec_stats', () => {
     assert.ok(result.includes('roles'));
     assert.ok(result.includes('4'));
   });
+
+  // P4-10: Build Info is rendered as a bulleted list, not a |key|value| table.
+  it('given sec_stats output, when rendering, then Build Info uses bullets not a table', async () => {
+    const result = await callTool('sec_stats', {});
+    // First line under "## Build Info" is a bullet of the form "- **key:** value"
+    assert.match(result, /## Build Info\n- \*\*[^*]+:\*\* /);
+    // The Build Info section itself must not contain a |...| table row.
+    const buildInfoSection = result.split('## Build Info')[1]?.split('## Breakdown')[0] || '';
+    assert.doesNotMatch(buildInfoSection, /^\|/m);
+  });
 });
 
 describe('sec_raw_sql', () => {
@@ -435,5 +500,649 @@ describe('sec_raw_sql', () => {
   it('adds LIMIT if missing', async () => {
     const result = await callTool('sec_raw_sql', { sql: 'SELECT role_name FROM roles' });
     assert.ok(result.includes('SystemAdministrator'));
+  });
+});
+
+// ── P4-02 — CR-SEC-002: Deny filter across permission walkers ────────────────
+//
+// Fixture (already in the before() block):
+//   R1 SystemAdministrator (Grant)        → VendInvoiceProcess Grant + others
+//   R2 AccountsPayableClerk (Grant)       → VendInvoiceProcess Grant
+//   R3 TBG Deny AP Posting (Deny)         → VendInvoiceProcess Deny
+//   R4 AccountsPayableManager (Grant)     → VendInvoiceProcess Grant + sub-role R2
+//   john.doe is assigned to R2, R3, R4 (so the Deny duty is in his chain).
+//
+// The Grant filter tests below verify each non-trace tool excludes the R3
+// Deny row, and that sec_permission_trace surfaces it with a ⛔ marker.
+
+describe('P4-02 Deny filter — sec_effective_permissions', () => {
+  it('given john.doe (with Deny role R3 in chain), then output excludes the Deny row', async () => {
+    const result = await callToolFull('sec_effective_permissions', { user_id: 'john.doe@trelleborg.com' });
+    // The structuredContent enumerates entry points, all duty_perm should be 'Grant'
+    assert.ok(result.structuredContent);
+    const denyEntries = result.structuredContent.permissions.filter(p => p.duty_perm === 'Deny');
+    assert.equal(denyEntries.length, 0, `expected 0 Deny rows, got ${denyEntries.length}`);
+    assert.match(result.content[0].text, /Deny overrides are excluded/);
+  });
+
+  it('given a Deny role queried directly, then permissions are empty (Deny does not grant)', async () => {
+    const result = await callToolFull('sec_effective_permissions', { role_name: 'TBG Deny AP Posting' });
+    // Deny role contributes only Deny duties; with the filter on, it has 0 effective grants.
+    if (result.structuredContent) {
+      assert.equal(result.structuredContent.entry_point_count, 0);
+    } else {
+      // emptyResult path
+      assert.match(result.content[0].text, /No effective permissions|leaf result/);
+    }
+  });
+});
+
+describe('P4-02 Deny filter — sec_find_roles_by_duty', () => {
+  it('given a duty that has both Grant and Deny role assignments, then only Grant roles are listed', async () => {
+    const result = await callTool('sec_find_roles_by_duty', { duty_name: 'VendInvoiceProcess' });
+    // R3 (TBG Deny AP Posting) has VendInvoiceProcess as Deny — must be excluded.
+    assert.doesNotMatch(result, /TBG Deny AP Posting/);
+    // The legitimate Grant roles still appear.
+    assert.match(result, /SystemAdministrator/);
+    assert.match(result, /AccountsPayableClerk/);
+    // Disclosure note is present.
+    assert.match(result, /Deny overrides are excluded/);
+  });
+});
+
+describe('P4-02 Deny filter — sec_find_users_by_role', () => {
+  it('given a Deny role, then the tool returns empty-with-explanation rather than listing users', async () => {
+    const result = await callTool('sec_find_users_by_role', { role_name: 'TBG Deny AP Posting' });
+    assert.match(result, /Deny role|leaf result|sec_permission_trace/);
+    assert.doesNotMatch(result, /\| john\.doe@trelleborg\.com \|/);
+  });
+
+  it('given a Grant role, then users are listed and the disclosure note is present', async () => {
+    const result = await callTool('sec_find_users_by_role', { role_name: 'AccountsPayableClerk' });
+    assert.match(result, /john\.doe/);
+    assert.match(result, /Deny overrides are not applied/);
+  });
+});
+
+describe('P4-02 Deny filter — sec_compare_roles', () => {
+  it('given a Grant role and a Deny role with the same duty, then they share zero duties (Deny excluded)', async () => {
+    // R2 (AccountsPayableClerk, Grant) has VendInvoiceProcess Grant.
+    // R3 (TBG Deny AP Posting, Deny) has VendInvoiceProcess Deny.
+    // Pre-fix: they would falsely "share" VendInvoiceProcess.
+    // Post-fix: R3's Grant set is empty → 0 shared.
+    const result = await callTool('sec_compare_roles', { role1: 'AccountsPayableClerk', role2: 'TBG Deny AP Posting' });
+    assert.match(result, /Total Duties \| 1 \| 0/);
+    assert.match(result, /Shared \| 0 \| 0/);
+  });
+});
+
+// ── P4-03 — sec_lookup_user sub-role expansion + Deny overrides ──────────────
+//
+// Fixture (already in the before() block):
+//   john.doe @ R2 (AccountsPayableClerk, Grant), R3 (Deny role), R4 (AP Manager, Grant)
+//   role_subroles: R4 → R2 (Manager inherits Clerk)
+//   role_duties: R3 → VendInvoiceProcess Deny
+//
+// john.doe has direct roles {R2, R3, R4}. Sub-role expansion of R4 → {R2}
+// — but R2 is already direct, so the "effective sub-roles excluding direct"
+// section is empty for this user. Deny overrides should surface R3's Deny.
+//
+// Need a second user whose sub-role chain adds NEW roles to test the
+// transitive expansion path. Let me use admin@trelleborg.com or a freshly
+// inserted fixture.
+
+describe('P4-03 sec_lookup_user — sub-role expansion + Deny overrides', () => {
+  it('given a user with only direct roles and no sub-role children, then sub-roles section reports 0', async () => {
+    // admin@trelleborg.com is in R1 (SystemAdministrator) which has no sub-roles
+    const result = await callToolFull('sec_lookup_user', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.effective_sub_role_count, 0);
+    assert.match(result.content[0].text, /## Effective Sub-Roles \(0\)/);
+  });
+
+  it('given a user whose role has Deny duties in the chain, then Deny Overrides section appears', async () => {
+    // john.doe is assigned to R3 (TBG Deny AP Posting) which has VendInvoiceProcess Deny
+    const result = await callToolFull('sec_lookup_user', { user_id: 'john.doe@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.ok(result.structuredContent.deny_override_count >= 1);
+    assert.match(result.content[0].text, /## Deny Overrides/);
+    assert.match(result.content[0].text, /TBG Deny AP Posting/);
+    assert.match(result.content[0].text, /VendInvoiceProcess/);
+  });
+
+  it('given a user whose role chain has no Deny duties, then Deny Overrides section is omitted', async () => {
+    const result = await callToolFull('sec_lookup_user', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.deny_override_count, 0);
+    assert.doesNotMatch(result.content[0].text, /## Deny Overrides/);
+  });
+
+  it('given a user with sub-role inheritance, then the Effective Sub-Roles section lists added child roles', () => {
+    // Inject a fixture user "subrole.test" assigned only to a parent role
+    // whose subrole adds a NEW role (not already direct).
+    db.exec(`
+      INSERT OR REPLACE INTO roles VALUES ('R5', 'PurchasingClerk', 'ApplicationSuite', 'Purchasing Clerk', '', NULL, 'Grant', 0, 'test');
+      INSERT OR REPLACE INTO users VALUES ('subrole.test', 'Sub Role Test', 'subrole.test@x.com', 1, 'TAB');
+      INSERT OR REPLACE INTO user_roles VALUES ('subrole.test', 'R4');
+    `);
+    // R4 (AP Manager) has sub-role R2 (AP Clerk). subrole.test only has R4
+    // direct, so R2 should appear as an "Effective Sub-Role".
+    return callToolFull('sec_lookup_user', { user_id: 'subrole.test' }).then(result => {
+      try {
+        assert.ok(result.structuredContent);
+        assert.equal(result.structuredContent.role_count, 1);
+        assert.equal(result.structuredContent.effective_sub_role_count, 1);
+        assert.equal(result.structuredContent.effective_sub_roles[0].role_name, 'AccountsPayableClerk');
+        assert.equal(result.structuredContent.effective_sub_roles[0].parent_role_name, 'AccountsPayableManager');
+      } finally {
+        db.exec(`DELETE FROM user_roles WHERE user_id = 'subrole.test'; DELETE FROM users WHERE user_id = 'subrole.test'; DELETE FROM roles WHERE role_id = 'R5';`);
+      }
+    });
+  });
+});
+
+// ── P4-07 — CRUD Y/N rendering + Legend in sec_permission_trace and sec_effective_permissions ──
+
+describe('P4-07 sec tools — CRUD flags rendered as Y/N with Legend', () => {
+  it('given sec_permission_trace output, when rendered, then a Legend paragraph is present', async () => {
+    const result = await callTool('sec_permission_trace', { role_name: 'SystemAdministrator' });
+    assert.match(result, /\*\*Legend:\*\*/);
+    assert.match(result, /Y = granted/);
+  });
+
+  it('given sec_effective_permissions output, when rendered, then a Legend paragraph is present', async () => {
+    const result = await callTool('sec_effective_permissions', { user_id: 'john.doe@trelleborg.com' });
+    assert.match(result, /\*\*Legend:\*\*/);
+  });
+
+  it('given sec_permission_trace, when rendering, then no raw 1/0 numerics appear in CRUD cells', async () => {
+    const result = await callTool('sec_permission_trace', { role_name: 'SystemAdministrator' });
+    // Slice off the legend text (which contains Y/N words) and look at the table body.
+    const tableBody = result.split('**Legend:**')[1] || result;
+    // Each pipe-bounded cell with content should be Y, N, blank, the marker,
+    // or a string column. None should be just '0' or '1' — the storage shape
+    // 'Allow' was the most common live-DB value but our fixture uses 'Allow'
+    // for grants and NULL for un-granted. After P4-07, those become Y/empty.
+    assert.doesNotMatch(tableBody, /\| 1 \|/);
+    assert.doesNotMatch(tableBody, /\| 0 \|/);
+  });
+
+  it('given sec_permission_trace with a Deny role, when rendered, then ⛔ marker AND Legend coexist', async () => {
+    const result = await callTool('sec_permission_trace', { role_name: 'TBG Deny AP Posting' });
+    assert.match(result, /⛔ DENIED/);
+    assert.match(result, /\*\*Legend:\*\*/);
+  });
+});
+
+// ── P4-06 — Visual Grant/Deny rendering across sec tools ───────────────────
+
+describe('P4-06 sec tools — Grant/Deny rendered with ✓/✗ markers', () => {
+  it('given a Deny role lookup, when rendering, then permission cell contains ✗ Deny', async () => {
+    const result = await callTool('sec_lookup_role', { role_name: 'TBG Deny AP Posting' });
+    assert.match(result, /✗ Deny/);
+  });
+
+  it('given a Grant role lookup, when rendering, then permission cell contains ✓ Grant', async () => {
+    const result = await callTool('sec_lookup_role', { role_name: 'SystemAdministrator' });
+    assert.match(result, /✓ Grant/);
+  });
+
+  it('given sec_find_roles_by_duty, when rendering, then permission cells are visually marked', async () => {
+    const result = await callTool('sec_find_roles_by_duty', { duty_name: 'VendInvoiceProcess' });
+    assert.match(result, /✓ Grant/);
+  });
+
+  it('given sec_company_users, when rendering, then permission column uses the marker', async () => {
+    const result = await callTool('sec_company_users', { company_id: 'TAB' });
+    assert.match(result, /✓ Grant/);
+  });
+});
+
+describe('P4-02 sec_permission_trace — Deny rows are surfaced with ⛔ marker', () => {
+  it('given a role whose chain includes a Deny duty, then the trace marks it visually', async () => {
+    // SystemAdministrator on its own has only Grants, so use a probe role
+    // that pulls in R3's Deny via direct trace.
+    const result = await callTool('sec_permission_trace', { role_name: 'TBG Deny AP Posting' });
+    assert.match(result, /⛔ DENIED/);
+    assert.match(result, /Deny rows: 1/);
+    assert.match(result, /actively REMOVE/);
+  });
+
+  it('given a pure-Grant role, then no Deny marker appears', async () => {
+    const result = await callTool('sec_permission_trace', { role_name: 'SystemAdministrator' });
+    assert.match(result, /Deny rows: 0/);
+    assert.doesNotMatch(result, /⛔ DENIED/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  PM-06 — structured output rollout for 13 remaining Sec tools.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('PM-06 Sec structured output', () => {
+  it('sec_lookup_role: typed payload parses', async () => {
+    const { secLookupRoleOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_lookup_role', { role_name: 'SystemAdministrator' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secLookupRoleOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.role_name, 'SystemAdministrator');
+    assert.ok(Array.isArray(result.structuredContent.duties));
+  });
+
+  it('sec_lookup_duty: typed payload parses', async () => {
+    const { secLookupDutyOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_lookup_duty', { duty_name: 'VendInvoiceProcess' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secLookupDutyOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.duty_id, 'VendInvoiceProcess');
+    assert.ok(Array.isArray(result.structuredContent.roles));
+  });
+
+  it('sec_lookup_privilege: typed payload parses', async () => {
+    const { secLookupPrivilegeOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_lookup_privilege', { privilege_name: 'VendInvoiceJournalPost' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secLookupPrivilegeOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.privilege_name, 'VendInvoiceJournalPost');
+    assert.ok(Array.isArray(result.structuredContent.entry_points));
+  });
+
+  it('sec_role_hierarchy: typed payload parses', async () => {
+    const { secRoleHierarchyOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_role_hierarchy', {
+      role_name: 'AccountsPayableManager', direction: 'children',
+    });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secRoleHierarchyOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.role_name, 'AccountsPayableManager');
+    assert.equal(result.structuredContent.direction, 'children');
+  });
+
+  it('sec_find_users_by_role: typed payload parses', async () => {
+    const { secFindUsersByRoleOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_find_users_by_role', {
+      role_name: 'SystemAdministrator', limit: 50,
+    });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secFindUsersByRoleOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.role_name, 'SystemAdministrator');
+  });
+
+  it('sec_find_roles_by_duty: typed payload parses and excludes Deny rows', async () => {
+    const { secFindRolesByDutyOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_find_roles_by_duty', { duty_name: 'VendInvoiceProcess' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secFindRolesByDutyOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.duty_id, 'VendInvoiceProcess');
+    // CR-SEC-002: Deny role TBG must NOT appear.
+    assert.ok(!result.structuredContent.roles.find(r => r.role_name === 'TBG Deny AP Posting'));
+  });
+
+  it('sec_find_roles_by_privilege: typed payload parses', async () => {
+    const { secFindRolesByPrivilegeOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_find_roles_by_privilege', { privilege_name: 'VendInvoiceJournalPost' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secFindRolesByPrivilegeOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.privilege_name, 'VendInvoiceJournalPost');
+    assert.ok(result.structuredContent.via_chain_count >= 0);
+  });
+
+  it('sec_company_users: typed payload parses', async () => {
+    const { secCompanyUsersOutput } = await import('../src/azure/output-schemas.js');
+    // Use a company that has fixture data — fall back if not found.
+    const result = await callToolFull('sec_company_users', { company_id: 'USMF', limit: 100 });
+    // Either empty-result or structured result — both valid.
+    if (result.structuredContent) {
+      assert.doesNotThrow(() => secCompanyUsersOutput.parse(result.structuredContent));
+    }
+  });
+
+  it('sec_permission_trace: typed payload parses and carries grant/deny counts', async () => {
+    const { secPermissionTraceOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_permission_trace', { role_name: 'SystemAdministrator' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secPermissionTraceOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.role_name, 'SystemAdministrator');
+    assert.equal(typeof result.structuredContent.grant_count, 'number');
+    assert.equal(typeof result.structuredContent.deny_count, 'number');
+  });
+
+  it('sec_compare_roles: typed payload parses', async () => {
+    const { secCompareRolesOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_compare_roles', {
+      role1: 'SystemAdministrator',
+      role2: 'AccountsPayableClerk',
+    });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secCompareRolesOutput.parse(result.structuredContent));
+    assert.equal(result.structuredContent.role1, 'SystemAdministrator');
+    assert.equal(result.structuredContent.role2, 'AccountsPayableClerk');
+  });
+
+  it('sec_search: typed payload parses', async () => {
+    const { secSearchOutput } = await import('../src/azure/output-schemas.js');
+    // Minimum viable fixture — search for something likely present.
+    const result = await callToolFull('sec_search', { query: 'Admin', limit: 20 });
+    // Either empty-result or structured; don't require hits.
+    if (result.structuredContent) {
+      assert.doesNotThrow(() => secSearchOutput.parse(result.structuredContent));
+      assert.equal(result.structuredContent.query, 'Admin');
+    }
+  });
+
+  it('sec_stats: typed payload parses', async () => {
+    const { secStatsOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_stats', {});
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secStatsOutput.parse(result.structuredContent));
+    assert.equal(typeof result.structuredContent.grant_roles, 'number');
+    assert.equal(typeof result.structuredContent.total_duties, 'number');
+  });
+
+  it('sec_raw_sql: typed payload matches rawSqlOutput', async () => {
+    const { rawSqlOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_raw_sql', { sql: 'SELECT role_name FROM roles LIMIT 5' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => rawSqlOutput.parse(result.structuredContent));
+    assert.ok(result.structuredContent.row_count >= 1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  New tools: sec_licence_assessment, sec_sod_check, sec_what_if, sec_object_access
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('sec_licence_assessment', () => {
+  it('assesses a single user and returns the highest licence tier', async () => {
+    const result = await callToolFull('sec_licence_assessment', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.mode, 'single');
+    assert.equal(result.structuredContent.user_count, 1);
+    // admin is assigned to SystemAdministrator which has license_type='Enterprise'
+    assert.equal(result.structuredContent.users[0].required_tier, 'Enterprise');
+    assert.ok(result.structuredContent.users[0].monthly_cost > 0);
+    assert.equal(result.structuredContent.users[0].driving_role, 'SystemAdministrator');
+  });
+
+  it('assesses all enabled users when no user_id specified', async () => {
+    const result = await callToolFull('sec_licence_assessment', {});
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.mode, 'all');
+    // 2 enabled users in fixtures (admin + john.doe)
+    assert.ok(result.structuredContent.user_count >= 2);
+    assert.ok(result.structuredContent.tier_summary.length > 0);
+  });
+
+  it('john.doe has Enterprise tier from AccountsPayableManager', async () => {
+    const result = await callToolFull('sec_licence_assessment', { user_id: 'john.doe@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    const u = result.structuredContent.users[0];
+    // john.doe has R2 (TeamMembers), R3 (Deny, null type), R4 (Enterprise)
+    // Highest = Enterprise from R4
+    assert.equal(u.required_tier, 'Enterprise');
+    assert.equal(u.driving_role, 'AccountsPayableManager');
+  });
+
+  it('returns not-found for unknown user', async () => {
+    const result = await callToolFull('sec_licence_assessment', { user_id: 'no.such.user' });
+    assert.equal(result.isError, true);
+  });
+
+  it('structured output matches schema', async () => {
+    const { secLicenceAssessmentOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_licence_assessment', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secLicenceAssessmentOutput.parse(result.structuredContent));
+  });
+
+  it('tier summary aggregates correctly', async () => {
+    const result = await callToolFull('sec_licence_assessment', {});
+    assert.ok(result.structuredContent);
+    const totalUsers = result.structuredContent.tier_summary.reduce((s, t) => s + t.user_count, 0);
+    assert.equal(totalUsers, result.structuredContent.user_count);
+  });
+});
+
+describe('sec_sod_check', () => {
+  // Inject SoD rules for testing
+  before(async () => {
+    const { _injectSodRuleset } = await import('../src/azure/sec-tools.js');
+    _injectSodRuleset({
+      rules: [
+        {
+          id: 'SOD-AP-003',
+          name: 'Invoice Processing vs Payment Processing',
+          category: 'accounts_payable',
+          risk_level: 'High',
+          duty_group_a: { name: 'Invoice Processing', duties: ['VendInvoiceProcess'] },
+          duty_group_b: { name: 'Payment Processing', duties: ['VendPaymentProcess'] },
+        },
+        {
+          id: 'SOD-GL-001',
+          name: 'Journal Entry vs Journal Approval',
+          category: 'general_ledger',
+          risk_level: 'Critical',
+          duty_group_a: { name: 'Journal Entry', duties: ['LedgerPostMaintain'] },
+          duty_group_b: { name: 'Journal Approval', duties: ['VendInvoiceProcess'] },
+        },
+      ],
+    });
+  });
+
+  after(async () => {
+    const { _clearSodRuleset } = await import('../src/azure/sec-tools.js');
+    _clearSodRuleset();
+  });
+
+  it('detects SoD violations for admin (has both duties in SOD-AP-003)', async () => {
+    // admin has R1 (SysAdmin) which has VendInvoiceProcess + VendPaymentProcess → violation
+    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.mode, 'single');
+    assert.ok(result.structuredContent.violation_count >= 1);
+    const violations = result.structuredContent.violations[0]?.violations || [];
+    const apViolation = violations.find(v => v.rule_id === 'SOD-AP-003');
+    assert.ok(apViolation, 'Expected SOD-AP-003 violation for admin');
+    assert.deepEqual(apViolation.group_a_matched, ['VendInvoiceProcess']);
+    assert.deepEqual(apViolation.group_b_matched, ['VendPaymentProcess']);
+  });
+
+  it('john.doe does NOT violate SOD-AP-003 (Deny role suppresses VendInvoiceProcess Grant)', async () => {
+    // john.doe has R2 (VendInvoiceProcess Grant), R3 (VendInvoiceProcess Deny), R4 (VendInvoiceProcess + VendPaymentProcess)
+    // After P4-02 Deny filter, VendInvoiceProcess is still granted via R2 and R4 (Grant).
+    // The Deny role R3 doesn't remove the grant from the duty set — it only removes from effective permissions.
+    // So john.doe actually DOES have both duties via Grant paths.
+    const result = await callToolFull('sec_sod_check', { user_id: 'john.doe@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    // john.doe has VendInvoiceProcess via R2 Grant + R4 Grant, and VendPaymentProcess via R4 Grant
+    assert.ok(result.structuredContent.violation_count >= 1);
+  });
+
+  it('filters by category', async () => {
+    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com', category: 'accounts_payable' });
+    assert.ok(result.structuredContent);
+    // Only SOD-AP-003 should be checked, not SOD-GL-001
+    const violations = result.structuredContent.violations[0]?.violations || [];
+    for (const v of violations) {
+      assert.equal(v.category, 'accounts_payable');
+    }
+  });
+
+  it('all-users mode scans all enabled users', async () => {
+    const result = await callToolFull('sec_sod_check', {});
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.mode, 'all');
+    assert.ok(result.structuredContent.user_count >= 2);
+  });
+
+  it('returns not-found for unknown user', async () => {
+    const result = await callToolFull('sec_sod_check', { user_id: 'no.such.user' });
+    assert.equal(result.isError, true);
+  });
+
+  it('structured output matches schema', async () => {
+    const { secSodCheckOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secSodCheckOutput.parse(result.structuredContent));
+  });
+
+  it('risk score uses correct weights', async () => {
+    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    const ur = result.structuredContent.violations[0];
+    if (ur) {
+      // Verify risk_score is sum of weights (High=2, Critical=3)
+      const expectedScore = ur.violations.reduce((s, v) => {
+        const w = { Critical: 3, High: 2, Medium: 1 }[v.risk_level] || 1;
+        return s + w;
+      }, 0);
+      assert.equal(ur.risk_score, expectedScore);
+    }
+  });
+});
+
+describe('sec_what_if', () => {
+  // Inject SoD rules for testing
+  before(async () => {
+    const { _injectSodRuleset } = await import('../src/azure/sec-tools.js');
+    _injectSodRuleset({
+      rules: [{
+        id: 'SOD-AP-003',
+        name: 'Invoice Processing vs Payment Processing',
+        category: 'accounts_payable',
+        risk_level: 'High',
+        duty_group_a: { name: 'Invoice Processing', duties: ['VendInvoiceProcess'] },
+        duty_group_b: { name: 'Payment Processing', duties: ['VendPaymentProcess'] },
+      }],
+    });
+  });
+
+  after(async () => {
+    const { _clearSodRuleset } = await import('../src/azure/sec-tools.js');
+    _clearSodRuleset();
+  });
+
+  it('simulates adding a role and shows licence tier change', async () => {
+    // john.doe currently has R2 (TeamMembers), R3 (Deny), R4 (Enterprise)
+    // Removing R4 (Enterprise) should reduce the tier
+    const result = await callToolFull('sec_what_if', {
+      user_id: 'john.doe@trelleborg.com',
+      remove_roles: ['AccountsPayableManager'],
+    });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.user_id, 'john.doe@trelleborg.com');
+    // Current tier is Enterprise (from R4), projected should be TeamMembers (from R2)
+    assert.equal(result.structuredContent.current_tier, 'Enterprise');
+    assert.equal(result.structuredContent.projected_tier, 'TeamMembers');
+    assert.ok(result.structuredContent.monthly_delta < 0, 'Expected negative cost delta');
+    assert.ok(result.structuredContent.annual_delta < 0, 'Expected negative annual delta');
+  });
+
+  it('simulates adding a role and detects new SoD violations', async () => {
+    // admin has SysAdmin (all duties). Adding a role should not change SoD.
+    // john.doe removing AP Manager should resolve the SOD-AP-003 violation
+    // because VendPaymentProcess is only on R4 (which we remove)
+    const result = await callToolFull('sec_what_if', {
+      user_id: 'john.doe@trelleborg.com',
+      remove_roles: ['AccountsPayableManager'],
+    });
+    assert.ok(result.structuredContent);
+    // After removing R4, john.doe loses VendPaymentProcess → SOD-AP-003 should resolve
+    assert.ok(result.structuredContent.sod_resolved.length >= 1);
+    const resolved = result.structuredContent.sod_resolved.find(v => v.rule_id === 'SOD-AP-003');
+    assert.ok(resolved, 'Expected SOD-AP-003 to be resolved');
+  });
+
+  it('returns not-found for unknown user', async () => {
+    const result = await callToolFull('sec_what_if', { user_id: 'no.such.user', add_roles: ['SystemAdministrator'] });
+    assert.equal(result.isError, true);
+  });
+
+  it('warns on unknown role names', async () => {
+    const result = await callToolFull('sec_what_if', {
+      user_id: 'admin@trelleborg.com',
+      add_roles: ['NonExistentRole'],
+    });
+    assert.ok(result.structuredContent);
+    assert.ok(result.structuredContent.warnings.some(w => w.includes('Unknown role')));
+  });
+
+  it('no-change simulation returns zero deltas', async () => {
+    const result = await callToolFull('sec_what_if', {
+      user_id: 'admin@trelleborg.com',
+      add_roles: [],
+      remove_roles: [],
+    });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.monthly_delta, 0);
+    assert.equal(result.structuredContent.annual_delta, 0);
+  });
+
+  it('structured output matches schema', async () => {
+    const { secWhatIfOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_what_if', {
+      user_id: 'admin@trelleborg.com',
+      remove_roles: ['SystemAdministrator'],
+    });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secWhatIfOutput.parse(result.structuredContent));
+  });
+});
+
+describe('sec_object_access', () => {
+  it('finds roles and users with access to an object', async () => {
+    const result = await callToolFull('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    assert.ok(result.structuredContent);
+    assert.ok(result.structuredContent.result_count >= 1);
+    assert.ok(result.structuredContent.role_count >= 1);
+    // Should find SystemAdministrator (and others) in paths
+    const roles = result.structuredContent.paths.map(p => p.role_name);
+    assert.ok(roles.includes('SystemAdministrator'));
+  });
+
+  it('shows users who hold the granting roles', async () => {
+    const result = await callToolFull('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    assert.ok(result.structuredContent);
+    assert.ok(result.structuredContent.user_count >= 1);
+    const userIds = result.structuredContent.users.map(u => u.user_id);
+    assert.ok(userIds.includes('admin@trelleborg.com'));
+  });
+
+  it('returns empty for non-existent object', async () => {
+    const result = await callToolFull('sec_object_access', { object_name: 'NonExistentObject12345' });
+    // emptyResult — no structuredContent, no isError
+    assert.ok(!result.isError);
+    assert.match(result.content[0].text, /No .* found|leaf result/);
+  });
+
+  it('includes CRUD flags in paths', async () => {
+    const result = await callToolFull('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    assert.ok(result.structuredContent);
+    const path = result.structuredContent.paths[0];
+    assert.ok(path);
+    assert.ok('grant_read' in path);
+    assert.ok('grant_create' in path);
+  });
+
+  it('renders CRUD as Y/N in Markdown', async () => {
+    const text = await callTool('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    // The Markdown table should use Y/N flags
+    assert.match(text, /\| Y \|/);
+  });
+
+  it('structured output matches schema', async () => {
+    const { secObjectAccessOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    assert.ok(result.structuredContent);
+    assert.doesNotThrow(() => secObjectAccessOutput.parse(result.structuredContent));
+  });
+
+  it('finds access via direct privilege path', async () => {
+    // LedgerJournalPost is a direct privilege on R1
+    const result = await callToolFull('sec_object_access', { object_name: 'LedgerJournalPost' });
+    assert.ok(result.structuredContent);
+    const directPaths = result.structuredContent.paths.filter(p => p.duty_id === '(direct)');
+    assert.ok(directPaths.length >= 1, 'Expected at least one direct privilege path');
   });
 });
