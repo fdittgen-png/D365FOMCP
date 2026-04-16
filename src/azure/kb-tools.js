@@ -130,7 +130,7 @@ export function registerKbTools(server, db) {
         module_id: row.module_id ?? null,
         label: row.label ? resolve(row.label) : null,
         table_group: row.table_group ?? null,
-        save_per_company: row.save_per_company ?? null,
+        save_per_company: row.save_per_company != null ? Number(row.save_per_company) : null,
         cache_lookup: row.cache_lookup ?? null,
         clustered_index: row.clustered_index ?? null,
         replacement_key: row.replacement_key ?? null,
@@ -141,7 +141,7 @@ export function registerKbTools(server, db) {
           edt: f.edt ?? null,
           enum_type: f.enum_type ?? null,
           label: f.label ? resolve(f.label) : null,
-          mandatory: f.mandatory ?? null,
+          mandatory: f.mandatory != null ? Number(f.mandatory) : null,
         })),
         indexes: idxRows.map(i => ({
           name: i.index_name,
