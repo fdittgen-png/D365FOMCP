@@ -30,6 +30,21 @@ import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { createWikiStore } from '../azure/wiki-storage.js';
 import { createWikiWriter } from '../azure/wiki-writer.js';
 import { ingestExtractXml } from '../azure/wiki-ingest-core.js';
+import { renderExtractPdfs, loadPdfDeps } from '../azure/ticket-pdf-renderer.js';
+import { createRequire } from 'node:module';
+
+// adm-zip is CommonJS — already a dep for d365sec-upload; we reuse it here
+// to bundle multi-file PDF output into a single browser download.
+const require = createRequire(import.meta.url);
+const AdmZip = require('adm-zip');
+
+// Deps for the PDF renderer are heavy (mammoth/xlsx/html-to-text) —
+// load once per process, not per request.
+let _pdfDepsPromise = null;
+function getPdfDeps() {
+  if (!_pdfDepsPromise) _pdfDepsPromise = loadPdfDeps();
+  return _pdfDepsPromise;
+}
 
 const DEFAULT_WIKI = 'otrs';
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB; an OtrsExtract envelope is tiny, so this is very generous
@@ -160,6 +175,22 @@ const PAGE_HTML = `<!DOCTYPE html>
     <div id="ingestResult" class="result" data-id="ingestResult"></div>
   </div>
 
+  <div class="card">
+    <h2>Step 3 — Convert XML to PDFs</h2>
+    <p class="hint">Turns an OtrsExtract XML into one main PDF per ticket (with filled-in metadata, non-empty dynamic fields, and inline PNG/JPEG attachments) plus one sibling PDF for every non-image attachment (docx → readable text, xlsx → cell tables, pdf → passthrough, other → placeholder with filename/type/size). Raw base64 is never rendered. Multi-file responses come back as a single <code>.zip</code>; single-PDF responses stream directly.</p>
+    <form id="pdfForm">
+      <div class="drop" id="pdfDropZone">
+        <div>Drop an XML file here, or click to browse</div>
+        <div class="file" id="pdfFileName"></div>
+      </div>
+      <input type="file" id="pdfXmlFile" accept=".xml,text/xml,application/xml">
+      <div class="row" style="margin-top:12px">
+        <button type="submit" class="btn btn-blue" id="pdfBtn" disabled>Convert &amp; Download</button>
+      </div>
+    </form>
+    <div id="pdfResult" class="result" data-id="pdfResult"></div>
+  </div>
+
   <div class="footer">
     <a href="/api/wiki-mcp">Wiki catalog</a> ·
     <a href="/api/wiki-mcp/{{WIKI_NAME}}">{{WIKI_NAME}} MCP health</a> ·
@@ -180,6 +211,12 @@ const PAGE_HTML = `<!DOCTYPE html>
     const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('xmlFile');
     const fileName = document.getElementById('fileName');
+    const pdfForm = document.getElementById('pdfForm');
+    const pdfBtn = document.getElementById('pdfBtn');
+    const pdfResult = document.getElementById('pdfResult');
+    const pdfDropZone = document.getElementById('pdfDropZone');
+    const pdfFileInput = document.getElementById('pdfXmlFile');
+    const pdfFileName = document.getElementById('pdfFileName');
 
     function setResult(el, cls, html) {
       el.className = 'result ' + cls;
@@ -400,6 +437,81 @@ const PAGE_HTML = `<!DOCTYPE html>
       }
     });
 
+    // ── Step 3 — Convert XML to PDFs ─────────────────────────────────────
+    pdfDropZone.addEventListener('click', () => pdfFileInput.click());
+    pdfDropZone.addEventListener('dragover', e => { e.preventDefault(); pdfDropZone.classList.add('dragover'); });
+    pdfDropZone.addEventListener('dragleave', () => pdfDropZone.classList.remove('dragover'));
+    pdfDropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      pdfDropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) {
+        pdfFileInput.files = e.dataTransfer.files;
+        onPdfFile();
+      }
+    });
+    pdfFileInput.addEventListener('change', onPdfFile);
+
+    function onPdfFile() {
+      const f = pdfFileInput.files[0];
+      if (!f) { pdfFileName.textContent = ''; pdfBtn.disabled = true; return; }
+      pdfFileName.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+      pdfBtn.disabled = false;
+    }
+
+    pdfForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = pdfFileInput.files[0];
+      if (!f) return;
+
+      pdfBtn.disabled = true;
+      pdfBtn.innerHTML = '<span class="spinner"></span> Rendering PDFs...';
+      setResult(pdfResult, 'info', 'Parsing XML, rendering PDFs, decoding attachments — large tickets with attachments can take up to a minute.');
+
+      try {
+        const xml = await f.text();
+        const resp = await fetch('/api/otrs-admin/convert-to-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/xml' },
+          body: xml,
+        });
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
+          renderError(pdfResult, 'convert-to-pdf', errData);
+          return;
+        }
+        const tickets  = resp.headers.get('x-pdf-tickets')  || '?';
+        const files    = resp.headers.get('x-pdf-files')    || '?';
+        const warnings = resp.headers.get('x-pdf-warnings') || '0';
+        const zipBytes = resp.headers.get('x-pdf-zipbytes');
+
+        const blob = await resp.blob();
+        const filename = (resp.headers.get('content-disposition') || '').match(/filename="?([^";]+)/)?.[1]
+          || (Number(files) === 1 ? 'otrs-ticket.pdf' : 'otrs-pdfs.zip');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+        URL.revokeObjectURL(url); a.remove();
+
+        let summary = '<strong>Downloaded.</strong> '
+          + tickets + ' ticket(s), ' + files + ' PDF file(s)';
+        if (zipBytes) summary += ' in a ' + (Number(zipBytes) / 1024).toFixed(1) + ' KB ZIP';
+        summary += '. File: <code>' + filename + '</code>';
+        if (Number(warnings) > 0) {
+          summary += '<br/><strong style="color:#82071e">' + warnings + ' attachment(s) could not be rendered</strong> — check the zip manifest.';
+        }
+        setResult(pdfResult, 'success', summary);
+      } catch (err) {
+        renderError(pdfResult, 'convert-to-pdf', {
+          error: err.message || String(err),
+          category: 'browser-network',
+          timestamp: new Date().toISOString(),
+        });
+      } finally {
+        pdfBtn.disabled = false;
+        pdfBtn.textContent = 'Convert & Download';
+      }
+    });
+
     function escapeHtml(s) {
       return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
     }
@@ -604,6 +716,97 @@ app.http('otrs-admin-ingest', {
       context.error('otrs-admin-ingest error:', err);
       return structuredErrorResponse(err, 'ingest', {
         hint: 'Is the XML a valid OtrsExtract envelope?',
+      });
+    }
+  },
+});
+
+app.http('otrs-admin-convert-to-pdf', {
+  methods: ['POST'],
+  route: 'otrs-admin/convert-to-pdf',
+  authLevel: 'anonymous',
+  handler: async (request, context) => {
+    try {
+      const xml = await request.text();
+      if (!xml || !xml.trim()) {
+        return { status: 400, jsonBody: { error: 'Empty body — expected OtrsExtract XML.' } };
+      }
+      if (Buffer.byteLength(xml, 'utf8') > MAX_UPLOAD_BYTES) {
+        return {
+          status: 413,
+          jsonBody: { error: `XML exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit.` },
+        };
+      }
+
+      const deps = await getPdfDeps();
+      const { tickets, files, warnings } = await renderExtractPdfs({ xml, deps });
+
+      if (tickets === 0) {
+        return {
+          status: 400,
+          jsonBody: { error: 'No <Ticket> elements found in the XML — nothing to render.' },
+        };
+      }
+
+      // Single ticket + no attachment siblings → return the PDF directly
+      // so the browser can preview it in-line instead of forcing a ZIP
+      // download. Anything with multiple files gets zipped.
+      if (files.length === 1) {
+        const only = files[0];
+        return {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': `attachment; filename="${only.filename}"`,
+            'X-PDF-Tickets':  String(tickets),
+            'X-PDF-Files':    '1',
+            'X-PDF-Warnings': String(warnings.length),
+          },
+          body: only.buffer,
+        };
+      }
+
+      // Multi-file response: bundle everything into a single ZIP. Using
+      // adm-zip in-memory keeps the whole operation inside the 230-second
+      // Azure HTTP timeout and avoids spilling to /tmp.
+      const zip = new AdmZip();
+      for (const f of files) {
+        zip.addFile(f.filename, f.buffer);
+      }
+      // Include a machine-readable manifest so consumers who receive the
+      // ZIP (e.g. an automated pipeline) don't have to list the entries.
+      const manifest = {
+        generatedAt: new Date().toISOString(),
+        tickets,
+        fileCount: files.length,
+        files: files.map(f => ({ filename: f.filename, bytes: f.buffer.length })),
+        warnings,
+      };
+      zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
+
+      const zipBuffer = zip.toBuffer();
+      const date = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
+      const zipName = `otrs-pdfs-${date}.zip`;
+
+      context.log(`otrs-admin-convert-to-pdf: ${tickets} ticket(s), ${files.length} file(s), `
+        + `${warnings.length} warning(s), zip=${zipBuffer.length} bytes`);
+
+      return {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${zipName}"`,
+          'X-PDF-Tickets':  String(tickets),
+          'X-PDF-Files':    String(files.length),
+          'X-PDF-Warnings': String(warnings.length),
+          'X-PDF-ZipBytes': String(zipBuffer.length),
+        },
+        body: zipBuffer,
+      };
+    } catch (err) {
+      context.error('otrs-admin-convert-to-pdf error:', err);
+      return structuredErrorResponse(err, 'convert-to-pdf', {
+        hint: 'Is the XML a valid OtrsExtract envelope? Oversized attachments may also cause renderer timeouts.',
       });
     }
   },

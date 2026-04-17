@@ -13,6 +13,7 @@
     "start:sec": "node src/local/mcp-server-sec.js",
     "start:taskrecorder": "node src/local/mcp-server-taskrecorder.js",
     "start:wiki": "node src/local/mcp-server-wiki.js",
+    "ticket-to-pdf": "node scripts/ticket-xml-to-pdf.js",
     "test": "node --test test/*.test.js",
     "test:sec": "node --test test/sec-tools.test.js",
     "test:kb": "node --test test/kb-tools.test.js",
@@ -27,6 +28,10 @@
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.8.0",
     "fast-xml-parser": "^5.2.3",
+    "html-to-text": "^9.0.5",
+    "mammoth": "^1.8.0",
+    "pdfkit": "^0.15.0",
+    "xlsx": "^0.18.5",
     "zod": "^4.0.0"
   },
   "devDependencies": {
