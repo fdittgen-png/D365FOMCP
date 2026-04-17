@@ -12,6 +12,7 @@
     "start:xref": "node src/local/mcp-server-xref.js",
     "start:sec": "node src/local/mcp-server-sec.js",
     "start:taskrecorder": "node src/local/mcp-server-taskrecorder.js",
+    "start:wiki": "node src/local/mcp-server-wiki.js",
     "test": "node --test test/*.test.js",
     "test:sec": "node --test test/sec-tools.test.js",
     "test:kb": "node --test test/kb-tools.test.js",

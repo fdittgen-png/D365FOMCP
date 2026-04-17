@@ -1,0 +1,10 @@
+[
+  {
+    "name": "otrs",
+    "title": "OTRS Resolved Cases",
+    "description": "Knowledge base of resolved D365 support cases extracted from OTRS. Use for troubleshooting recurring issues, finding past solutions, and identifying common root causes for first-level support.",
+    "container": "wiki",
+    "indexBlob": "index.md",
+    "pagesPrefix": "tickets/"
+  }
+]

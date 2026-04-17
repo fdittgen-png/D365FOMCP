@@ -449,8 +449,14 @@ This is required after uploading new database files (the `better-sqlite3` single
 |-------------|---------|-----|
 | Development | KB MCP | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Development | XRef MCP | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Development | Security MCP | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Development | Task Recorder MCP | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
+| Development | OTRS Extractor (HTTP, function-key auth) | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/otrs/extract` |
 | Production | KB MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Production | XRef MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
+| Production | Security MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Production | Task Recorder MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
+| Production | OTRS Extractor (HTTP, function-key auth) | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/otrs/extract` |
 
 ---
 
@@ -540,6 +546,225 @@ For configuration of Cursor, GitHub Copilot, ChatGPT, Google Gemini, and other M
 
 ---
 
+## 11. OTRS Extractor Operations
+
+The OTRS Extractor is an HTTP route (`POST /api/otrs/extract`) on the same Function App as the MCP services. It pulls resolved D365 support tickets from OTRS and returns them as XML for Power Automate to forward into the wiki. See [Architecture §9](Architecture.md#9-otrs-support-case-pipeline) for the pipeline design and [PowerAutomate — OTRS Extractor](PowerAutomate-OTRS-Extract.md) for the Power Automate flow.
+
+### 11.1 App Settings
+
+Configured in `infra/modules/functionApp.bicep` and deployed via `Deploy-Infrastructure.ps1`. After the initial `bicep deploy`, the `OTRS_PASSWORD` is an empty placeholder — the real secret must be set out-of-band so it never lands in source control or Bicep output.
+
+| Setting | Purpose | Source | Default |
+|---------|---------|--------|---------|
+| `OTRS_USERNAME` | OTRS generic-interface login | Bicep | `wstis` |
+| `OTRS_PASSWORD` | OTRS password | **Set manually post-deploy** (see §11.2) | *(empty)* |
+| `OTRS_SEARCH_URL` | TicketSearch endpoint | Bicep | `https://trelleborg.managed-otrs.com/otrs/nph-genericinterface.pl/Webservice/TIS_WS/TicketSearch` |
+| `OTRS_GET_URL` | TicketGet endpoint | Bicep | `https://trelleborg.managed-otrs.com/otrs/nph-genericinterface.pl/Webservice/TIS_WS/TicketGet` |
+| `OTRS_SERVICE` | Services filter applied on TicketSearch | Bicep | `TIS - Digital Solutions Support::ERP::D365` |
+| `OTRS_STATE` | States filter applied on TicketSearch | Bicep | `closed successful` |
+| `OTRS_MIN_RESOLUTION_CHARS` | Minimum combined agent-article body length (chars) for a ticket to count as "has resolution" | Bicep | `200` |
+
+### 11.2 Setting the OTRS Password
+
+The password is the only secret — every other app setting is a non-sensitive configuration value. Set it once after `Deploy-Infrastructure.ps1`:
+
+```powershell
+az functionapp config appsettings set `
+  --name tis-p-mcpd365fo-func `
+  -g   tis-p-mcpd365fo-rg `
+  --settings OTRS_PASSWORD=<real-password>
+```
+
+The Function App restarts automatically. Rotating the password is the same command — no redeploy needed.
+
+> When the dedicated Key Vault (`tis-p-mcpd365fo-kv`) is stood up in a future CR, replace the plain-value app setting with a Key Vault reference (`@Microsoft.KeyVault(SecretUri=…)`) and grant the Function App's managed identity **Key Vault Secrets User** on the secret. The code reads `process.env.OTRS_PASSWORD` either way.
+
+### 11.3 State Blob
+
+| Attribute | Value |
+|-----------|-------|
+| Storage account | `tis{env}mcpd365fost` (same account as Functions runtime) |
+| Container | `otrs-state` (auto-created on first write) |
+| Blob | `otrs-extract-state.json` |
+| Payload | `{ version, lastExtractedAt, processedTicketIds: [string] }` |
+
+**Inspecting** — open Azure Portal → storage account → containers → `otrs-state` → download `otrs-extract-state.json`, or:
+
+```powershell
+az storage blob download `
+  --account-name tispmcpd365fost `
+  -c otrs-state -n otrs-extract-state.json -f state.json
+```
+
+**Resetting** — delete the blob; the next `mode: "incremental"` run behaves like the first and will re-pull every ticket that currently matches the OTRS filter.
+
+```powershell
+az storage blob delete `
+  --account-name tispmcpd365fost `
+  -c otrs-state -n otrs-extract-state.json
+```
+
+### 11.4 Health Check
+
+The route only responds to `POST` with a function key, so a browser GET is not a useful health signal. Use:
+
+```bash
+curl -X POST "https://tis-p-mcpd365fo-func.azurewebsites.net/api/otrs/extract?code=<function-key>" \
+     -H "Content-Type: application/json" \
+     -d '{"mode":"preview","limit":1}'
+```
+
+`mode: "preview"` extracts one ticket without writing the state blob. A `200` with a non-empty `<OtrsExtract>` envelope proves: app settings present, OTRS reachable, credentials valid, state container accessible. The response headers `X-OTRS-Extracted` / `X-OTRS-Skipped` / `X-OTRS-Candidates` give a quick snapshot of the batch.
+
+### 11.5 Troubleshooting
+
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| `500` with `"Missing OTRS config: OTRS_PASSWORD"` | Password never set or deleted after redeploy | Run the `az functionapp config appsettings set` command in §11.2 |
+| `500` with `"OTRS returned error WebserviceNotAuth"` | Wrong username / password, or OTRS account locked | Confirm credentials with Przemysław; re-run the `set` command |
+| `500` with `"OTRS request failed: HTTP 502"` | OTRS service or its upstream proxy down | Retry; if persistent, escalate to OTRS operator |
+| `200` but `X-OTRS-Extracted: 0` on a first `full` run | `OTRS_SERVICE` or `OTRS_STATE` filters don't match anything | Verify the filter values against OTRS UI; note the exact casing and the `::` separator |
+| Every ticket ends up under `<Skipped>` with `"resolution too thin"` | `OTRS_MIN_RESOLUTION_CHARS` too strict for your tickets | Lower the value (try `100`) via `az functionapp config appsettings set` |
+| State blob not updating | Calling with `mode: "preview"` | Use `incremental` or `full` — preview is dry-run by design |
+| Same tickets re-extracted every run | State blob was deleted, or the Power Automate flow is calling with `mode: "full"` | Switch Power Automate to `incremental`; inspect the blob in Azure Portal |
+| `401 Unauthorized` from Power Automate | Function key missing / wrong | Copy the current key from Azure Portal → Function App → App keys → default |
+
+### 11.6 Observability
+
+The route logs through App Insights alongside the MCP endpoints. Useful traces:
+
+- `otrs-extract: mode=… limit=… known=…` — per-request parameters
+- `otrs-extract: TicketSearch → <N> candidate IDs` — upstream response size
+- `otrs-extract: extracted=<X> skipped=<Y>` — per-run outcome
+- `otrs-extract: ticket <id> failed — <msg>` — per-ticket fetch errors (skipped, not fatal)
+- `otrs-extract: state blob write failed — <msg>` — **warning** signal; the XML response was still returned but the next run may re-extract the same IDs
+
+---
+
+## 12. Wiki MCP Operations
+
+The Wiki MCP platform exposes one MCP server per configured wiki via a single parameterized route. Architecture background: [Architecture §10](Architecture.md#10-wiki-mcp-platform--one-shape-many-wikis). MCP-client-facing reference: [MCP — Wiki Services](MCP-Wiki-Services.md).
+
+### 12.1 Registry — `config/wikis.json`
+
+The registry ships in source control. Each entry produces one MCP server, reachable at `/api/wiki-mcp/<name>`. Entries not in the registry are not reachable — the route returns `404` with the list of available names.
+
+```json
+[
+  {
+    "name": "otrs",
+    "title": "OTRS Resolved Cases",
+    "description": "Knowledge base of resolved D365 support cases…",
+    "container": "wiki",
+    "indexBlob": "index.md",
+    "pagesPrefix": "tickets/"
+  }
+]
+```
+
+Overriding the committed file for one environment: set the `WIKI_CONFIG_JSON` app setting to the JSON array. When set, the env var wins — this lets you stage a new wiki in dev before editing the committed file.
+
+### 12.2 Adding a Wiki — `Add-WikiMcp.ps1`
+
+One-command provisioning:
+
+```powershell
+cd C:\working\MCP\scripts
+.\Add-WikiMcp.ps1 `
+    -Name runbooks `
+    -Title 'Operations Runbooks' `
+    -Description 'Runbooks for common operational tasks across D365 and supporting platforms.' `
+    -PagesPrefix 'runbooks/' `
+    -SeedIndex -Redeploy -Environment p
+```
+
+| Parameter | Required | Purpose |
+|-----------|:--------:|---------|
+| `-Name` | yes | URL slug. `^[a-z0-9][a-z0-9-]{0,62}$`. Becomes the MCP server name (`wiki-<name>`) and the path segment. |
+| `-Title` | yes | Human-readable title. Any string. |
+| `-Description` | yes | One-to-two sentences the LLM reads when deciding if the wiki is relevant. Be specific. |
+| `-Container` | no | Blob container name. Default `wiki-<name>`. Must conform to Azure blob container naming rules. |
+| `-PagesPrefix` | no | Blob-name prefix for pages (e.g. `runbooks/`). Default empty — pages live at the container root. |
+| `-IndexBlob` | no | Index filename. Default `index.md`. |
+| `-SeedIndex` | switch | Upload a minimal index.md so `wiki_index` responds immediately. |
+| `-Redeploy` | switch | Run `Deploy-FunctionApp.ps1 -SkipDbUpload` after updating the registry. |
+| `-Environment` | no | `d` or `p`. Default `d`. |
+
+What it does, in order: validates the slug, appends an entry to `config/wikis.json`, reads the storage-account key via `az`, creates the blob container, optionally uploads a seed index, optionally redeploys. Prints the endpoint URL at the end.
+
+### 12.3 Removing a Wiki
+
+There is intentionally no `Remove-WikiMcp.ps1` — deletion is riskier than creation and benefits from a human-in-the-loop. To retire a wiki:
+
+1. Remove its entry from `config/wikis.json`.
+2. `Deploy-FunctionApp.ps1 -SkipDbUpload` — the route now returns `404` for the name.
+3. **Decide separately** whether to delete the blob container (the markdown is the data; removing the MCP just hides it).
+
+```powershell
+# Only after you've confirmed the container is disposable
+az storage container delete --account-name tispmcpd365fost -c <container>
+```
+
+### 12.4 Health Check per Wiki
+
+```bash
+# Catalog of every configured wiki
+curl https://tis-p-mcpd365fo-func.azurewebsites.net/api/wiki-mcp
+
+# Per-wiki health (cheap GET without SSE)
+curl https://tis-p-mcpd365fo-func.azurewebsites.net/api/wiki-mcp/otrs
+```
+
+Expected: `200` with `{ "name": "wiki-otrs", "title": "…", "container": "wiki", "status": "ok" }`.
+
+### 12.5 Managing Wiki Content
+
+The MCP **only reads** the markdown. Content can arrive by several paths; pick whichever matches your source:
+
+| Path | How |
+|------|-----|
+| OTRS pipeline | Power Automate → `POST /api/otrs/ingest` (future CR) writes markdown on a schedule. |
+| Manual upload | `az storage blob upload --account-name <st> -c <container> -n <slug>.md -f <file>` |
+| Logic App / bespoke | Any process that lands valid markdown in the container. The 60-second cache TTL means new files are visible to the LLM within one minute. |
+
+**Inspecting:** Azure Portal → storage account → containers → pick wiki container → browse files. Or:
+
+```powershell
+az storage blob list --account-name tispmcpd365fost -c wiki --output table
+```
+
+### 12.6 Cache Invalidation
+
+The MCP caches blob contents per Function instance for 60 seconds. After uploading new pages, expect up to one minute of staleness. If you need an immediate refresh:
+
+```powershell
+# Restart recycles every instance and clears the in-memory cache
+az functionapp restart --resource-group tis-p-mcpd365fo-rg --name tis-p-mcpd365fo-func
+```
+
+Every client call that happens after the restart sees the fresh content on its first hit.
+
+### 12.7 Troubleshooting
+
+| Symptom | Cause | Resolution |
+|---------|-------|------------|
+| `404` with `"Wiki \"<name>\" is not configured"` | Registry has no entry for the requested slug | Check the `available` list in the response; fix the URL, or add the wiki via `Add-WikiMcp.ps1` |
+| `500` with `"Wiki registry failed to load"` | `config/wikis.json` malformed or `WIKI_CONFIG_JSON` is invalid | Re-check the JSON. The error hint includes the parse/validation message |
+| `wiki_index` returns `"index.md has not been written yet"` | Container exists but no index blob | Upload one manually or re-run `Add-WikiMcp.ps1 -SeedIndex` for this wiki |
+| `wiki_search` returns no matches for a term that's obviously in a page | The 60-second cache is serving a pre-upload snapshot | Wait 60 s or `az functionapp restart` |
+| `500` with `"Could not read the … index"` in tool output | Blob container is missing, or the storage account key rotated | Confirm the container exists; re-sync `AzureWebJobsStorage` with the current account key |
+| Azure CLI errors on `storage container create` inside `Add-WikiMcp.ps1` | Signed-in identity lacks RBAC on the storage account | Grant `Storage Account Key Operator Service Role` or use a managed-identity-authenticated shell |
+
+### 12.8 Observability
+
+The wiki routes log to the same App Insights instance as the other MCPs. Useful traces:
+
+- `wiki-mcp catalog error: <msg>` — registry failed to load
+- `wiki-mcp registry error: <msg>` — per-request registry resolution failed
+- `wiki-mcp[<name>] error: <msg>` — MCP transport-level error for a specific wiki
+
+---
+
 ## Related Documentation
 
 | Document | Description |
@@ -547,5 +772,8 @@ For configuration of Cursor, GitHub Copilot, ChatGPT, Google Gemini, and other M
 | [Architecture](Architecture.md) | System design, data flow, Azure resources, security model |
 | [Implementation](Implementation.md) | Build pipeline, database schemas, tool catalog, dependencies |
 | [AI Configuration](AI-Configuration.md) | MCP client setup for Claude, Copilot, ChatGPT, Gemini, Cursor |
+| [PowerAutomate — Security DB update](PowerAutomate-SecDatabase-Update.md) | Daily DMF refresh flow for the security MCP |
+| [PowerAutomate — OTRS Extractor](PowerAutomate-OTRS-Extract.md) | Scheduled OTRS → wiki extraction flow |
+| [MCP — Wiki Services](MCP-Wiki-Services.md) | MCP-client-facing reference for the multi-wiki platform |
 | [VS Code Guide](VS-Code-Guide.md) | VS Code setup, debugging, workflow, extensions |
 | [README](../README.md) | Project overview and quick start |

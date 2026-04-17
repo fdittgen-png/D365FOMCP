@@ -1010,3 +1010,64 @@ export const taskrecorderToMarkdownOutput = z.object({
   markdown_length: z.number(),
   markdown: z.string(),
 });
+
+// ── Wiki MCP (4) ─────────────────────────────────────────────────────────────
+//
+// One MCP server per wiki (see src/azure/wiki-tools.js), sharing this tool
+// shape so any blob-backed markdown wiki can be exposed by dropping an
+// entry into config/wikis.json. The typed payload mirrors the rendered
+// Markdown — the LLM can pick whichever is cheaper to consume.
+
+export const wikiIndexOutput = z.object({
+  wiki_name: z.string(),
+  wiki_title: z.string(),
+  present: z.boolean(),          // false → index.md doesn't exist yet
+  content: z.string(),            // '' when present=false
+  page_count: z.number(),
+  last_modified: z.string().nullable(),
+});
+
+export const wikiListPageSchema = z.object({
+  slug: z.string(),
+  title: z.string(),
+  summary: z.string().nullable(),
+  tags: z.array(z.string()),
+  last_modified: z.string().nullable(),
+  size_bytes: z.number(),
+});
+
+export const wikiListOutput = z.object({
+  wiki_name: z.string(),
+  wiki_title: z.string(),
+  total: z.number(),
+  pages: z.array(wikiListPageSchema),
+  truncated: z.boolean(),
+});
+
+export const wikiReadOutput = z.object({
+  wiki_name: z.string(),
+  slug: z.string(),
+  title: z.string(),
+  blob_name: z.string(),
+  frontmatter: z.record(z.string(), z.unknown()),
+  content: z.string(),           // raw markdown, frontmatter included
+  body: z.string(),               // markdown with frontmatter stripped
+  last_modified: z.string().nullable(),
+});
+
+export const wikiSearchMatchSchema = z.object({
+  slug: z.string(),
+  title: z.string(),
+  score: z.number(),
+  snippets: z.array(z.string()),
+});
+
+export const wikiSearchOutput = z.object({
+  wiki_name: z.string(),
+  wiki_title: z.string(),
+  query: z.string(),
+  total_pages_scanned: z.number(),
+  total_matches: z.number(),
+  matches: z.array(wikiSearchMatchSchema),
+  truncated: z.boolean(),
+});
