@@ -158,6 +158,53 @@ export function toReadableText(body, { htmlToText } = {}) {
     .replace(/&#39;/g, "'");
 }
 
+// ── Text sanitization for pdfkit ────────────────────────────────────────────
+
+/**
+ * pdfkit's default Helvetica uses WinAnsi encoding — basically Latin-1
+ * with some gaps — and has no renderable glyph for TAB, so a string like
+ * `"\t\t\tShort description:"` comes out as `"™•6†÷ t description:"`.
+ * This helper makes the text printable under Helvetica without shipping
+ * a TTF font:
+ *
+ *   - TAB → 4 spaces (Helvetica has no tab metric)
+ *   - NBSP → regular space
+ *   - Soft-hyphen → removed
+ *   - Smart quotes / em-dashes / ellipsis → ASCII equivalents
+ *   - Common bullet / arrow / checkmark → ASCII stand-ins
+ *   - Strip non-print control chars except LF (which pdfkit honors)
+ *
+ * Latin-1 characters outside this list (é, ü, ö, ß, £, §, …) are WinAnsi-
+ * encodable and pass through unchanged. Characters above U+00FF that we
+ * don't have a rule for are replaced with `?` — readable, not pretty;
+ * shipping a TTF is the long-term fix.
+ */
+export function sanitizeForPdfText(text) {
+  if (typeof text !== 'string') return '';
+  let out = text
+    .replace(/\t/g, '    ')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\u00AD/g, '')
+    .replace(/[\u2018\u2019\u201A\u02BC]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/[\u2022\u25CF\u25AA\u25CB]/g, '*')
+    .replace(/[\u2192\u21A6]/g, '->')
+    .replace(/[\u2190\u21A4]/g, '<-')
+    .replace(/[\u2713\u2714]/g, 'y')
+    .replace(/[\u2717\u2718]/g, 'x')
+    // Normalize CRLF and lone CR to LF; strip the rest of the control
+    // range so pdfkit doesn't try to render unassigned glyphs.
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+  // Non-Latin-1 fallback — keep it simple, question-mark anything Helvetica
+  // definitely can't render. This only kicks in for codepoints we haven't
+  // normalized above (e.g. emoji, CJK).
+  out = out.replace(/[\u0100-\uFFFF]/g, '?');
+  return out;
+}
+
 // ── Byte-size rendering ────────────────────────────────────────────────────
 
 export function humanSize(bytes) {

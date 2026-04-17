@@ -16,6 +16,7 @@ import {
   siblingPdfName,
   safeFilename,
   toReadableText,
+  sanitizeForPdfText,
   humanSize,
 } from '../src/azure/ticket-pdf-helpers.js';
 
@@ -242,6 +243,70 @@ describe('toReadableText', () => {
     assert.ok(out.includes('<'));
     assert.ok(out.includes('>'));
     assert.ok(out.includes('"ok"'));
+  });
+});
+
+// ── sanitizeForPdfText ─────────────────────────────────────────────────────
+
+describe('sanitizeForPdfText', () => {
+  it('replaces TABs with four spaces (pdfkit Helvetica has no tab glyph)', () => {
+    // This is the actual bug the user saw — tabs rendered as "™•6†÷…"
+    assert.equal(sanitizeForPdfText('\t\t\tShort description:'), '            Short description:');
+  });
+
+  it('normalizes common smart punctuation to ASCII equivalents', () => {
+    const src = '\u2018quoted\u2019 and \u201Cdouble\u201D and em\u2014dash plus ellipsis\u2026';
+    assert.equal(
+      sanitizeForPdfText(src),
+      "'quoted' and \"double\" and em-dash plus ellipsis...",
+    );
+  });
+
+  it('replaces NBSP with a regular space and strips soft-hyphens', () => {
+    // NBSP → ' '  (preserved as whitespace).
+    // Soft-hyphen → removed (it's a hint, not rendered content), so the
+    // adjacent letters collapse: "b[SH]c" → "bc".
+    assert.equal(sanitizeForPdfText('a\u00A0b\u00ADc'), 'a bc');
+  });
+
+  it('maps bullet / arrow / check / x to ASCII stand-ins', () => {
+    assert.equal(sanitizeForPdfText('\u2022 item \u2192 next \u2713 done \u2717 fail'),
+      '* item -> next y done x fail');
+  });
+
+  it('strips non-LF control characters but preserves line breaks', () => {
+    const src = 'line1\nline2\rline3\n\u0007bell\x1Bescape';
+    assert.equal(sanitizeForPdfText(src), 'line1\nline2\nline3\nbellescape');
+  });
+
+  it('preserves Latin-1 accented characters (é, ü, ö, ß, £, §)', () => {
+    assert.equal(
+      sanitizeForPdfText('Café Müßiggang £42 §1'),
+      'Café Müßiggang £42 §1',
+    );
+  });
+
+  it('falls back to "?" for characters outside Latin-1 (emoji, CJK)', () => {
+    // \u{1F600} is a non-BMP emoji — becomes two `?` chars in UTF-16.
+    // Single-surrogate cases fall to `?` too.
+    const out = sanitizeForPdfText('hello \u2605 world \u4E2D');  // black star + CJK
+    assert.equal(out, 'hello ? world ?');
+  });
+
+  it('returns an empty string for null/undefined/non-string input', () => {
+    assert.equal(sanitizeForPdfText(null), '');
+    assert.equal(sanitizeForPdfText(undefined), '');
+    assert.equal(sanitizeForPdfText(42), '');
+    assert.equal(sanitizeForPdfText({}), '');
+  });
+
+  it('regression: the 1729255 article-body snippet is now readable', () => {
+    // The exact shape that produced "™•6†÷ t description:…" in the PDF.
+    const raw = '\t\t\tShort description: \t\t\tVendor Approval Workflow \t\t\t\t';
+    const out = sanitizeForPdfText(raw);
+    assert.ok(!out.includes('\t'), 'no TABs should remain');
+    assert.ok(out.includes('Short description'));
+    assert.ok(out.includes('Vendor Approval Workflow'));
   });
 });
 

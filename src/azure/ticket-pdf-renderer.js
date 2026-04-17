@@ -32,6 +32,7 @@ import {
   siblingPdfName,
   safeFilename,
   toReadableText,
+  sanitizeForPdfText,
   humanSize,
 } from './ticket-pdf-helpers.js';
 
@@ -140,15 +141,17 @@ async function renderMainPdfBuffer(ticket, slug, deps) {
 
   // Header
   doc.font(FONT.title.name).fontSize(FONT.title.size).fillColor('black')
-     .text(ticket.title || `OTRS Ticket ${ticket.ticketId}`, { lineGap: 2 });
+     .text(sanitizeForPdfText(ticket.title || `OTRS Ticket ${ticket.ticketId}`), { lineGap: 2 });
   doc.moveDown(0.3);
   doc.font(FONT.meta.name).fontSize(FONT.meta.size).fillColor(FONT.meta.color)
-     .text(`Ticket ${ticket.ticketNumber || ticket.ticketId}`
-           + (ticket.service ? ` · ${ticket.service}` : '')
-           + (ticket.closedAt ? ` · closed ${ticket.closedAt}` : ''));
+     .text(sanitizeForPdfText(
+       `Ticket ${ticket.ticketNumber || ticket.ticketId}`
+       + (ticket.service ? ` · ${ticket.service}` : '')
+       + (ticket.closedAt ? ` · closed ${ticket.closedAt}` : ''),
+     ));
   doc.moveDown();
 
-  // Ticket metadata (filled-only)
+  // Ticket metadata (filled-only) — renderKeyValueBlock sanitizes each row.
   renderKeyValueBlock(doc, 'Ticket metadata', collectFilledMetadata(ticket));
 
   // Dynamic fields (filled-only)
@@ -159,12 +162,15 @@ async function renderMainPdfBuffer(ticket, slug, deps) {
     renderKeyValueBlock(doc, 'Dynamic fields', dynFilled);
   }
 
-  // Problem / Resolution
+  // Problem / Resolution — toReadableText decodes HTML, sanitize strips
+  // control chars / smart-quotes so pdfkit can actually render them.
   if (isFilled(ticket.description)) {
-    renderTextSection(doc, 'Problem', toReadableText(ticket.description, { htmlToText: deps.htmlToText }));
+    renderTextSection(doc, 'Problem',
+      sanitizeForPdfText(toReadableText(ticket.description, { htmlToText: deps.htmlToText })));
   }
   if (isFilled(ticket.resolution)) {
-    renderTextSection(doc, 'Resolution', toReadableText(ticket.resolution, { htmlToText: deps.htmlToText }));
+    renderTextSection(doc, 'Resolution',
+      sanitizeForPdfText(toReadableText(ticket.resolution, { htmlToText: deps.htmlToText })));
   }
 
   // Article trace
@@ -194,10 +200,10 @@ function renderKeyValueBlock(doc, title, rows) {
   doc.font(FONT.body.name).fontSize(FONT.body.size).fillColor('black');
   for (const row of rows) {
     const startY = doc.y;
-    doc.font(FONT.sub.name).text(`${row.key}:`, doc.page.margins.left, startY, {
+    doc.font(FONT.sub.name).text(sanitizeForPdfText(`${row.key}:`), doc.page.margins.left, startY, {
       width: labelWidth, continued: false,
     });
-    doc.font(FONT.body.name).text(String(row.value), doc.page.margins.left + labelWidth, startY, {
+    doc.font(FONT.body.name).text(sanitizeForPdfText(String(row.value)), doc.page.margins.left + labelWidth, startY, {
       width: doc.page.width - doc.page.margins.left - doc.page.margins.right - labelWidth,
     });
     doc.moveDown(0.2);
@@ -206,10 +212,13 @@ function renderKeyValueBlock(doc, title, rows) {
 }
 
 function renderTextSection(doc, title, text) {
-  if (!isFilled(text)) return;
+  // Caller is expected to have already sanitized; belt-and-suspenders here
+  // avoids rogue TABs / smart-quotes if anyone bypasses the section header.
+  const safe = sanitizeForPdfText(text);
+  if (!isFilled(safe)) return;
   sectionHeader(doc, title);
   doc.font(FONT.body.name).fontSize(FONT.body.size).fillColor('black')
-     .text(text, { align: 'left', paragraphGap: 4 });
+     .text(safe, { align: 'left', paragraphGap: 4 });
   doc.moveDown(0.5);
 }
 
@@ -225,20 +234,20 @@ function renderArticle(doc, article, index, ticket, slug, deps) {
   const when = article.createdAt ? ` · ${article.createdAt}` : '';
   const from = article.from ? ` · ${article.from}` : '';
   doc.font(FONT.sub.name).fontSize(FONT.sub.size).fillColor('black')
-     .text(`#${index} — ${who}${from}${when}`);
+     .text(sanitizeForPdfText(`#${index} — ${who}${from}${when}`));
   doc.moveDown(0.1);
 
   if (isFilled(article.subject)) {
     doc.font(FONT.meta.name).fontSize(FONT.meta.size).fillColor(FONT.meta.color)
-       .text(`Subject: ${article.subject}`);
+       .text(sanitizeForPdfText(`Subject: ${article.subject}`));
   }
   if (isFilled(article.contentType) && article.contentType !== 'text/plain') {
     doc.font(FONT.meta.name).fontSize(FONT.meta.size).fillColor(FONT.meta.color)
-       .text(`Content-Type: ${article.contentType}`);
+       .text(sanitizeForPdfText(`Content-Type: ${article.contentType}`));
   }
   doc.moveDown(0.3);
 
-  const body = toReadableText(article.body, { htmlToText: deps.htmlToText });
+  const body = sanitizeForPdfText(toReadableText(article.body, { htmlToText: deps.htmlToText }));
   if (isFilled(body)) {
     doc.font(FONT.body.name).fontSize(FONT.body.size).fillColor('black')
        .text(body, { paragraphGap: 4 });
@@ -255,15 +264,15 @@ function renderArticle(doc, article, index, ticket, slug, deps) {
   for (const att of atts) {
     globalCounter++;
     if (isEmbeddableImage(att.contentType)) {
-      doc.font(FONT.meta.name).text(
+      doc.font(FONT.meta.name).text(sanitizeForPdfText(
         `• ${safeFilename(att.filename)} (${att.contentType}, ${humanSize(att.filesizeBytes)}) — embedded below:`,
-      );
+      ));
       embedImage(doc, att);
     } else {
       const sibling = siblingPdfName(slug, globalCounter, att.filename);
-      doc.font(FONT.meta.name).text(
+      doc.font(FONT.meta.name).text(sanitizeForPdfText(
         `• ${safeFilename(att.filename)} (${att.contentType || 'unknown'}, ${humanSize(att.filesizeBytes)}) — see sibling file: ${sibling}`,
-      );
+      ));
     }
   }
 }
@@ -286,9 +295,31 @@ function embedImage(doc, att) {
   doc.moveDown(0.3);
   const maxWidth  = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   const maxHeight = 400;
+
   try {
-    doc.image(buffer, { fit: [maxWidth, maxHeight], align: 'center' });
-    doc.moveDown(0.3);
+    // Open the image to discover its natural dimensions, then compute the
+    // scaled size ourselves. pdfkit's auto y-advance when used with `fit:`
+    // is unreliable on tall/wide images — subsequent text ends up drawing
+    // ON TOP of the rendered image. We position explicitly and move the
+    // cursor down by the actual rendered height.
+    const img = doc.openImage(buffer);
+    const scale = Math.min(maxWidth / img.width, maxHeight / img.height, 1);
+    const renderedWidth  = Math.round(img.width  * scale);
+    const renderedHeight = Math.round(img.height * scale);
+
+    // Page break if the scaled image wouldn't fit on the remaining space.
+    const availableHeight = doc.page.height - doc.page.margins.bottom - doc.y;
+    if (renderedHeight > availableHeight - 10) doc.addPage();
+
+    const yBefore = doc.y;
+    const xCentered = doc.page.margins.left + (maxWidth - renderedWidth) / 2;
+    doc.image(img, xCentered, yBefore, { width: renderedWidth, height: renderedHeight });
+
+    // Reset cursor to the left margin and advance past the bottom of the
+    // image + breathing room. Without this the NEXT paragraph draws over
+    // the image we just placed.
+    doc.x = doc.page.margins.left;
+    doc.y = yBefore + renderedHeight + 10;
   } catch (err) {
     doc.font(FONT.meta.name).fillColor('red')
        .text(`  (image could not be embedded: ${err.message})`);
@@ -363,10 +394,10 @@ async function writeTextBuffer(att, text, kindLabel) {
   attachmentHeader(doc, att, kindLabel);
 
   doc.font(FONT.body.name).fontSize(FONT.body.size).fillColor('black');
-  const body = text.length > 200_000
+  const raw = text.length > 200_000
     ? text.slice(0, 200_000) + '\n\n…[truncated at 200 KB of text]'
     : text;
-  doc.text(body, { paragraphGap: 3 });
+  doc.text(sanitizeForPdfText(raw), { paragraphGap: 3 });
 
   doc.end();
   return done;
@@ -400,7 +431,8 @@ async function writeWorkbookBuffer(att, sections) {
     doc.font(FONT.mono.name).fontSize(FONT.mono.size).fillColor('black');
     for (const row of section.rows) {
       const line = row.map((cell, c) => padCell(cell, colWidths[c] || 10)).join('  ');
-      doc.text(line.length > 200 ? line.slice(0, 200) + ' …' : line, { paragraphGap: 0 });
+      const trimmed = line.length > 200 ? line.slice(0, 200) + ' ...' : line;
+      doc.text(sanitizeForPdfText(trimmed), { paragraphGap: 0 });
     }
   }
 
@@ -426,12 +458,12 @@ async function placeholderBuffer(att, reason) {
 
 function attachmentHeader(doc, att, kindLabel) {
   doc.font(FONT.title.name).fontSize(FONT.title.size).fillColor('black')
-     .text(att.filename || '(unnamed attachment)');
+     .text(sanitizeForPdfText(att.filename || '(unnamed attachment)'));
   doc.moveDown(0.2);
   doc.font(FONT.meta.name).fontSize(FONT.meta.size).fillColor(FONT.meta.color)
-     .text(`${kindLabel} · ${att.contentType || 'unknown'} · ${humanSize(att.filesizeBytes)}`);
-  if (isFilled(att.disposition)) doc.text(`Disposition: ${att.disposition}`);
-  if (isFilled(att.contentId))   doc.text(`Content-ID: ${att.contentId}`);
+     .text(sanitizeForPdfText(`${kindLabel} · ${att.contentType || 'unknown'} · ${humanSize(att.filesizeBytes)}`));
+  if (isFilled(att.disposition)) doc.text(sanitizeForPdfText(`Disposition: ${att.disposition}`));
+  if (isFilled(att.contentId))   doc.text(sanitizeForPdfText(`Content-ID: ${att.contentId}`));
   doc.moveDown(0.6);
 }
 
