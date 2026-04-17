@@ -149,3 +149,82 @@ describe('ticketToMarkdown — frontmatter', () => {
     assert.doesNotMatch(markdown, /^queue:/m);
   });
 });
+
+// ── Attachments + dynamic fields sections ───────────────────────────────────
+
+describe('ticketToMarkdown — attachments and dynamic fields', () => {
+  function fixtureWithExtras(overrides = {}) {
+    return {
+      ticketId: '1717381',
+      ticketNumber: '2026040200004375',
+      title: 'Software not installing on new laptop',
+      service: 'My workplace - General IT Issue',
+      priority: '3 normal',
+      closedAt: '2026-04-02 11:41:16',
+      description: 'Install fails.',
+      resolution: 'Re-imaged the laptop.',
+      dynamicFields: [
+        { name: 'ModuleD365', value: 'Finance' },
+        { name: 'Severity',   value: 'Low' },
+        { name: 'EmptyField', value: '' },
+      ],
+      articles: [
+        {
+          id: '1', number: '1', senderType: 'customer', from: 'u@x',
+          createdAt: '2026-04-02 11:41:09', subject: 'Install fails',
+          body: '<p>screenshot attached</p>',
+          contentType: 'text/html; charset=utf-8',
+          attachments: [
+            { id: '1', filename: 'screen.png', contentType: 'image/png', disposition: 'inline', filesizeBytes: 2048, content: '...' },
+            { id: '2', filename: 'log.docx', contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', disposition: 'attachment', filesizeBytes: 45678, content: '...' },
+          ],
+        },
+        {
+          id: '2', number: '2', senderType: 'agent', from: 'a@x',
+          createdAt: '2026-04-02 14:00:00', body: 'Re-image the device.',
+          attachments: [],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('adds an "Attachments" table enumerating filename / type / size / disposition', () => {
+    const { markdown } = ticketToMarkdown(fixtureWithExtras());
+    assert.match(markdown, /^## Attachments \(2\)$/m);
+    assert.match(markdown, /screen\.png/);
+    assert.match(markdown, /image\/png/);
+    assert.match(markdown, /2\.0 KB/);            // 2048 bytes → "2.0 KB"
+    assert.match(markdown, /inline/);
+    assert.match(markdown, /log\.docx/);
+    assert.match(markdown, /44\.6 KB/);           // 45678 bytes → "44.6 KB"
+    assert.match(markdown, /attachment/);
+    // Raw bytes explicitly NOT inlined — only the note that they live in XML
+    assert.match(markdown, /preserved in the source XML/);
+  });
+
+  it('skips the attachments section entirely when no article carries any', () => {
+    const { markdown } = ticketToMarkdown(fixtureWithExtras({
+      articles: [
+        { id: '1', number: '1', senderType: 'customer', body: 'no files here', attachments: [] },
+      ],
+    }));
+    assert.doesNotMatch(markdown, /## Attachments/);
+  });
+
+  it('adds a "Dynamic fields" table that skips empty values', () => {
+    const { markdown } = ticketToMarkdown(fixtureWithExtras());
+    assert.match(markdown, /^## Dynamic fields$/m);
+    assert.match(markdown, /ModuleD365/);
+    assert.match(markdown, /Finance/);
+    assert.match(markdown, /Severity/);
+    assert.doesNotMatch(markdown, /EmptyField/);    // empty value filtered out
+  });
+
+  it('article-trace section lists per-article attachment filenames', () => {
+    const { markdown } = ticketToMarkdown(fixtureWithExtras());
+    // The label is wrapped in italics (`_..._`) so the literal output is
+    // `_Attachments on this article:_ screen.png, log.docx`.
+    assert.match(markdown, /Attachments on this article:_?\s+screen\.png,\s*log\.docx/);
+  });
+});

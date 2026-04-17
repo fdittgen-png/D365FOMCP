@@ -112,8 +112,10 @@ describe('ticketsToXml — round trip', () => {
     const articles = Array.isArray(ticket.Articles.Article) ? ticket.Articles.Article : [ticket.Articles.Article];
     assert.equal(articles.length, 2);
     assert.equal(articles[0]['@_sender'], 'customer');
-    assert.equal(articles[0].__cdata, t.articles[0].body);
+    // The body is now wrapped in its own <Body><![CDATA[...]]></Body> child
+    // so the richer schema can also carry attachments/contentType etc.
+    assert.equal(articles[0].Body.__cdata, t.articles[0].body);
     assert.equal(articles[1]['@_sender'], 'agent');
-    assert.equal(articles[1].__cdata, t.articles[1].body);
+    assert.equal(articles[1].Body.__cdata, t.articles[1].body);
   });
 });

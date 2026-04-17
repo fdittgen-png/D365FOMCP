@@ -22,9 +22,9 @@
  */
 
 import { app } from '@azure/functions';
-import { readOtrsConfig, OtrsRequestError } from '../azure/otrs-client.js';
+import { readOtrsConfig, OtrsRequestError, getTicket } from '../azure/otrs-client.js';
 import { readState, writeState } from '../azure/otrs-storage.js';
-import { runExtract } from '../azure/otrs-extract-core.js';
+import { runExtract, toExtractedTicket } from '../azure/otrs-extract-core.js';
 import { ticketsToXml } from '../azure/otrs-xml.js';
 import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { createWikiStore } from '../azure/wiki-storage.js';
@@ -116,6 +116,20 @@ const PAGE_HTML = `<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>Step 1a — Export a single ticket (with full content)</h2>
+    <p class="hint">Calls TicketGet directly for one ticket ID and returns the complete content — every article, every attachment as base64 (inline images, Word docs, PDFs), dynamic fields, and full OTRS metadata. Use this to validate the XML schema on one real ticket before running a batch.</p>
+    <form id="singleForm">
+      <div class="row">
+        <label>Ticket ID <input type="text" name="ticketId" id="ticketIdInput" placeholder="e.g. 1717381" pattern="[0-9]+" required></label>
+        <label class="choice"><input type="checkbox" name="attachments" checked> include attachments (base64)</label>
+        <label class="choice"><input type="checkbox" name="dynamicFields" checked> include dynamic fields</label>
+        <button type="submit" class="btn btn-blue" id="singleBtn">Download single-ticket XML</button>
+      </div>
+    </form>
+    <div id="singleResult" class="result" data-id="singleResult"></div>
+  </div>
+
+  <div class="card">
     <h2>Step 1 — Download extract from OTRS</h2>
     <p class="hint">Pulls resolved tickets from OTRS and returns the OtrsExtract XML as a file download. Choose the mode carefully: <code>full</code> re-pulls everything, <code>incremental</code> pulls only tickets not previously marked as extracted, <code>preview</code> is the same filter as incremental but does not write the state blob.</p>
     <form id="extractForm">
@@ -153,6 +167,10 @@ const PAGE_HTML = `<!DOCTYPE html>
   </div>
 
   <script>
+    const singleForm = document.getElementById('singleForm');
+    const singleBtn = document.getElementById('singleBtn');
+    const singleResult = document.getElementById('singleResult');
+    const ticketIdInput = document.getElementById('ticketIdInput');
     const extractForm = document.getElementById('extractForm');
     const extractBtn = document.getElementById('extractBtn');
     const extractResult = document.getElementById('extractResult');
@@ -216,6 +234,60 @@ const PAGE_HTML = `<!DOCTYPE html>
         });
       });
     }
+
+    // ── Single-ticket export ─────────────────────────────────────────────
+    singleForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const ticketId = ticketIdInput.value.trim();
+      if (!ticketId) return;
+
+      singleBtn.disabled = true;
+      singleBtn.innerHTML = '<span class="spinner"></span> Fetching...';
+      setResult(singleResult, 'info', 'Calling TicketGet for ticket ' + ticketId + ' — base64 content can take a moment on tickets with large attachments.');
+
+      try {
+        const fd = new FormData(singleForm);
+        const body = {
+          ticketId,
+          attachments: fd.has('attachments'),
+          dynamicFields: fd.has('dynamicFields'),
+        };
+        const resp = await fetch('/api/otrs-admin/extract-single', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
+          renderError(singleResult, 'extract', errData);
+          return;
+        }
+        const blob = await resp.blob();
+        const filename = (resp.headers.get('content-disposition') || '').match(/filename="?([^";]+)/)?.[1]
+          || ('otrs-ticket-' + ticketId + '.xml');
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+        URL.revokeObjectURL(url); a.remove();
+
+        const articles = resp.headers.get('x-otrs-articles') ?? '?';
+        const atts = resp.headers.get('x-otrs-attachments') ?? '?';
+        const bytes = resp.headers.get('x-otrs-xml-bytes') ?? '?';
+        setResult(singleResult, 'success',
+          '<strong>Downloaded.</strong> Ticket ' + ticketId + ' — '
+          + articles + ' article(s), ' + atts + ' attachment(s), '
+          + bytes + ' bytes of XML. File: <code>' + filename + '</code>');
+      } catch (err) {
+        renderError(singleResult, 'extract', {
+          error: err.message || String(err),
+          category: 'browser-network',
+          timestamp: new Date().toISOString(),
+        });
+      } finally {
+        singleBtn.disabled = false;
+        singleBtn.textContent = 'Download single-ticket XML';
+      }
+    });
 
     // ── Extract → XML download ───────────────────────────────────────────
     extractForm.addEventListener('submit', async (e) => {
@@ -433,6 +505,61 @@ app.http('otrs-admin-extract', {
     } catch (err) {
       context.error('otrs-admin-extract error:', err);
       return structuredErrorResponse(err, 'extract');
+    }
+  },
+});
+
+app.http('otrs-admin-extract-single', {
+  methods: ['POST'],
+  route: 'otrs-admin/extract-single',
+  authLevel: 'anonymous',
+  handler: async (request, context) => {
+    try {
+      let body = {};
+      try { body = await request.json(); } catch { /* empty body handled below */ }
+      const ticketId = String(body.ticketId || '').trim();
+      if (!/^\d+$/.test(ticketId)) {
+        return { status: 400, jsonBody: { error: 'ticketId is required and must be numeric.' } };
+      }
+      const attachments = body.attachments !== false;
+      const dynamicFields = body.dynamicFields !== false;
+
+      let cfg;
+      try {
+        cfg = readOtrsConfig();
+      } catch (err) {
+        return { status: 500, jsonBody: { error: err.message, hint: 'Set OTRS_* app settings on the Function App.' } };
+      }
+
+      // Single-ticket path: skip TicketSearch, go straight to TicketGet
+      // with full-content flags. No state-blob update — this is an ad-hoc
+      // operator action, not a scheduled pipeline step.
+      const raw = await getTicket(ticketId, { cfg, attachments, dynamicFields });
+      const extracted = toExtractedTicket(ticketId, raw);
+      const xml = ticketsToXml([extracted], { mode: 'single' });
+
+      const articleCount = extracted.articles?.length || 0;
+      const attachmentCount = (extracted.articles || [])
+        .reduce((n, a) => n + (a.attachments?.length || 0), 0);
+
+      const date = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
+      const filename = `otrs-ticket-${ticketId}-${date}.xml`;
+
+      return {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'X-OTRS-TicketID':    ticketId,
+          'X-OTRS-Articles':    String(articleCount),
+          'X-OTRS-Attachments': String(attachmentCount),
+          'X-OTRS-XML-Bytes':   String(Buffer.byteLength(xml, 'utf8')),
+        },
+        body: xml,
+      };
+    } catch (err) {
+      context.error('otrs-admin-extract-single error:', err);
+      return structuredErrorResponse(err, 'extract-single');
     }
   },
 });

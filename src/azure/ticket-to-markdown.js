@@ -66,6 +66,48 @@ export function ticketToMarkdown(ticket, { includeArticles = true } = {}) {
     lines.push('');
   }
 
+  // Aggregated attachment table — filename / type / size / disposition /
+  // where it appears. Base64 content is intentionally NOT inlined; the
+  // wiki page would balloon for any ticket with a screenshot. The XML
+  // export remains the source-of-truth for raw bytes.
+  const allAttachments = [];
+  for (const a of (ticket.articles || [])) {
+    for (const att of (a.attachments || [])) {
+      allAttachments.push({ ...att, articleId: a.id, articleNumber: a.number });
+    }
+  }
+  if (allAttachments.length > 0) {
+    lines.push(`## Attachments (${allAttachments.length})`);
+    lines.push('');
+    lines.push('| # | Filename | Type | Size | Disposition | Article |');
+    lines.push('| --- | --- | --- | --- | --- | --- |');
+    for (const att of allAttachments) {
+      lines.push(
+        `| ${att.id || ''} | ${mdEscape(att.filename)} | ${mdEscape(att.contentType)} | `
+        + `${humanSize(att.filesizeBytes)} | ${mdEscape(att.disposition)} | `
+        + `${att.articleNumber ? '#' + att.articleNumber : att.articleId || ''} |`,
+      );
+    }
+    lines.push('');
+    lines.push(
+      '> _Raw bytes are preserved in the source XML (`<Attachment><Content encoding="base64">…`), '
+      + 'not embedded here to keep the wiki page lean._',
+    );
+    lines.push('');
+  }
+
+  if (Array.isArray(ticket.dynamicFields) && ticket.dynamicFields.length > 0) {
+    lines.push('## Dynamic fields');
+    lines.push('');
+    lines.push('| Name | Value |');
+    lines.push('| --- | --- |');
+    for (const f of ticket.dynamicFields) {
+      if (!f.value) continue;
+      lines.push(`| ${mdEscape(f.name)} | ${mdEscape(f.value)} |`);
+    }
+    lines.push('');
+  }
+
   if (includeArticles && Array.isArray(ticket.articles) && ticket.articles.length > 0) {
     lines.push('## Full article trace');
     lines.push('');
@@ -74,13 +116,33 @@ export function ticketToMarkdown(ticket, { includeArticles = true } = {}) {
       const when = a.createdAt ? ` · ${a.createdAt}` : '';
       const from = a.from ? ` · ${a.from}` : '';
       lines.push(`### ${who}${from}${when}`);
+      if (a.subject) lines.push(`_Subject:_ ${a.subject}`);
+      if (a.contentType && a.contentType !== 'text/plain') {
+        lines.push(`_Content-Type:_ ${a.contentType}`);
+      }
       lines.push('');
       lines.push((a.body || '').trim());
       lines.push('');
+      const atts = a.attachments || [];
+      if (atts.length > 0) {
+        lines.push(`_Attachments on this article:_ ${atts.map(x => x.filename || '(unnamed)').join(', ')}`);
+        lines.push('');
+      }
     }
   }
 
   return { slug, markdown: lines.join('\n'), frontmatter };
+}
+
+function humanSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function mdEscape(s) {
+  return String(s ?? '').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
 
 /**

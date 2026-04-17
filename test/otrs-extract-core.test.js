@@ -7,7 +7,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runExtract } from '../src/azure/otrs-extract-core.js';
+import { runExtract, toExtractedTicket } from '../src/azure/otrs-extract-core.js';
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -164,5 +164,116 @@ describe('runExtract — limit', () => {
     });
     assert.equal(result.candidateIds.length, 2);
     assert.equal(result.extracted.length, 2);
+  });
+});
+
+// ── toExtractedTicket direct mapping (single-ticket path) ────────────────────
+
+describe('toExtractedTicket — single-ticket full mapping', () => {
+  it('maps every ticket / article / attachment field without needing a validation result', () => {
+    const raw = {
+      TicketID: 1717381,
+      TicketNumber: '2026040200004375',
+      Title: 'Software not installing',
+      Queue: 'GroupIT::L1', QueueID: 42,
+      Service: 'My workplace - General IT Issue', ServiceID: 17,
+      State: 'closed successful', StateID: 2,
+      Priority: '3 normal', PriorityID: 3,
+      Type: 'Incident',
+      Owner: 'notassigned', Responsible: '',
+      CustomerUserID: 'marco@trelleborg.com', CustomerID: 'TRE',
+      SLA: '', Age: 97,
+      Created: '2026-04-02 11:41:09',
+      Changed: '2026-04-02 11:41:16',
+      Closed: '2026-04-02 11:41:16',
+      DynamicField: [
+        { Name: 'ModuleD365', Value: 'Finance' },
+        { Name: 'Severity',   Value: null }, // null → mapped to empty string
+      ],
+      Article: [
+        {
+          ArticleID: 7765810, ArticleNumber: 1,
+          SenderType: 'customer', SenderTypeID: 3,
+          From: '"Marco" <marco@x>', To: 'GroupIT::L1', Cc: '', Bcc: '',
+          Subject: 'Install fails',
+          MessageID: '<abc@x>', References: '', InReplyTo: '',
+          CommunicationChannel: 'Internal', CommunicationChannelID: 3,
+          IsVisibleForCustomer: 1,
+          ContentType: 'text/html; charset=utf-8',
+          MimeType: 'text/html', Charset: 'utf-8',
+          CreateTime: '2026-04-02 11:41:09', ChangeTime: '2026-04-02 11:41:09',
+          Body: '<p>screenshot here</p>',
+          Attachment: [
+            {
+              Filename: 'shot.png', ContentType: 'image/png',
+              ContentID: '<part1@x>', Disposition: 'inline',
+              FilesizeRaw: 2048, Filesize: '2 KB',
+              Content: 'AAAA', // tiny base64 smoke-test
+            },
+          ],
+        },
+        {
+          ArticleID: 7765811, ArticleNumber: 2,
+          SenderType: 'agent', SenderTypeID: 1,
+          From: 'agent@x', Subject: 'Re: Install fails',
+          CreateTime: '2026-04-02 14:00:00',
+          Body: 'Re-image the device. Steps: 1. boot USB. 2. install image.',
+        },
+      ],
+    };
+    const t = toExtractedTicket('1717381', raw);
+
+    // Ticket-level fields
+    assert.equal(t.ticketId, '1717381');
+    assert.equal(t.ticketNumber, '2026040200004375');
+    assert.equal(t.state, 'closed successful');
+    assert.equal(t.stateId, '2');
+    assert.equal(t.serviceId, '17');
+    assert.equal(t.customerUserId, 'marco@trelleborg.com');
+    assert.equal(t.age, '97');
+
+    // description + resolution derived from articles
+    assert.match(t.description, /screenshot here/);   // customer body
+    assert.match(t.resolution, /Re-image/);            // agent body
+
+    // Dynamic fields
+    assert.equal(t.dynamicFields.length, 2);
+    assert.equal(t.dynamicFields[0].name, 'ModuleD365');
+    assert.equal(t.dynamicFields[0].value, 'Finance');
+    assert.equal(t.dynamicFields[1].value, '');  // null normalized
+
+    // Articles + attachments
+    assert.equal(t.articles.length, 2);
+    assert.equal(t.articles[0].contentType, 'text/html; charset=utf-8');
+    assert.equal(t.articles[0].messageId, '<abc@x>');
+    assert.equal(t.articles[0].attachments.length, 1);
+    assert.equal(t.articles[0].attachments[0].filename, 'shot.png');
+    assert.equal(t.articles[0].attachments[0].disposition, 'inline');
+    assert.equal(t.articles[0].attachments[0].filesizeBytes, 2048);
+    assert.equal(t.articles[0].attachments[0].content, 'AAAA');
+    assert.equal(t.articles[1].attachments.length, 0);
+  });
+
+  it('gracefully handles a minimal ticket with no articles / attachments / dynamic fields', () => {
+    const raw = { TicketID: 1, Title: 't' };
+    const t = toExtractedTicket('1', raw);
+    assert.equal(t.articles.length, 0);
+    assert.equal(t.dynamicFields.length, 0);
+    assert.equal(t.description, '');
+    assert.equal(t.resolution, '');
+  });
+
+  it('honors an explicit validation result when provided (batch-extract path)', () => {
+    const raw = {
+      TicketID: 1,
+      Article: [
+        { SenderType: 'customer', Body: 'raw desc' },
+        { SenderType: 'agent', Body: 'raw resolution' },
+      ],
+    };
+    const v = { description: 'validator-supplied desc', resolution: 'validator-supplied resolution' };
+    const t = toExtractedTicket('1', raw, v);
+    assert.equal(t.description, 'validator-supplied desc');
+    assert.equal(t.resolution, 'validator-supplied resolution');
   });
 });

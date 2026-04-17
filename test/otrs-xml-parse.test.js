@@ -121,3 +121,152 @@ describe('parseExtractXml — round-trip', () => {
     assert.deepEqual(parsed.tickets[0].articles, []);
   });
 });
+
+// ── Full-shape round-trip — attachments, dynamic fields, rich metadata ──────
+
+describe('parseExtractXml — full schema round-trip', () => {
+  // Binary PNG header (first 16 bytes), base64-encoded — proves non-ASCII
+  // bytes survive through CDATA unchanged.
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  // DOCX starts with 'PK'; plausible prefix chosen for size + byte-diversity.
+  const docxBase64 = 'UEsDBBQABgAIAAAAIQBi7p5oaQEAAIMFAAATAAgCW0NvbnRlbnRfVHlwZXNdLnhtbCCi';
+
+  function richFixture() {
+    return {
+      ticketId: '1717381',
+      ticketNumber: '2026040200004375',
+      title: 'Software not installing on new laptop',
+      queue: 'GroupIT::L1', queueId: '42',
+      service: 'My workplace - General IT Issue', serviceId: '17',
+      state: 'closed successful', stateId: '2',
+      priority: '3 normal', priorityId: '3',
+      type: 'Incident',
+      owner: 'notassigned@trelleborg', responsible: '',
+      customerUserId: 'marco.goedde@trelleborg.com', customerId: 'TRE',
+      sla: '', age: '97',
+      createdAt: '2026-04-02 11:41:09',
+      changedAt: '2026-04-02 11:41:16',
+      closedAt: '2026-04-02 11:41:16',
+      description: 'Software not installing on new laptop',
+      resolution: 'Re-imaged the laptop, software installs cleanly.',
+      dynamicFields: [
+        { name: 'ModuleD365', value: 'Finance' },
+        { name: 'Severity',   value: 'Low' },
+      ],
+      articles: [
+        {
+          id: '7765810', number: '1', senderType: 'customer', senderTypeId: '3',
+          from: '"Marco Goedde" <marco.goedde@trelleborg.com>',
+          to: 'GroupIT::L1', cc: '', bcc: '',
+          subject: 'Software not installing on new laptop',
+          messageId: '<abc@trelleborg>', references: '', inReplyTo: '',
+          communicationChannel: 'Internal', communicationChannelId: '3',
+          isVisibleForCustomer: '1',
+          contentType: 'text/html; charset=utf-8',
+          mimeType: 'text/html', charset: 'utf-8',
+          createdAt: '2026-04-02 11:41:09', changedAt: '2026-04-02 11:41:09',
+          body: '<p>When I install <img src="cid:part1.12345@..."/> I see an error.</p>',
+          attachments: [
+            {
+              id: '1', filename: 'screenshot.png',
+              contentType: 'image/png', contentAlternative: '',
+              contentId: '<part1.12345@trelleborg.com>',
+              disposition: 'inline', filesizeBytes: 68,
+              content: pngBase64,
+            },
+            {
+              id: '2', filename: 'error-log.docx',
+              contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+              contentAlternative: '', contentId: '',
+              disposition: 'attachment', filesizeBytes: 2048,
+              content: docxBase64,
+            },
+          ],
+        },
+        {
+          id: '7765811', number: '2', senderType: 'agent', senderTypeId: '1',
+          from: 'agent@trelleborg.com', to: 'marco.goedde@trelleborg.com',
+          cc: '', bcc: '', subject: 'Re: Software not installing',
+          messageId: '<def@trelleborg>', references: '<abc@trelleborg>',
+          inReplyTo: '<abc@trelleborg>',
+          communicationChannel: 'Email', communicationChannelId: '1',
+          isVisibleForCustomer: '1',
+          contentType: 'text/plain; charset=utf-8',
+          mimeType: 'text/plain', charset: 'utf-8',
+          createdAt: '2026-04-02 14:00:00', changedAt: '2026-04-02 14:00:00',
+          body: 'Re-image the laptop using the IT Services image.',
+          attachments: [],
+        },
+      ],
+    };
+  }
+
+  it('round-trips every ticket / article / attachment field byte-identically', () => {
+    const original = richFixture();
+    const xml = ticketsToXml([original], { mode: 'single', generatedAt: GENERATED_AT });
+    const parsed = parseExtractXml(xml);
+
+    assert.equal(parsed.count, 1);
+    assert.equal(parsed.mode, 'single');
+    const t = parsed.tickets[0];
+
+    // Ticket-level attributes
+    assert.equal(t.state, 'closed successful');
+    assert.equal(t.stateId, '2');
+    assert.equal(t.serviceId, '17');
+    assert.equal(t.queueId, '42');
+    assert.equal(t.customerUserId, 'marco.goedde@trelleborg.com');
+    assert.equal(t.customerId, 'TRE');
+    assert.equal(t.age, '97');
+    assert.equal(t.type, 'Incident');
+
+    // Dynamic fields
+    assert.equal(t.dynamicFields.length, 2);
+    assert.deepEqual(
+      t.dynamicFields.slice().sort((a, b) => a.name.localeCompare(b.name)),
+      [{ name: 'ModuleD365', value: 'Finance' }, { name: 'Severity', value: 'Low' }],
+    );
+
+    // Articles
+    assert.equal(t.articles.length, 2);
+    const [a0, a1] = t.articles;
+    assert.equal(a0.id, '7765810');
+    assert.equal(a0.subject, 'Software not installing on new laptop');
+    assert.equal(a0.contentType, 'text/html; charset=utf-8');
+    assert.equal(a0.communicationChannel, 'Internal');
+    assert.equal(a0.messageId, '<abc@trelleborg>');
+    assert.equal(a0.body, original.articles[0].body);   // HTML preserved verbatim
+    assert.equal(a1.inReplyTo, '<abc@trelleborg>');
+    assert.equal(a1.attachments.length, 0);
+
+    // Attachments
+    assert.equal(a0.attachments.length, 2);
+    const [att0, att1] = a0.attachments;
+    assert.equal(att0.filename, 'screenshot.png');
+    assert.equal(att0.contentType, 'image/png');
+    assert.equal(att0.disposition, 'inline');
+    assert.equal(att0.contentId, '<part1.12345@trelleborg.com>');
+    assert.equal(att0.filesizeBytes, 68);
+    assert.equal(att0.content, pngBase64);
+    assert.equal(att1.filename, 'error-log.docx');
+    assert.match(att1.contentType, /wordprocessingml/);
+    assert.equal(att1.disposition, 'attachment');
+    assert.equal(att1.content, docxBase64);
+
+    // Buffer decoded from the round-tripped base64 must equal the original
+    // bytes — guarantees we haven't injected whitespace.
+    assert.equal(
+      Buffer.compare(Buffer.from(att0.content, 'base64'), Buffer.from(pngBase64, 'base64')),
+      0,
+      'screenshot.png binary bytes differ after round-trip',
+    );
+  });
+
+  it('preserves `]]>` in article bodies even when the article carries attachments', () => {
+    const t = richFixture();
+    t.articles[0].body = 'see logs: foo]]>bar — should survive';
+    const xml = ticketsToXml([t], { mode: 'single', generatedAt: GENERATED_AT });
+    const parsed = parseExtractXml(xml);
+    assert.equal(parsed.tickets[0].articles[0].body, 'see logs: foo]]>bar — should survive');
+  });
+});

@@ -16,24 +16,22 @@
  * human-readable error listing every missing one.
  */
 export function readOtrsConfig(env = process.env) {
-  const serviceIdRaw = env.OTRS_SERVICE_ID;
-  const serviceId = Number.parseInt(serviceIdRaw, 10);
   const cfg = {
     username:  env.OTRS_USERNAME,
     password:  env.OTRS_PASSWORD,
     searchUrl: env.OTRS_SEARCH_URL,
     getUrl:    env.OTRS_GET_URL,
-    // OTRS TicketSearch expects the numeric Service **ID**, not the
-    // human-readable service name. Przemysław's original integration email
-    // showed a `Services: "TIS - Digital Solutions Support::ERP::D365"`
-    // payload that OTRS actually rejects with a generic "Authorization
-    // failing" error; the real API uses `ServiceID: 798`. Keep this as an
-    // integer so the JSON serializer emits a number literal.
-    serviceId: Number.isInteger(serviceId) && serviceId > 0 ? serviceId : null,
+    // Per Przemysław's documented OTRS integration: TicketSearch takes
+    // the human-readable service **name** as `Services` (string) and the
+    // state name as `States` (string). A Postman variant using
+    // `ServiceID: 798` + `State: ...` also returns the same ticket set,
+    // but the documented string form is authoritative and keeps the
+    // config human-readable.
+    service:   env.OTRS_SERVICE,
     state:     env.OTRS_STATE || 'closed successful',
     minResolutionChars: Number.parseInt(env.OTRS_MIN_RESOLUTION_CHARS || '200', 10) || 200,
   };
-  const required = ['username', 'password', 'searchUrl', 'getUrl', 'serviceId'];
+  const required = ['username', 'password', 'searchUrl', 'getUrl', 'service'];
   const missing = required.filter(k => !cfg[k]);
   if (missing.length) {
     throw new Error(`Missing OTRS config: ${missing.map(k => envNameFor(k)).join(', ')}`);
@@ -46,7 +44,7 @@ const ENV_NAMES = {
   password: 'OTRS_PASSWORD',
   searchUrl: 'OTRS_SEARCH_URL',
   getUrl: 'OTRS_GET_URL',
-  serviceId: 'OTRS_SERVICE_ID',
+  service: 'OTRS_SERVICE',
 };
 function envNameFor(key) { return ENV_NAMES[key] || key; }
 
@@ -210,17 +208,16 @@ async function otrsPost(url, body, fetchFn, phase) {
  */
 export async function searchTickets({ fetch = globalThis.fetch, cfg = null } = {}) {
   const c = cfg || readOtrsConfig();
-  // Field names match the Postman-validated OTRS API:
-  //   ServiceID: integer    (the DB id of the Services::::Subservice row)
-  //   State:     string     (singular — OTRS rejects the plural form)
-  // Sending the wrong names produces a generic "Authorization failing"
-  // response, NOT a parameter-validation error. Do not change without a
-  // round-trip through Postman first.
+  // Field names follow Przemysław's documented OTRS integration:
+  //   Services: string    (service name, e.g. "TIS - …::ERP::D365")
+  //   States:   string    (state name, e.g. "closed successful")
+  // The plural forms are correct for OTRS generic-interface operations —
+  // don't drop the 's' thinking it's a typo.
   const body = {
     UserLogin: c.username,
     Password:  c.password,
-    ServiceID: c.serviceId,
-    State:     c.state,
+    Services:  c.service,
+    States:    c.state,
   };
   const data = await otrsPost(c.searchUrl, body, fetch, 'TicketSearch');
   const raw = data?.TicketID;
@@ -230,16 +227,30 @@ export async function searchTickets({ fetch = globalThis.fetch, cfg = null } = {
 }
 
 /**
- * POST /TicketGet for a single ticket id with AllArticles=1.
- * Returns the first (and only) ticket object from the response.
+ * POST /TicketGet for a single ticket id. By default requests the full
+ * content envelope (all articles, attachments including binary bodies,
+ * dynamic fields) — this is what the wiki needs to preserve resolved
+ * cases faithfully, including inline screenshots and attached Word
+ * documents.
+ *
+ * Set `attachments: false` when you only need article metadata (e.g.
+ * during a quick validation pass) — OTRS then skips the base64 payload
+ * and responses shrink from megabytes to kilobytes.
  */
-export async function getTicket(ticketId, { fetch = globalThis.fetch, cfg = null } = {}) {
+export async function getTicket(ticketId, {
+  fetch = globalThis.fetch,
+  cfg = null,
+  attachments = true,
+  dynamicFields = true,
+} = {}) {
   const c = cfg || readOtrsConfig();
   const body = {
     UserLogin:   c.username,
     Password:    c.password,
     TicketID:    String(ticketId),
     AllArticles: 1,
+    Attachments: attachments ? 1 : 0,
+    DynamicFields: dynamicFields ? 1 : 0,
   };
   const data = await otrsPost(c.getUrl, body, fetch, 'TicketGet');
   const t = data?.Ticket;

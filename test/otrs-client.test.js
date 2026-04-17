@@ -48,7 +48,7 @@ const CFG_OK = {
   password: 'secret',
   searchUrl: 'https://otrs.example/TicketSearch',
   getUrl:    'https://otrs.example/TicketGet',
-  serviceId: 798,
+  service:   'TIS - Digital Solutions Support::ERP::D365',
   state:     'closed successful',
   minResolutionChars: 200,
 };
@@ -60,19 +60,19 @@ describe('readOtrsConfig', () => {
     const cfg = readOtrsConfig({
       OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
       OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
-      OTRS_SERVICE_ID: '798',
+      OTRS_SERVICE: 'svc',
     });
     assert.equal(cfg.username, 'u');
-    assert.equal(cfg.serviceId, 798);              // coerced to integer
-    assert.equal(cfg.state, 'closed successful');  // default
-    assert.equal(cfg.minResolutionChars, 200);     // default
+    assert.equal(cfg.service, 'svc');
+    assert.equal(cfg.state, 'closed successful'); // default
+    assert.equal(cfg.minResolutionChars, 200);    // default
   });
 
   it('honors OTRS_STATE and OTRS_MIN_RESOLUTION_CHARS overrides', () => {
     const cfg = readOtrsConfig({
       OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
       OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
-      OTRS_SERVICE_ID: '42',
+      OTRS_SERVICE: 'svc',
       OTRS_STATE: 'closed with workaround',
       OTRS_MIN_RESOLUTION_CHARS: '500',
     });
@@ -83,29 +83,7 @@ describe('readOtrsConfig', () => {
   it('throws a single error listing every missing required field', () => {
     assert.throws(
       () => readOtrsConfig({}),
-      /OTRS_USERNAME.*OTRS_PASSWORD.*OTRS_SEARCH_URL.*OTRS_GET_URL.*OTRS_SERVICE_ID/,
-    );
-  });
-
-  it('rejects a non-numeric OTRS_SERVICE_ID by treating it as missing', () => {
-    assert.throws(
-      () => readOtrsConfig({
-        OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
-        OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
-        OTRS_SERVICE_ID: 'TIS - not a number',
-      }),
-      /OTRS_SERVICE_ID/,
-    );
-  });
-
-  it('rejects zero / negative OTRS_SERVICE_ID (positive integer required)', () => {
-    assert.throws(
-      () => readOtrsConfig({
-        OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
-        OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
-        OTRS_SERVICE_ID: '0',
-      }),
-      /OTRS_SERVICE_ID/,
+      /OTRS_USERNAME.*OTRS_PASSWORD.*OTRS_SEARCH_URL.*OTRS_GET_URL.*OTRS_SERVICE/,
     );
   });
 });
@@ -113,14 +91,12 @@ describe('readOtrsConfig', () => {
 // ── searchTickets ────────────────────────────────────────────────────────────
 
 describe('searchTickets', () => {
-  it('POSTs the configured payload and returns string IDs', async () => {
+  it('POSTs the configured payload with Services/States plural strings and returns string IDs', async () => {
     let captured = null;
-    let capturedRaw = null;
     const fetch = routedFetch([{
       prefix: CFG_OK.searchUrl,
-      respond: (body, raw) => {
+      respond: (body) => {
         captured = body;
-        capturedRaw = raw;
         return mockResp({ TicketID: [1721474, 1720411, 1720242] });
       },
     }]);
@@ -128,13 +104,9 @@ describe('searchTickets', () => {
     assert.deepEqual(captured, {
       UserLogin: 'wstis',
       Password: 'secret',
-      ServiceID: 798,
-      State: 'closed successful',
+      Services: 'TIS - Digital Solutions Support::ERP::D365',
+      States: 'closed successful',
     });
-    // ServiceID must be serialized as a JSON number literal, not a string —
-    // OTRS rejects stringified integers for this field with a generic
-    // "Authorization failing" error.
-    assert.match(capturedRaw, /"ServiceID":\s*798[^"]/);
     assert.deepEqual(ids, ['1721474', '1720411', '1720242']);
   });
 
@@ -197,7 +169,8 @@ describe('OtrsRequestError — structured context on failure', () => {
     // Password must never leak through the error surface.
     assert.equal(err.requestBodyRedacted.Password, '***');
     assert.equal(err.requestBodyRedacted.UserLogin, 'wstis');
-    assert.equal(err.requestBodyRedacted.ServiceID, 798);
+    assert.equal(err.requestBodyRedacted.Services, CFG_OK.service);
+    assert.equal(err.requestBodyRedacted.States, CFG_OK.state);
   });
 
   it('on HTTP error, carries httpStatus, httpStatusText, responseBody (truncated)', async () => {
@@ -259,7 +232,7 @@ describe('OtrsRequestError — structured context on failure', () => {
 });
 
 describe('getTicket', () => {
-  it('POSTs TicketID + AllArticles=1 and returns first ticket', async () => {
+  it('POSTs TicketID + AllArticles + Attachments + DynamicFields and returns first ticket', async () => {
     let captured = null;
     const fetch = routedFetch([{
       prefix: CFG_OK.getUrl,
@@ -271,7 +244,23 @@ describe('getTicket', () => {
     const t = await getTicket('123', { fetch, cfg: CFG_OK });
     assert.equal(captured.TicketID, '123');
     assert.equal(captured.AllArticles, 1);
+    assert.equal(captured.Attachments, 1);     // default ON for full-content extract
+    assert.equal(captured.DynamicFields, 1);   // default ON
     assert.equal(t.Title, 'hi');
+  });
+
+  it('skips attachments + dynamic fields when the caller opts out', async () => {
+    let captured = null;
+    const fetch = routedFetch([{
+      prefix: CFG_OK.getUrl,
+      respond: (body) => {
+        captured = body;
+        return mockResp({ Ticket: [{ TicketID: '1', Title: 't' }] });
+      },
+    }]);
+    await getTicket('1', { fetch, cfg: CFG_OK, attachments: false, dynamicFields: false });
+    assert.equal(captured.Attachments, 0);
+    assert.equal(captured.DynamicFields, 0);
   });
 
   it('unwraps a single-object Ticket payload', async () => {
