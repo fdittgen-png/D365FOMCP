@@ -15,6 +15,7 @@ import {
   searchTickets,
   getTicket,
   validateTicket,
+  OtrsRequestError,
 } from '../src/azure/otrs-client.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -165,6 +166,97 @@ describe('searchTickets', () => {
 });
 
 // ── getTicket ────────────────────────────────────────────────────────────────
+
+// ── OtrsRequestError structured fields ───────────────────────────────────────
+
+describe('OtrsRequestError — structured context on failure', () => {
+  async function captureError(fn) {
+    try { await fn(); }
+    catch (e) { return e; }
+    throw new Error('expected function to throw');
+  }
+
+  it('on OTRS in-band error (auth fail style), carries phase, url, otrsErrorCode, redacted password, and elapsed', async () => {
+    const fetch = routedFetch([{
+      prefix: CFG_OK.searchUrl,
+      respond: () => mockResp({ Error: { ErrorCode: 'TicketSearch.AuthFail', ErrorMessage: 'TicketSearch: Authorization failing!' } }),
+    }]);
+    const err = await captureError(() => searchTickets({ fetch, cfg: CFG_OK }));
+
+    assert.ok(err instanceof OtrsRequestError);
+    assert.equal(err.category, 'otrs-error');
+    assert.equal(err.phase, 'TicketSearch');
+    assert.equal(err.url, CFG_OK.searchUrl);
+    assert.equal(err.httpStatus, 200);
+    assert.equal(err.otrsErrorCode, 'TicketSearch.AuthFail');
+    assert.match(err.otrsErrorMessage, /Authorization failing/);
+    assert.ok(typeof err.elapsedMs === 'number' && err.elapsedMs >= 0);
+    assert.ok(typeof err.timestamp === 'string');
+    assert.match(err.responseBody, /AuthFail/);
+
+    // Password must never leak through the error surface.
+    assert.equal(err.requestBodyRedacted.Password, '***');
+    assert.equal(err.requestBodyRedacted.UserLogin, 'wstis');
+    assert.equal(err.requestBodyRedacted.ServiceID, 798);
+  });
+
+  it('on HTTP error, carries httpStatus, httpStatusText, responseBody (truncated)', async () => {
+    const longBody = 'upstream down '.repeat(500);
+    const fetch = routedFetch([{
+      prefix: CFG_OK.searchUrl,
+      respond: () => mockResp(longBody, { status: 502, statusText: 'Bad Gateway' }),
+    }]);
+    const err = await captureError(() => searchTickets({ fetch, cfg: CFG_OK }));
+
+    assert.ok(err instanceof OtrsRequestError);
+    assert.equal(err.category, 'http-error');
+    assert.equal(err.httpStatus, 502);
+    assert.equal(err.httpStatusText, 'Bad Gateway');
+    assert.match(err.responseBody, /upstream down/);
+    assert.match(err.responseBody, /truncated/);  // long body got the truncation marker
+  });
+
+  it('on non-JSON response, categorizes as parse-error with the raw body preserved', async () => {
+    const fetch = routedFetch([{
+      prefix: CFG_OK.searchUrl,
+      respond: () => mockResp('<html>oops</html>', { status: 200 }),
+    }]);
+    const err = await captureError(() => searchTickets({ fetch, cfg: CFG_OK }));
+    assert.equal(err.category, 'parse-error');
+    assert.match(err.responseBody, /<html>oops/);
+  });
+
+  it('on fetch rejection (network failure), categorizes as network with cause message', async () => {
+    const fetch = async () => { throw new Error('ECONNREFUSED 127.0.0.1:443'); };
+    const err = await captureError(() => searchTickets({ fetch, cfg: CFG_OK }));
+    assert.equal(err.category, 'network');
+    assert.match(err.message, /ECONNREFUSED/);
+    assert.equal(err.causeMessage, 'ECONNREFUSED 127.0.0.1:443');
+  });
+
+  it('TicketGet errors are tagged with phase=TicketGet', async () => {
+    const fetch = routedFetch([{
+      prefix: CFG_OK.getUrl,
+      respond: () => mockResp({ Error: { ErrorCode: 'TicketGet.PermissionDenied' } }),
+    }]);
+    const err = await captureError(() => getTicket('1234', { fetch, cfg: CFG_OK }));
+    assert.equal(err.phase, 'TicketGet');
+    assert.equal(err.otrsErrorCode, 'TicketGet.PermissionDenied');
+  });
+
+  it('toJSON omits null fields so the response payload stays compact', async () => {
+    const fetch = routedFetch([{
+      prefix: CFG_OK.searchUrl,
+      respond: () => mockResp({ Error: { ErrorCode: 'AuthFail', ErrorMessage: 'nope' } }),
+    }]);
+    const err = await captureError(() => searchTickets({ fetch, cfg: CFG_OK }));
+    const json = err.toJSON();
+    assert.equal(json.name, 'OtrsRequestError');
+    assert.equal(json.otrsErrorCode, 'AuthFail');
+    // No network error → no causeMessage in payload
+    assert.equal('causeMessage' in json, false);
+  });
+});
 
 describe('getTicket', () => {
   it('POSTs TicketID + AllArticles=1 and returns first ticket', async () => {

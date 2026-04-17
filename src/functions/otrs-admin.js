@@ -22,7 +22,7 @@
  */
 
 import { app } from '@azure/functions';
-import { readOtrsConfig } from '../azure/otrs-client.js';
+import { readOtrsConfig, OtrsRequestError } from '../azure/otrs-client.js';
 import { readState, writeState } from '../azure/otrs-storage.js';
 import { runExtract } from '../azure/otrs-extract-core.js';
 import { ticketsToXml } from '../azure/otrs-xml.js';
@@ -78,8 +78,21 @@ const PAGE_HTML = `<!DOCTYPE html>
     .result.info    { display: block; background: #ddf4ff; border: 1px solid #54aeff; color: #0550ae; }
     .result.success { display: block; background: #dafbe1; border: 1px solid #4ac26b; color: #116329; }
     .result.error   { display: block; background: #ffebe9; border: 1px solid #ff8182; color: #82071e; }
+    .result details { margin-top: 12px; }
+    .result summary { cursor: pointer; font-weight: 600; font-size: 13px; color: inherit;
+                      user-select: none; padding: 4px 0; }
+    .result summary:hover { text-decoration: underline; }
+    .kvpair { display: grid; grid-template-columns: 160px 1fr; gap: 4px 14px; font-size: 12px;
+              margin-top: 10px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .kvpair .k { color: #57606a; }
+    .kvpair .v { color: #24292f; word-break: break-all; }
+    .copy-btn { font-size: 12px; padding: 4px 10px; margin-top: 8px; background: #f6f8fa;
+                border: 1px solid #d0d7de; border-radius: 4px; cursor: pointer; color: #24292f; }
+    .copy-btn:hover { background: #eaeef2; }
+    .copy-btn.copied { background: #dafbe1; border-color: #4ac26b; color: #116329; }
     pre { background: #f6f8fa; padding: 12px; border-radius: 4px; overflow-x: auto;
-          font-size: 12px; line-height: 1.5; margin-top: 8px; max-height: 320px; }
+          font-size: 12px; line-height: 1.5; margin-top: 8px; max-height: 320px;
+          color: #24292f; white-space: pre-wrap; word-break: break-all; }
     .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #fff;
                border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -114,7 +127,7 @@ const PAGE_HTML = `<!DOCTYPE html>
         <button type="submit" class="btn btn-blue" id="extractBtn">Download XML</button>
       </div>
     </form>
-    <div id="extractResult" class="result"></div>
+    <div id="extractResult" class="result" data-id="extractResult"></div>
   </div>
 
   <div class="card">
@@ -130,7 +143,7 @@ const PAGE_HTML = `<!DOCTYPE html>
         <button type="submit" class="btn" id="ingestBtn" disabled>Upload &amp; Ingest</button>
       </div>
     </form>
-    <div id="ingestResult" class="result"></div>
+    <div id="ingestResult" class="result" data-id="ingestResult"></div>
   </div>
 
   <div class="footer">
@@ -155,6 +168,55 @@ const PAGE_HTML = `<!DOCTYPE html>
       el.innerHTML = html;
     }
 
+    // Render the rich error block. `data` is the JSON returned by the
+    // server-side proxy on failure — includes category/phase/details for
+    // OtrsRequestError, or category=internal + stack otherwise.
+    function renderError(el, action, data) {
+      const headline = action === 'extract' ? 'Extract failed' : 'Ingest failed';
+      const escape = s => String(s ?? '').replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+      let html = '<strong>' + headline + '.</strong> ' + escape(data.error || 'Unknown error');
+
+      // Top-level tag row (category / phase / http / elapsed) for quick scan.
+      const chips = [];
+      const d = data.details || {};
+      if (data.category) chips.push(['category', data.category]);
+      if (data.phase || d.phase) chips.push(['phase', data.phase || d.phase]);
+      if (d.httpStatus) chips.push(['http', d.httpStatus + ' ' + (d.httpStatusText || '')]);
+      if (d.otrsErrorCode) chips.push(['otrsCode', d.otrsErrorCode]);
+      if (d.elapsedMs != null) chips.push(['elapsed', d.elapsedMs + ' ms']);
+      if (d.url) chips.push(['url', d.url]);
+      if (d.timestamp) chips.push(['ts', d.timestamp]);
+      if (chips.length > 0) {
+        html += '<div class="kvpair">';
+        for (const [k, v] of chips) html += '<div class="k">' + escape(k) + '</div><div class="v">' + escape(v) + '</div>';
+        html += '</div>';
+      }
+
+      // Full raw payload (collapsed by default) plus copy button.
+      const raw = JSON.stringify(data, null, 2);
+      html += '<details><summary>Full technical details (JSON)</summary>';
+      html += '<pre id="' + el.id + '_pre">' + escape(raw) + '</pre>';
+      html += '<button type="button" class="copy-btn" data-target="' + el.id + '_pre">Copy JSON</button>';
+      html += '</details>';
+
+      el.className = 'result error';
+      el.innerHTML = html;
+
+      // Wire up the copy button.
+      const btn = el.querySelector('.copy-btn');
+      if (btn) btn.addEventListener('click', () => {
+        const pre = document.getElementById(btn.dataset.target);
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+          btn.textContent = 'Copied!'; btn.classList.add('copied');
+          setTimeout(() => { btn.textContent = 'Copy JSON'; btn.classList.remove('copied'); }, 1500);
+        }).catch(() => {
+          btn.textContent = 'Copy failed'; setTimeout(() => { btn.textContent = 'Copy JSON'; }, 1500);
+        });
+      });
+    }
+
     // ── Extract → XML download ───────────────────────────────────────────
     extractForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -174,8 +236,13 @@ const PAGE_HTML = `<!DOCTYPE html>
           body: JSON.stringify(body),
         });
         if (!resp.ok) {
-          const err = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status }));
-          throw new Error(err.error || ('HTTP ' + resp.status));
+          // The server returns a structured JSON envelope for both OTRS-
+          // upstream failures (502) and internal failures (500). Surface
+          // the full payload via renderError rather than throwing a flat
+          // string — operators need phase, http, elapsed, url, etc.
+          const errData = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
+          renderError(extractResult, 'extract', errData);
+          return;
         }
         const blob = await resp.blob();
         const filename = (resp.headers.get('content-disposition') || '').match(/filename="?([^";]+)/)?.[1]
@@ -190,7 +257,12 @@ const PAGE_HTML = `<!DOCTYPE html>
         setResult(extractResult, 'success',
           '<strong>Downloaded.</strong> Extracted ' + extracted + ' ticket(s), skipped ' + skipped + '. Filename: <code>' + filename + '</code>');
       } catch (err) {
-        setResult(extractResult, 'error', '<strong>Extract failed.</strong> ' + err.message);
+        // Network-level failure (browser could not reach the Function App).
+        renderError(extractResult, 'extract', {
+          error: err.message || String(err),
+          category: 'browser-network',
+          timestamp: new Date().toISOString(),
+        });
       } finally {
         extractBtn.disabled = false;
         extractBtn.textContent = 'Download XML';
@@ -234,15 +306,22 @@ const PAGE_HTML = `<!DOCTYPE html>
           headers: { 'Content-Type': 'application/xml' },
           body: xml,
         });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+        const data = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
+        if (!resp.ok) {
+          renderError(ingestResult, 'ingest', data);
+          return;
+        }
         setResult(ingestResult, 'success',
           '<strong>Ingest complete.</strong> Wrote ' + data.written + ' page(s), '
           + 'failed ' + data.failed + ', skipped ' + data.total_skipped + '.'
           + '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>');
         setTimeout(() => window.location.reload(), 2500);
       } catch (err) {
-        setResult(ingestResult, 'error', '<strong>Ingest failed.</strong> ' + err.message);
+        renderError(ingestResult, 'ingest', {
+          error: err.message || String(err),
+          category: 'browser-network',
+          timestamp: new Date().toISOString(),
+        });
       } finally {
         ingestBtn.disabled = false;
         ingestBtn.textContent = 'Upload & Ingest';
@@ -353,7 +432,7 @@ app.http('otrs-admin-extract', {
       };
     } catch (err) {
       context.error('otrs-admin-extract error:', err);
-      return { status: 500, jsonBody: { error: err.message } };
+      return structuredErrorResponse(err, 'extract');
     }
   },
 });
@@ -396,13 +475,38 @@ app.http('otrs-admin-ingest', {
       };
     } catch (err) {
       context.error('otrs-admin-ingest error:', err);
-      return {
-        status: 500,
-        jsonBody: { error: err.message, hint: 'Is the XML a valid OtrsExtract envelope?' },
-      };
+      return structuredErrorResponse(err, 'ingest', {
+        hint: 'Is the XML a valid OtrsExtract envelope?',
+      });
     }
   },
 });
+
+/**
+ * Serialize an error — Otrs-specific or generic — into an admin-friendly
+ * JSON response. The browser JS rendering the error banner expects:
+ *   { error, category, phase?, details?: <OtrsRequestError.toJSON>, stack?, hint? }
+ * Responses intentionally use HTTP 502 for upstream OTRS failures (so
+ * the browser can distinguish "we failed to reach OTRS" from "we bugged
+ * out ourselves") and HTTP 500 for internal errors.
+ */
+function structuredErrorResponse(err, action, extra = {}) {
+  const envelope = {
+    error: err.message || 'Unknown error',
+    action,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  };
+  if (err instanceof OtrsRequestError || err?.name === 'OtrsRequestError') {
+    envelope.category = err.category;
+    envelope.phase = err.phase;
+    envelope.details = typeof err.toJSON === 'function' ? err.toJSON() : null;
+    return { status: 502, jsonBody: envelope };
+  }
+  envelope.category = 'internal';
+  envelope.stack = err?.stack || null;
+  return { status: 500, jsonBody: envelope };
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

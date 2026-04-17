@@ -50,24 +50,156 @@ const ENV_NAMES = {
 };
 function envNameFor(key) { return ENV_NAMES[key] || key; }
 
-async function otrsPost(url, body, fetchFn) {
-  const resp = await fetchFn(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    let detail = '';
-    try { detail = await resp.text(); } catch { /* ignore */ }
-    throw new Error(`OTRS request failed: HTTP ${resp.status} ${resp.statusText}${detail ? ` — ${detail.slice(0, 200)}` : ''}`);
+const RESPONSE_BODY_MAX_CHARS = 2000;
+
+/**
+ * Custom error class carrying the full request/response context for an
+ * OTRS API call. Enables the admin UI and App Insights to surface every
+ * detail that matters for debugging (which is almost all of them, since
+ * OTRS returns the same `TicketSearch.AuthFail` string for half-a-dozen
+ * different underlying problems — bad creds, wrong payload shape,
+ * unauthorized service, bad web-service name, etc).
+ *
+ * The `Password` field in `requestBodyRedacted` is replaced with `***`;
+ * everything else is preserved so the operator can compare against a
+ * known-good Postman call.
+ */
+export class OtrsRequestError extends Error {
+  constructor(message, context = {}) {
+    super(message);
+    this.name = 'OtrsRequestError';
+    // Copy every context field onto the instance so `err.phase` etc. work
+    // directly, and toJSON below emits them predictably.
+    this.category          = context.category ?? 'unknown';
+    this.phase             = context.phase ?? 'unknown';
+    this.url               = context.url ?? null;
+    this.httpStatus        = context.httpStatus ?? null;
+    this.httpStatusText    = context.httpStatusText ?? null;
+    this.otrsErrorCode     = context.otrsErrorCode ?? null;
+    this.otrsErrorMessage  = context.otrsErrorMessage ?? null;
+    this.responseBody      = context.responseBody ?? null;
+    this.responseHeaders   = context.responseHeaders ?? null;
+    this.requestBodyRedacted = context.requestBodyRedacted ?? null;
+    this.elapsedMs         = context.elapsedMs ?? null;
+    this.timestamp         = context.timestamp ?? new Date().toISOString();
+    this.causeMessage      = context.cause?.message ?? null;
   }
-  const data = await resp.json();
-  // OTRS reports errors in-band with a 200 + { Error: { ErrorCode, ErrorMessage } }.
+
+  /**
+   * Stable JSON shape for serializing into an HTTP response body. Omits
+   * fields that are null to keep the payload compact in the happy case.
+   */
+  toJSON() {
+    const out = { name: this.name, message: this.message };
+    for (const k of [
+      'category', 'phase', 'url', 'httpStatus', 'httpStatusText',
+      'otrsErrorCode', 'otrsErrorMessage', 'responseBody', 'responseHeaders',
+      'requestBodyRedacted', 'elapsedMs', 'timestamp', 'causeMessage',
+    ]) {
+      if (this[k] !== null && this[k] !== undefined) out[k] = this[k];
+    }
+    return out;
+  }
+}
+
+/** Build a copy of the request body with password replaced by `***`. */
+function redactBody(body) {
+  if (!body || typeof body !== 'object') return body;
+  const out = { ...body };
+  if ('Password' in out && out.Password) out.Password = '***';
+  return out;
+}
+
+/** Capture response headers as a plain object; tolerate fake test responses. */
+function captureHeaders(resp) {
+  try {
+    if (resp.headers?.entries) return Object.fromEntries(resp.headers.entries());
+    if (resp.headers && typeof resp.headers === 'object') return { ...resp.headers };
+  } catch { /* logger unavailable */ }
+  return null;
+}
+
+async function otrsPost(url, body, fetchFn, phase) {
+  const timestamp = new Date().toISOString();
+  const requestBodyRedacted = redactBody(body);
+  const startedAt = Date.now();
+
+  // ── Network phase ──────────────────────────────────────────────────────
+  let resp;
+  try {
+    resp = await fetchFn(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch (cause) {
+    throw new OtrsRequestError(`OTRS ${phase} fetch failed: ${cause.message}`, {
+      category: 'network',
+      phase, url, requestBodyRedacted,
+      elapsedMs: Date.now() - startedAt,
+      timestamp, cause,
+    });
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  const responseHeaders = captureHeaders(resp);
+
+  // ── Read body once (fetch bodies cannot be re-read) ────────────────────
+  let bodyText = '';
+  try { bodyText = await resp.text(); } catch { /* leave empty */ }
+  const truncatedBody = bodyText.length > RESPONSE_BODY_MAX_CHARS
+    ? bodyText.slice(0, RESPONSE_BODY_MAX_CHARS) + `...[truncated ${bodyText.length - RESPONSE_BODY_MAX_CHARS} chars]`
+    : bodyText;
+
+  // ── HTTP-error phase ───────────────────────────────────────────────────
+  if (!resp.ok) {
+    throw new OtrsRequestError(
+      `OTRS ${phase} returned HTTP ${resp.status} ${resp.statusText || ''}`.trim(),
+      {
+        category: 'http-error',
+        phase, url,
+        httpStatus: resp.status,
+        httpStatusText: resp.statusText,
+        responseHeaders, responseBody: truncatedBody,
+        requestBodyRedacted, elapsedMs, timestamp,
+      },
+    );
+  }
+
+  // ── Parse phase ────────────────────────────────────────────────────────
+  let data;
+  try {
+    data = JSON.parse(bodyText);
+  } catch (cause) {
+    throw new OtrsRequestError(`OTRS ${phase} returned non-JSON response`, {
+      category: 'parse-error',
+      phase, url,
+      httpStatus: resp.status,
+      httpStatusText: resp.statusText,
+      responseHeaders, responseBody: truncatedBody,
+      requestBodyRedacted, elapsedMs, timestamp, cause,
+    });
+  }
+
+  // ── In-band OTRS error (HTTP 200 + { Error: {...} }) ───────────────────
   if (data && data.Error) {
     const code = data.Error.ErrorCode || 'unknown';
     const msg  = data.Error.ErrorMessage || '';
-    throw new Error(`OTRS returned error ${code}${msg ? `: ${msg}` : ''}`);
+    throw new OtrsRequestError(
+      `OTRS returned error ${code}${msg ? ': ' + msg : ''}`,
+      {
+        category: 'otrs-error',
+        phase, url,
+        httpStatus: resp.status,
+        httpStatusText: resp.statusText,
+        otrsErrorCode: code,
+        otrsErrorMessage: msg,
+        responseHeaders, responseBody: truncatedBody,
+        requestBodyRedacted, elapsedMs, timestamp,
+      },
+    );
   }
+
   return data;
 }
 
@@ -90,7 +222,7 @@ export async function searchTickets({ fetch = globalThis.fetch, cfg = null } = {
     ServiceID: c.serviceId,
     State:     c.state,
   };
-  const data = await otrsPost(c.searchUrl, body, fetch);
+  const data = await otrsPost(c.searchUrl, body, fetch, 'TicketSearch');
   const raw = data?.TicketID;
   if (!raw) return [];
   const ids = Array.isArray(raw) ? raw : [raw];
@@ -109,7 +241,7 @@ export async function getTicket(ticketId, { fetch = globalThis.fetch, cfg = null
     TicketID:    String(ticketId),
     AllArticles: 1,
   };
-  const data = await otrsPost(c.getUrl, body, fetch);
+  const data = await otrsPost(c.getUrl, body, fetch, 'TicketGet');
   const t = data?.Ticket;
   const ticket = Array.isArray(t) ? t[0] : t;
   if (!ticket) throw new Error(`OTRS TicketGet returned no ticket for ID ${ticketId}`);
