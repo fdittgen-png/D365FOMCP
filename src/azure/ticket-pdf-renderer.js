@@ -33,7 +33,7 @@ import {
   safeFilename,
   toReadableText,
   humanSize,
-} from '../../scripts/lib/ticket-pdf-helpers.js';
+} from './ticket-pdf-helpers.js';
 
 // pdfkit is CommonJS — load via createRequire so ESM + CJS interop is clean.
 const require = createRequire(import.meta.url);
