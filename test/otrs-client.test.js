@@ -29,13 +29,16 @@ function mockResp(json, { status = 200, statusText = 'OK' } = {}) {
   };
 }
 
-/** Build a fetch that routes by URL prefix to a handler. */
+/** Build a fetch that routes by URL prefix to a handler. Passes both
+ *  the parsed body (for convenience) and the raw string (so tests can
+ *  assert on type-sensitive serialization like integer vs. string). */
 function routedFetch(routes) {
   return async (url, opts) => {
     const r = routes.find(x => url.startsWith(x.prefix));
     if (!r) throw new Error(`No mock for ${url}`);
-    const body = opts?.body ? JSON.parse(opts.body) : {};
-    return r.respond(body);
+    const raw = opts?.body || '';
+    const body = raw ? JSON.parse(raw) : {};
+    return r.respond(body, raw);
   };
 }
 
@@ -44,7 +47,7 @@ const CFG_OK = {
   password: 'secret',
   searchUrl: 'https://otrs.example/TicketSearch',
   getUrl:    'https://otrs.example/TicketGet',
-  service:   'TIS - Digital Solutions Support::ERP::D365',
+  serviceId: 798,
   state:     'closed successful',
   minResolutionChars: 200,
 };
@@ -56,18 +59,19 @@ describe('readOtrsConfig', () => {
     const cfg = readOtrsConfig({
       OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
       OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
-      OTRS_SERVICE: 'svc',
+      OTRS_SERVICE_ID: '798',
     });
     assert.equal(cfg.username, 'u');
-    assert.equal(cfg.state, 'closed successful'); // default
-    assert.equal(cfg.minResolutionChars, 200);    // default
+    assert.equal(cfg.serviceId, 798);              // coerced to integer
+    assert.equal(cfg.state, 'closed successful');  // default
+    assert.equal(cfg.minResolutionChars, 200);     // default
   });
 
   it('honors OTRS_STATE and OTRS_MIN_RESOLUTION_CHARS overrides', () => {
     const cfg = readOtrsConfig({
       OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
       OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
-      OTRS_SERVICE: 'svc',
+      OTRS_SERVICE_ID: '42',
       OTRS_STATE: 'closed with workaround',
       OTRS_MIN_RESOLUTION_CHARS: '500',
     });
@@ -78,7 +82,29 @@ describe('readOtrsConfig', () => {
   it('throws a single error listing every missing required field', () => {
     assert.throws(
       () => readOtrsConfig({}),
-      /OTRS_USERNAME.*OTRS_PASSWORD.*OTRS_SEARCH_URL.*OTRS_GET_URL.*OTRS_SERVICE/,
+      /OTRS_USERNAME.*OTRS_PASSWORD.*OTRS_SEARCH_URL.*OTRS_GET_URL.*OTRS_SERVICE_ID/,
+    );
+  });
+
+  it('rejects a non-numeric OTRS_SERVICE_ID by treating it as missing', () => {
+    assert.throws(
+      () => readOtrsConfig({
+        OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
+        OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
+        OTRS_SERVICE_ID: 'TIS - not a number',
+      }),
+      /OTRS_SERVICE_ID/,
+    );
+  });
+
+  it('rejects zero / negative OTRS_SERVICE_ID (positive integer required)', () => {
+    assert.throws(
+      () => readOtrsConfig({
+        OTRS_USERNAME: 'u', OTRS_PASSWORD: 'p',
+        OTRS_SEARCH_URL: 'https://s', OTRS_GET_URL: 'https://g',
+        OTRS_SERVICE_ID: '0',
+      }),
+      /OTRS_SERVICE_ID/,
     );
   });
 });
@@ -88,10 +114,12 @@ describe('readOtrsConfig', () => {
 describe('searchTickets', () => {
   it('POSTs the configured payload and returns string IDs', async () => {
     let captured = null;
+    let capturedRaw = null;
     const fetch = routedFetch([{
       prefix: CFG_OK.searchUrl,
-      respond: (body) => {
+      respond: (body, raw) => {
         captured = body;
+        capturedRaw = raw;
         return mockResp({ TicketID: [1721474, 1720411, 1720242] });
       },
     }]);
@@ -99,9 +127,13 @@ describe('searchTickets', () => {
     assert.deepEqual(captured, {
       UserLogin: 'wstis',
       Password: 'secret',
-      Services: 'TIS - Digital Solutions Support::ERP::D365',
-      States: 'closed successful',
+      ServiceID: 798,
+      State: 'closed successful',
     });
+    // ServiceID must be serialized as a JSON number literal, not a string —
+    // OTRS rejects stringified integers for this field with a generic
+    // "Authorization failing" error.
+    assert.match(capturedRaw, /"ServiceID":\s*798[^"]/);
     assert.deepEqual(ids, ['1721474', '1720411', '1720242']);
   });
 

@@ -155,8 +155,8 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
           value: 'https://trelleborg.managed-otrs.com/otrs/nph-genericinterface.pl/Webservice/TIS_WS/TicketGet'
         }
         {
-          name: 'OTRS_SERVICE'
-          value: 'TIS - Digital Solutions Support::ERP::D365'
+          name: 'OTRS_SERVICE_ID'
+          value: '798'
         }
         {
           name: 'OTRS_STATE'

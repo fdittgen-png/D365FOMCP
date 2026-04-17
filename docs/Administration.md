@@ -560,7 +560,7 @@ Configured in `infra/modules/functionApp.bicep` and deployed via `Deploy-Infrast
 | `OTRS_PASSWORD` | OTRS password | **Set manually post-deploy** (see §11.2) | *(empty)* |
 | `OTRS_SEARCH_URL` | TicketSearch endpoint | Bicep | `https://trelleborg.managed-otrs.com/otrs/nph-genericinterface.pl/Webservice/TIS_WS/TicketSearch` |
 | `OTRS_GET_URL` | TicketGet endpoint | Bicep | `https://trelleborg.managed-otrs.com/otrs/nph-genericinterface.pl/Webservice/TIS_WS/TicketGet` |
-| `OTRS_SERVICE` | Services filter applied on TicketSearch | Bicep | `TIS - Digital Solutions Support::ERP::D365` |
+| `OTRS_SERVICE_ID` | Numeric service-row ID used as the TicketSearch `ServiceID` filter. **Not** the human-readable name — OTRS rejects the string form with a generic "Authorization failing" error. Look up in OTRS Admin → Services. | Bicep | `798` (Trelleborg D365 support) |
 | `OTRS_STATE` | States filter applied on TicketSearch | Bicep | `closed successful` |
 | `OTRS_MIN_RESOLUTION_CHARS` | Minimum combined agent-article body length (chars) for a ticket to count as "has resolution" | Bicep | `200` |
 
@@ -623,7 +623,8 @@ curl -X POST "https://tis-p-mcpd365fo-func.azurewebsites.net/api/otrs/extract?co
 | `500` with `"Missing OTRS config: OTRS_PASSWORD"` | Password never set or deleted after redeploy | Run the `az functionapp config appsettings set` command in §11.2 |
 | `500` with `"OTRS returned error WebserviceNotAuth"` | Wrong username / password, or OTRS account locked | Confirm credentials with Przemysław; re-run the `set` command |
 | `500` with `"OTRS request failed: HTTP 502"` | OTRS service or its upstream proxy down | Retry; if persistent, escalate to OTRS operator |
-| `200` but `X-OTRS-Extracted: 0` on a first `full` run | `OTRS_SERVICE` or `OTRS_STATE` filters don't match anything | Verify the filter values against OTRS UI; note the exact casing and the `::` separator |
+| `200` but `X-OTRS-Extracted: 0` on a first `full` run | `OTRS_SERVICE_ID` or `OTRS_STATE` filters don't match anything | Verify the service ID in OTRS Admin → Services and confirm `OTRS_STATE` matches the exact state-name casing |
+| `500` with `TicketSearch.AuthFail` even though the password is correct | Wrong payload shape — usually `OTRS_SERVICE_ID` is not numeric, or a legacy `OTRS_SERVICE` (string name) app-setting is still present | Delete any old `OTRS_SERVICE` setting, set `OTRS_SERVICE_ID=<integer>` |
 | Every ticket ends up under `<Skipped>` with `"resolution too thin"` | `OTRS_MIN_RESOLUTION_CHARS` too strict for your tickets | Lower the value (try `100`) via `az functionapp config appsettings set` |
 | State blob not updating | Calling with `mode: "preview"` | Use `incremental` or `full` — preview is dry-run by design |
 | Same tickets re-extracted every run | State blob was deleted, or the Power Automate flow is calling with `mode: "full"` | Switch Power Automate to `incremental`; inspect the blob in Azure Portal |

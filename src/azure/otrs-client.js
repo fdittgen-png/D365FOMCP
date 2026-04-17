@@ -16,16 +16,24 @@
  * human-readable error listing every missing one.
  */
 export function readOtrsConfig(env = process.env) {
+  const serviceIdRaw = env.OTRS_SERVICE_ID;
+  const serviceId = Number.parseInt(serviceIdRaw, 10);
   const cfg = {
     username:  env.OTRS_USERNAME,
     password:  env.OTRS_PASSWORD,
     searchUrl: env.OTRS_SEARCH_URL,
     getUrl:    env.OTRS_GET_URL,
-    service:   env.OTRS_SERVICE,
+    // OTRS TicketSearch expects the numeric Service **ID**, not the
+    // human-readable service name. Przemysław's original integration email
+    // showed a `Services: "TIS - Digital Solutions Support::ERP::D365"`
+    // payload that OTRS actually rejects with a generic "Authorization
+    // failing" error; the real API uses `ServiceID: 798`. Keep this as an
+    // integer so the JSON serializer emits a number literal.
+    serviceId: Number.isInteger(serviceId) && serviceId > 0 ? serviceId : null,
     state:     env.OTRS_STATE || 'closed successful',
     minResolutionChars: Number.parseInt(env.OTRS_MIN_RESOLUTION_CHARS || '200', 10) || 200,
   };
-  const required = ['username', 'password', 'searchUrl', 'getUrl', 'service'];
+  const required = ['username', 'password', 'searchUrl', 'getUrl', 'serviceId'];
   const missing = required.filter(k => !cfg[k]);
   if (missing.length) {
     throw new Error(`Missing OTRS config: ${missing.map(k => envNameFor(k)).join(', ')}`);
@@ -38,7 +46,7 @@ const ENV_NAMES = {
   password: 'OTRS_PASSWORD',
   searchUrl: 'OTRS_SEARCH_URL',
   getUrl: 'OTRS_GET_URL',
-  service: 'OTRS_SERVICE',
+  serviceId: 'OTRS_SERVICE_ID',
 };
 function envNameFor(key) { return ENV_NAMES[key] || key; }
 
@@ -70,11 +78,17 @@ async function otrsPost(url, body, fetchFn) {
  */
 export async function searchTickets({ fetch = globalThis.fetch, cfg = null } = {}) {
   const c = cfg || readOtrsConfig();
+  // Field names match the Postman-validated OTRS API:
+  //   ServiceID: integer    (the DB id of the Services::::Subservice row)
+  //   State:     string     (singular — OTRS rejects the plural form)
+  // Sending the wrong names produces a generic "Authorization failing"
+  // response, NOT a parameter-validation error. Do not change without a
+  // round-trip through Postman first.
   const body = {
     UserLogin: c.username,
     Password:  c.password,
-    Services:  c.service,
-    States:    c.state,
+    ServiceID: c.serviceId,
+    State:     c.state,
   };
   const data = await otrsPost(c.searchUrl, body, fetch);
   const raw = data?.TicketID;

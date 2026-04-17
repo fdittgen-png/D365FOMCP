@@ -67,7 +67,7 @@ app.http('otrs-extract', {
           status: 500,
           jsonBody: {
             error: err.message,
-            hint: 'Set OTRS_USERNAME / OTRS_PASSWORD / OTRS_SEARCH_URL / OTRS_GET_URL / OTRS_SERVICE '
+            hint: 'Set OTRS_USERNAME / OTRS_PASSWORD / OTRS_SEARCH_URL / OTRS_GET_URL / OTRS_SERVICE_ID '
                 + 'on the Function App (az functionapp config appsettings set …).',
           },
         };
