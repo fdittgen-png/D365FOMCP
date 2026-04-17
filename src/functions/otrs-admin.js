@@ -168,7 +168,7 @@ const PAGE_HTML = `<!DOCTYPE html>
       el.innerHTML = html;
     }
 
-    // Render the rich error block. `data` is the JSON returned by the
+    // Render the rich error block. "data" is the JSON returned by the
     // server-side proxy on failure — includes category/phase/details for
     // OtrsRequestError, or category=internal + stack otherwise.
     function renderError(el, action, data) {
