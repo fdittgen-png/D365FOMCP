@@ -14,6 +14,7 @@ import {
   isEmbeddableImage,
   attachmentRenderer,
   siblingPdfName,
+  ticketPdfBaseName,
   safeFilename,
   toReadableText,
   sanitizeForPdfText,
@@ -178,27 +179,73 @@ describe('safeFilename', () => {
 });
 
 describe('siblingPdfName', () => {
-  it('produces a sortable, deterministic sibling filename', () => {
+  const sampleTicket = {
+    ticketNumber: '202604172003855',
+    title: 'Vendor Approval Workflow',
+    ticketId: '1729255',
+  };
+
+  it('uses the ticketNumber-title stem with a two-digit attachment index', () => {
     assert.equal(
-      siblingPdfName('1717381', 1, 'screenshot.png'),
-      'ticket-1717381-att-01-screenshot.pdf',
+      siblingPdfName(sampleTicket, 1, 'screenshot.png'),
+      '202604172003855-Vendor Approval Workflow-att-01-screenshot.pdf',
     );
     assert.equal(
-      siblingPdfName('1717381', 12, 'report.docx'),
-      'ticket-1717381-att-12-report.pdf',
+      siblingPdfName(sampleTicket, 12, 'report.docx'),
+      '202604172003855-Vendor Approval Workflow-att-12-report.pdf',
+    );
+  });
+
+  it('accepts a bare ticketId string for backwards compatibility', () => {
+    // Earlier callers (pre-Phase-1) passed the slug directly.
+    assert.equal(
+      siblingPdfName('1717381', 1, 'screenshot.png'),
+      '1717381-att-01-screenshot.pdf',
     );
   });
 
   it('strips original extension and always writes .pdf', () => {
-    assert.match(siblingPdfName('1', 1, 'data.xlsx'), /-data\.pdf$/);
-    assert.match(siblingPdfName('1', 1, 'noext'), /-noext\.pdf$/);
+    assert.match(siblingPdfName(sampleTicket, 1, 'data.xlsx'), /-data\.pdf$/);
+    assert.match(siblingPdfName(sampleTicket, 1, 'noext'), /-noext\.pdf$/);
   });
 
-  it('sanitizes unsafe characters in both ticket id and filename', () => {
-    const name = siblingPdfName('../1', 1, 'bad/name.docx');
+  it('sanitizes unsafe characters in both ticket stem and filename', () => {
+    const nastyTicket = { ticketNumber: '../1', title: 'bad/title' };
+    const name = siblingPdfName(nastyTicket, 1, 'bad/name.docx');
     assert.doesNotMatch(name, /\.\./);
     assert.doesNotMatch(name, /\//);
     assert.doesNotMatch(name, /\\/);
+  });
+});
+
+describe('ticketPdfBaseName', () => {
+  it('returns <ticketNumber>-<title> when both are set', () => {
+    assert.equal(
+      ticketPdfBaseName({ ticketNumber: 'TN-42', title: 'Hello World', ticketId: '1' }),
+      'TN-42-Hello World',
+    );
+  });
+
+  it('falls back through ticketNumber → title → ticketId → "unknown"', () => {
+    assert.equal(ticketPdfBaseName({ ticketNumber: 'TN-42' }), 'TN-42');
+    assert.equal(ticketPdfBaseName({ title: 'Only Title' }), 'Only Title');
+    assert.equal(ticketPdfBaseName({ ticketId: '1234' }), '1234');
+    assert.equal(ticketPdfBaseName({}), 'unknown');
+    assert.equal(ticketPdfBaseName(null), 'unknown');
+  });
+
+  it('truncates long titles', () => {
+    const long = 'a'.repeat(200);
+    const name = ticketPdfBaseName({ ticketNumber: 'N', title: long }, { titleMax: 40 });
+    assert.equal(name.length, 1 /* N */ + 1 /* - */ + 40);
+  });
+
+  it('sanitizes characters in both parts so the result is filesystem-safe', () => {
+    const name = ticketPdfBaseName({
+      ticketNumber: '1/2:3',
+      title: 'bad | file "name"',
+    });
+    assert.doesNotMatch(name, /[\/:|*?"<>]/);
   });
 });
 

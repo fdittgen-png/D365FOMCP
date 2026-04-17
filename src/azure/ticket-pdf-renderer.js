@@ -30,6 +30,7 @@ import {
   isEmbeddableImage,
   attachmentRenderer,
   siblingPdfName,
+  ticketPdfBaseName,
   safeFilename,
   toReadableText,
   sanitizeForPdfText,
@@ -98,12 +99,14 @@ export async function renderExtractPdfs({ xml, deps }) {
 }
 
 async function renderOneTicket(ticket, deps, warnings) {
-  const slug = safeFilename(ticket.ticketId || 'unknown');
+  // File stem is ticketNumber-title. This surfaces in every output file:
+  // the main PDF, each sibling attachment PDF, and any per-ticket XML.
+  const baseName = ticketPdfBaseName(ticket);
   const files = [];
 
-  const mainBuffer = await renderMainPdfBuffer(ticket, slug, deps);
+  const mainBuffer = await renderMainPdfBuffer(ticket, deps);
   files.push({
-    filename: `ticket-${slug}.pdf`,
+    filename: `${baseName}.pdf`,
     buffer: mainBuffer,
     contentType: 'application/pdf',
   });
@@ -115,7 +118,7 @@ async function renderOneTicket(ticket, deps, warnings) {
       if (isEmbeddableImage(att.contentType)) continue;   // embedded inline
       try {
         const buffer = await renderAttachmentBuffer(att, deps);
-        const filename = siblingPdfName(slug, attachmentCounter, att.filename);
+        const filename = siblingPdfName(ticket, attachmentCounter, att.filename);
         files.push({ filename, buffer, contentType: 'application/pdf' });
       } catch (err) {
         warnings.push({
@@ -132,7 +135,7 @@ async function renderOneTicket(ticket, deps, warnings) {
 
 // ── Main ticket PDF ─────────────────────────────────────────────────────────
 
-async function renderMainPdfBuffer(ticket, slug, deps) {
+async function renderMainPdfBuffer(ticket, deps) {
   const { doc, done } = newDoc({
     Title: ticket.title ? `OTRS ${ticket.ticketNumber || ticket.ticketId} — ${ticket.title}` : `OTRS ${ticket.ticketId}`,
     Author: 'OTRS extract',
@@ -181,7 +184,7 @@ async function renderMainPdfBuffer(ticket, slug, deps) {
     doc.moveDown(0.5);
 
     for (const [i, article] of ticket.articles.entries()) {
-      renderArticle(doc, article, i + 1, ticket, slug, deps);
+      renderArticle(doc, article, i + 1, ticket, deps);
       doc.moveDown();
     }
   }
@@ -227,7 +230,7 @@ function sectionHeader(doc, title) {
   doc.moveDown(0.2);
 }
 
-function renderArticle(doc, article, index, ticket, slug, deps) {
+function renderArticle(doc, article, index, ticket, deps) {
   if (doc.y > doc.page.height - doc.page.margins.bottom - 100) doc.addPage();
 
   const who  = article.senderType || 'unknown';
@@ -269,7 +272,7 @@ function renderArticle(doc, article, index, ticket, slug, deps) {
       ));
       embedImage(doc, att);
     } else {
-      const sibling = siblingPdfName(slug, globalCounter, att.filename);
+      const sibling = siblingPdfName(ticket, globalCounter, att.filename);
       doc.font(FONT.meta.name).text(sanitizeForPdfText(
         `• ${safeFilename(att.filename)} (${att.contentType || 'unknown'}, ${humanSize(att.filesizeBytes)}) — see sibling file: ${sibling}`,
       ));

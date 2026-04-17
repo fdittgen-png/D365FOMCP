@@ -30,10 +30,15 @@
  */
 
 import { app } from '@azure/functions';
+import { createRequire } from 'node:module';
 import { readOtrsConfig } from '../azure/otrs-client.js';
 import { readState, writeState } from '../azure/otrs-storage.js';
 import { ticketsToXml } from '../azure/otrs-xml.js';
 import { runExtract } from '../azure/otrs-extract-core.js';
+import { splitExtractPerTicket } from '../azure/otrs-xml-split.js';
+
+const require = createRequire(import.meta.url);
+const AdmZip = require('adm-zip');
 
 const VALID_MODES = new Set(['incremental', 'full', 'preview']);
 
@@ -57,6 +62,12 @@ app.http('otrs-extract', {
 
       const mode = VALID_MODES.has(body.mode) ? body.mode : 'incremental';
       const limit = Number.isInteger(body.limit) && body.limit > 0 ? body.limit : null;
+      // `perTicket=true` returns a ZIP of individual per-ticket XMLs
+      // (each a valid OtrsExtract with count=1). Power Automate's HTTP
+      // action natively iterates files inside a ZIP, so this removes
+      // the need for a custom XML-split step in the flow.
+      const urlSearch = new URL(request.url).searchParams;
+      const perTicket = body.perTicket === true || urlSearch.get('perTicket') === 'true';
 
       // ── Config + state ────────────────────────────────────────────────────
       let cfg;
@@ -105,6 +116,36 @@ app.http('otrs-extract', {
 
       // ── Serialize and respond ─────────────────────────────────────────────
       const xml = ticketsToXml(extracted, { mode, skipped });
+
+      if (perTicket) {
+        const parts = splitExtractPerTicket(xml);
+        const zip = new AdmZip();
+        for (const p of parts) zip.addFile(p.filename, p.buffer);
+        zip.addFile('manifest.json', Buffer.from(JSON.stringify({
+          generatedAt: new Date().toISOString(),
+          mode,
+          extracted: extracted.length,
+          skipped: skipped.length,
+          files: parts.map(p => ({
+            filename: p.filename,
+            ticketId: p.ticketId,
+            ticketNumber: p.ticketNumber,
+            title: p.title,
+          })),
+        }, null, 2), 'utf8'));
+
+        return {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/zip',
+            'X-OTRS-Extracted':  String(extracted.length),
+            'X-OTRS-Skipped':    String(skipped.length),
+            'X-OTRS-Candidates': String(candidateIds.length),
+            'X-OTRS-Files':      String(parts.length),
+          },
+          body: zip.toBuffer(),
+        };
+      }
 
       return {
         status: 200,

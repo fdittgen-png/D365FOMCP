@@ -106,15 +106,61 @@ export function safeFilename(name, { fallback = 'file', maxLength = 120 } = {}) 
 }
 
 /**
- * Build the sibling-file name for a non-image attachment:
- *   `ticket-<ticketId>-att-<index>-<original-filename>.pdf`
- * Strips any original extension and forces `.pdf`.
+ * Build the operator-facing file-stem for a ticket. Format is
+ *   `<ticketNumber>-<title>`
+ * with both parts sanitized for every platform. Falls back through
+ *   ticketNumber-only → title-only → ticketId → 'unknown'
+ * so every ticket produces a stable, deterministic filename even when
+ * OTRS fields are missing.
+ *
+ * The result intentionally does NOT include a file extension — callers
+ * append `.xml` or `.pdf` as appropriate.
+ *
+ * @param {{ticketId?:string, ticketNumber?:string, title?:string}} ticket
+ * @param {object} [opts]
+ * @param {number} [opts.titleMax=80] - cap the title portion; filesystems
+ *   happily take ≥255 but operators prefer short names
  */
-export function siblingPdfName(ticketId, attachmentIndex, originalFilename) {
-  const base = safeFilename(originalFilename || 'attachment')
-    .replace(/\.[^.]{1,10}$/, '');  // drop original extension if present
+export function ticketPdfBaseName(ticket, { titleMax = 80 } = {}) {
+  const num = safeFilename(
+    (ticket?.ticketNumber ?? '').trim() || '',
+    { fallback: '' },
+  );
+  const title = safeFilename(
+    (ticket?.title ?? '').trim() || '',
+    { fallback: '', maxLength: titleMax },
+  );
+  const id = safeFilename(
+    String(ticket?.ticketId ?? '').trim() || '',
+    { fallback: '' },
+  );
+
+  if (num && title) return `${num}-${title}`;
+  if (num)           return num;
+  if (title)         return title;
+  if (id)            return id;
+  return 'unknown';
+}
+
+/**
+ * Build the sibling-file name for a non-image attachment. Uses the same
+ * ticket-stem as the main PDF so all files for one ticket sort together
+ * in the output folder. Example:
+ *   `202604172003855-Vendor Approval Workflow-att-01-screenshot.pdf`
+ *
+ * Accepts EITHER a full ticket object (preferred — produces a stable
+ * filename) OR a bare ticketId string for backwards compatibility with
+ * early callers.
+ */
+export function siblingPdfName(ticketOrId, attachmentIndex, originalFilename) {
+  const base = typeof ticketOrId === 'object' && ticketOrId !== null
+    ? ticketPdfBaseName(ticketOrId)
+    : safeFilename(String(ticketOrId), { fallback: 'unknown' });
+
+  const attBase = safeFilename(originalFilename || 'attachment')
+    .replace(/\.[^.]{1,10}$/, '');   // drop original extension if present
   const idx = String(attachmentIndex).padStart(2, '0');
-  return `ticket-${safeFilename(ticketId)}-att-${idx}-${base}.pdf`;
+  return `${base}-att-${idx}-${attBase}.pdf`;
 }
 
 // ── HTML body → readable text ───────────────────────────────────────────────

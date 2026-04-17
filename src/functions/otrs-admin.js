@@ -26,6 +26,8 @@ import { readOtrsConfig, OtrsRequestError, getTicket } from '../azure/otrs-clien
 import { readState, writeState } from '../azure/otrs-storage.js';
 import { runExtract, toExtractedTicket } from '../azure/otrs-extract-core.js';
 import { ticketsToXml } from '../azure/otrs-xml.js';
+import { ticketPdfBaseName } from '../azure/ticket-pdf-helpers.js';
+import { splitExtractPerTicket } from '../azure/otrs-xml-split.js';
 import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { createWikiStore } from '../azure/wiki-storage.js';
 import { createWikiWriter } from '../azure/wiki-writer.js';
@@ -153,7 +155,8 @@ const PAGE_HTML = `<!DOCTYPE html>
         <label class="choice"><input type="radio" name="mode" value="full"> full</label>
         <label class="choice"><input type="radio" name="mode" value="preview"> preview (dry run)</label>
         <label>limit <input type="number" name="limit" min="1" max="500" placeholder="all"></label>
-        <button type="submit" class="btn btn-blue" id="extractBtn">Download XML</button>
+        <label class="choice"><input type="checkbox" name="perTicket" id="extractPerTicket"> one XML per ticket (ZIP)</label>
+        <button type="submit" class="btn btn-blue" id="extractBtn">Download</button>
       </div>
     </form>
     <div id="extractResult" class="result" data-id="extractResult"></div>
@@ -176,14 +179,14 @@ const PAGE_HTML = `<!DOCTYPE html>
   </div>
 
   <div class="card">
-    <h2>Step 3 — Convert XML to PDFs</h2>
-    <p class="hint">Turns an OtrsExtract XML into one main PDF per ticket (with filled-in metadata, non-empty dynamic fields, and inline PNG/JPEG attachments) plus one sibling PDF for every non-image attachment (docx → readable text, xlsx → cell tables, pdf → passthrough, other → placeholder with filename/type/size). Raw base64 is never rendered. Multi-file responses come back as a single <code>.zip</code>; single-PDF responses stream directly.</p>
+    <h2>Step 3 — Convert XML(s) to PDFs</h2>
+    <p class="hint">Drop one or many XML files (or a single <code>.zip</code> of XMLs from Step 1) and get a ZIP of PDFs back. Each ticket produces one main PDF named <code>&lt;ticketnumber&gt;-&lt;title&gt;.pdf</code> with filled-in metadata, non-empty dynamic fields, and inline PNG/JPEG attachments. Every non-image attachment becomes a sibling PDF (docx → readable text, xlsx → cell tables, pdf → passthrough, other → placeholder). Raw base64 is never rendered. Single-PDF responses stream directly for in-browser preview.</p>
     <form id="pdfForm">
       <div class="drop" id="pdfDropZone">
-        <div>Drop an XML file here, or click to browse</div>
+        <div>Drop one or more XML files (or a ZIP), or click to browse</div>
         <div class="file" id="pdfFileName"></div>
       </div>
-      <input type="file" id="pdfXmlFile" accept=".xml,text/xml,application/xml">
+      <input type="file" id="pdfXmlFile" accept=".xml,.zip,text/xml,application/xml,application/zip" multiple>
       <div class="row" style="margin-top:12px">
         <button type="submit" class="btn btn-blue" id="pdfBtn" disabled>Convert &amp; Download</button>
       </div>
@@ -335,9 +338,11 @@ const PAGE_HTML = `<!DOCTYPE html>
 
       try {
         const fd = new FormData(extractForm);
+        const perTicket = fd.get('perTicket') === 'on';
         const body = {
           mode: fd.get('mode') || 'incremental',
           limit: fd.get('limit') ? Number(fd.get('limit')) : undefined,
+          perTicket,
         };
         const resp = await fetch('/api/otrs-admin/extract', {
           method: 'POST',
@@ -345,17 +350,13 @@ const PAGE_HTML = `<!DOCTYPE html>
           body: JSON.stringify(body),
         });
         if (!resp.ok) {
-          // The server returns a structured JSON envelope for both OTRS-
-          // upstream failures (502) and internal failures (500). Surface
-          // the full payload via renderError rather than throwing a flat
-          // string — operators need phase, http, elapsed, url, etc.
           const errData = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
           renderError(extractResult, 'extract', errData);
           return;
         }
         const blob = await resp.blob();
         const filename = (resp.headers.get('content-disposition') || '').match(/filename="?([^";]+)/)?.[1]
-          || 'otrs-extract.xml';
+          || (perTicket ? 'otrs-extract.zip' : 'otrs-extract.xml');
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url; a.download = filename; document.body.appendChild(a); a.click();
@@ -363,10 +364,12 @@ const PAGE_HTML = `<!DOCTYPE html>
 
         const extracted = resp.headers.get('x-otrs-extracted') ?? '?';
         const skipped = resp.headers.get('x-otrs-skipped') ?? '?';
-        setResult(extractResult, 'success',
-          '<strong>Downloaded.</strong> Extracted ' + extracted + ' ticket(s), skipped ' + skipped + '. Filename: <code>' + filename + '</code>');
+        const files = resp.headers.get('x-otrs-files');
+        let summary = '<strong>Downloaded.</strong> Extracted ' + extracted + ' ticket(s), skipped ' + skipped + '.';
+        if (files) summary += ' Bundled ' + files + ' XML file(s).';
+        summary += ' File: <code>' + filename + '</code>';
+        setResult(extractResult, 'success', summary);
       } catch (err) {
-        // Network-level failure (browser could not reach the Function App).
         renderError(extractResult, 'extract', {
           error: err.message || String(err),
           category: 'browser-network',
@@ -374,7 +377,7 @@ const PAGE_HTML = `<!DOCTYPE html>
         });
       } finally {
         extractBtn.disabled = false;
-        extractBtn.textContent = 'Download XML';
+        extractBtn.textContent = 'Download';
       }
     });
 
@@ -452,28 +455,48 @@ const PAGE_HTML = `<!DOCTYPE html>
     pdfFileInput.addEventListener('change', onPdfFile);
 
     function onPdfFile() {
-      const f = pdfFileInput.files[0];
-      if (!f) { pdfFileName.textContent = ''; pdfBtn.disabled = true; return; }
-      pdfFileName.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+      const list = pdfFileInput.files;
+      if (!list || list.length === 0) { pdfFileName.textContent = ''; pdfBtn.disabled = true; return; }
+      if (list.length === 1) {
+        const f = list[0];
+        pdfFileName.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+      } else {
+        let total = 0;
+        for (const f of list) total += f.size;
+        pdfFileName.textContent = list.length + ' files, ' + (total / 1024).toFixed(1) + ' KB total';
+      }
       pdfBtn.disabled = false;
     }
 
     pdfForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const f = pdfFileInput.files[0];
-      if (!f) return;
+      const list = pdfFileInput.files;
+      if (!list || list.length === 0) return;
 
       pdfBtn.disabled = true;
       pdfBtn.innerHTML = '<span class="spinner"></span> Rendering PDFs...';
-      setResult(pdfResult, 'info', 'Parsing XML, rendering PDFs, decoding attachments — large tickets with attachments can take up to a minute.');
+      setResult(pdfResult, 'info',
+        'Parsing ' + list.length + ' file(s), rendering PDFs, decoding attachments — this can take up to a minute.');
 
       try {
-        const xml = await f.text();
-        const resp = await fetch('/api/otrs-admin/convert-to-pdf', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/xml' },
-          body: xml,
-        });
+        // Dispatch by file count + type to the three accepted body shapes:
+        //   1 file, .zip  → application/zip
+        //   1 file, .xml  → application/xml
+        //   N files       → multipart/form-data
+        const isZip = list.length === 1 && /\.zip$/i.test(list[0].name);
+        let init;
+        if (list.length === 1 && !isZip) {
+          const xml = await list[0].text();
+          init = { method: 'POST', headers: { 'Content-Type': 'application/xml' }, body: xml };
+        } else if (isZip) {
+          init = { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: list[0] };
+        } else {
+          const form = new FormData();
+          for (let i = 0; i < list.length; i++) form.append('xml', list[i], list[i].name);
+          init = { method: 'POST', body: form };  // browser sets multipart header
+        }
+
+        const resp = await fetch('/api/otrs-admin/convert-to-pdf', init);
         if (!resp.ok) {
           const errData = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
           renderError(pdfResult, 'convert-to-pdf', errData);
@@ -571,6 +594,7 @@ app.http('otrs-admin-extract', {
       try { body = await request.json(); } catch { /* empty body is ok */ }
       const mode = ['incremental', 'full', 'preview'].includes(body.mode) ? body.mode : 'incremental';
       const limit = Number.isInteger(body.limit) && body.limit > 0 ? body.limit : null;
+      const perTicket = body.perTicket === true || new URL(request.url).searchParams.get('perTicket') === 'true';
 
       let cfg;
       try {
@@ -601,6 +625,37 @@ app.http('otrs-admin-extract', {
 
       const xml = ticketsToXml(extracted, { mode, skipped });
       const date = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
+
+      // Per-ticket mode: split into individual <OtrsExtract count="1"> docs
+      // and return a ZIP so Power Automate can iterate naturally.
+      if (perTicket) {
+        const parts = splitExtractPerTicket(xml);
+        const zip = new AdmZip();
+        for (const p of parts) zip.addFile(p.filename, p.buffer);
+        const manifest = {
+          generatedAt: new Date().toISOString(),
+          mode, extracted: extracted.length, skipped: skipped.length,
+          files: parts.map(p => ({
+            filename: p.filename,
+            ticketId: p.ticketId, ticketNumber: p.ticketNumber, title: p.title,
+          })),
+        };
+        zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
+        const zipBuffer = zip.toBuffer();
+        return {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': `attachment; filename="otrs-extract-${mode}-${date}.zip"`,
+            'X-OTRS-Extracted':  String(extracted.length),
+            'X-OTRS-Skipped':    String(skipped.length),
+            'X-OTRS-Candidates': String(candidateIds.length),
+            'X-OTRS-Files':      String(parts.length),
+          },
+          body: zipBuffer,
+        };
+      }
+
       const filename = `otrs-extract-${mode}-${date}.xml`;
 
       return {
@@ -654,8 +709,10 @@ app.http('otrs-admin-extract-single', {
       const attachmentCount = (extracted.articles || [])
         .reduce((n, a) => n + (a.attachments?.length || 0), 0);
 
-      const date = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
-      const filename = `otrs-ticket-${ticketId}-${date}.xml`;
+      // Filename follows the operator-facing <ticketNumber>-<title> rule so
+      // PowerAutomate can drop it straight onto SharePoint / a share without
+      // renaming. Falls back through number → title → id → 'unknown'.
+      const filename = `${ticketPdfBaseName(extracted)}.xml`;
 
       return {
         status: 200,
@@ -727,78 +784,91 @@ app.http('otrs-admin-convert-to-pdf', {
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
-      const xml = await request.text();
-      if (!xml || !xml.trim()) {
-        return { status: 400, jsonBody: { error: 'Empty body — expected OtrsExtract XML.' } };
+      // Inputs accepted:
+      //   - Content-Type: application/xml  → one OtrsExtract envelope
+      //   - Content-Type: application/zip  → many XMLs inside a ZIP
+      //   - Content-Type: multipart/form-data → one or more XML files
+      //     uploaded through the HTML form
+      // Output is always a ZIP of `<ticketNumber>-<title>.pdf` per ticket
+      // (plus any non-image attachment siblings plus manifest.json), except
+      // when exactly one PDF is produced — then the PDF streams directly so
+      // the browser can preview it in-line.
+      const xmlDocs = await collectXmlInputs(request);
+      if (xmlDocs.length === 0) {
+        return { status: 400, jsonBody: { error: 'No XML documents found in the request.' } };
       }
-      if (Buffer.byteLength(xml, 'utf8') > MAX_UPLOAD_BYTES) {
+      const combinedBytes = xmlDocs.reduce((n, x) => n + Buffer.byteLength(x, 'utf8'), 0);
+      if (combinedBytes > MAX_UPLOAD_BYTES) {
         return {
           status: 413,
-          jsonBody: { error: `XML exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit.` },
+          jsonBody: { error: `Combined XML size exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit.` },
         };
       }
 
       const deps = await getPdfDeps();
-      const { tickets, files, warnings } = await renderExtractPdfs({ xml, deps });
+      const allFiles = [];
+      const allWarnings = [];
+      let totalTickets = 0;
 
-      if (tickets === 0) {
+      for (const xml of xmlDocs) {
+        const { tickets, files, warnings } = await renderExtractPdfs({ xml, deps });
+        totalTickets += tickets;
+        allFiles.push(...files);
+        allWarnings.push(...warnings);
+      }
+
+      if (totalTickets === 0) {
         return {
           status: 400,
-          jsonBody: { error: 'No <Ticket> elements found in the XML — nothing to render.' },
+          jsonBody: { error: 'No <Ticket> elements found in any of the XMLs — nothing to render.' },
         };
       }
 
-      // Single ticket + no attachment siblings → return the PDF directly
-      // so the browser can preview it in-line instead of forcing a ZIP
-      // download. Anything with multiple files gets zipped.
-      if (files.length === 1) {
-        const only = files[0];
+      // Single-PDF shortcut — unchanged behavior from before: preview-
+      // friendly direct application/pdf response with a descriptive
+      // filename (Phase 1a renamed it to <ticketNumber>-<title>.pdf).
+      if (allFiles.length === 1) {
+        const only = allFiles[0];
         return {
           status: 200,
           headers: {
             'Content-Type': 'application/pdf',
             'Content-Disposition': `attachment; filename="${only.filename}"`,
-            'X-PDF-Tickets':  String(tickets),
+            'X-PDF-Tickets':  String(totalTickets),
             'X-PDF-Files':    '1',
-            'X-PDF-Warnings': String(warnings.length),
+            'X-PDF-Warnings': String(allWarnings.length),
           },
           body: only.buffer,
         };
       }
 
-      // Multi-file response: bundle everything into a single ZIP. Using
-      // adm-zip in-memory keeps the whole operation inside the 230-second
-      // Azure HTTP timeout and avoids spilling to /tmp.
       const zip = new AdmZip();
-      for (const f of files) {
-        zip.addFile(f.filename, f.buffer);
-      }
-      // Include a machine-readable manifest so consumers who receive the
-      // ZIP (e.g. an automated pipeline) don't have to list the entries.
+      for (const f of allFiles) zip.addFile(f.filename, f.buffer);
       const manifest = {
         generatedAt: new Date().toISOString(),
-        tickets,
-        fileCount: files.length,
-        files: files.map(f => ({ filename: f.filename, bytes: f.buffer.length })),
-        warnings,
+        tickets: totalTickets,
+        inputDocuments: xmlDocs.length,
+        fileCount: allFiles.length,
+        files: allFiles.map(f => ({ filename: f.filename, bytes: f.buffer.length })),
+        warnings: allWarnings,
       };
       zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
-
       const zipBuffer = zip.toBuffer();
+
       const date = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
       const zipName = `otrs-pdfs-${date}.zip`;
 
-      context.log(`otrs-admin-convert-to-pdf: ${tickets} ticket(s), ${files.length} file(s), `
-        + `${warnings.length} warning(s), zip=${zipBuffer.length} bytes`);
+      context.log(`otrs-admin-convert-to-pdf: ${xmlDocs.length} XML(s), ${totalTickets} ticket(s), `
+        + `${allFiles.length} file(s), ${allWarnings.length} warning(s), zip=${zipBuffer.length} bytes`);
 
       return {
         status: 200,
         headers: {
           'Content-Type': 'application/zip',
           'Content-Disposition': `attachment; filename="${zipName}"`,
-          'X-PDF-Tickets':  String(tickets),
-          'X-PDF-Files':    String(files.length),
-          'X-PDF-Warnings': String(warnings.length),
+          'X-PDF-Tickets':  String(totalTickets),
+          'X-PDF-Files':    String(allFiles.length),
+          'X-PDF-Warnings': String(allWarnings.length),
           'X-PDF-ZipBytes': String(zipBuffer.length),
         },
         body: zipBuffer,
@@ -811,6 +881,46 @@ app.http('otrs-admin-convert-to-pdf', {
     }
   },
 });
+
+/**
+ * Normalize the three accepted input shapes into an array of XML strings
+ * so the handler above can iterate uniformly. Unrecognized content
+ * types surface as an empty array → the handler returns 400.
+ */
+async function collectXmlInputs(request) {
+  const contentType = (request.headers.get('content-type') || '').toLowerCase();
+
+  // multipart/form-data: multiple <input type="file" name="xml"> fields
+  if (contentType.includes('multipart/form-data')) {
+    const form = await request.formData();
+    const out = [];
+    for (const [, value] of form.entries()) {
+      if (typeof value === 'object' && value && typeof value.text === 'function') {
+        const text = await value.text();
+        if (text && text.trim()) out.push(text);
+      }
+    }
+    return out;
+  }
+
+  // application/zip: ZIP of XMLs (PA's natural one-file upload path)
+  if (contentType.includes('application/zip') || contentType.includes('application/x-zip-compressed')) {
+    const buf = Buffer.from(await request.arrayBuffer());
+    const zip = new AdmZip(buf);
+    const out = [];
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue;
+      if (!/\.xml$/i.test(entry.entryName)) continue;
+      out.push(entry.getData().toString('utf8'));
+    }
+    return out;
+  }
+
+  // application/xml (also text/xml): single envelope
+  const text = await request.text();
+  if (!text || !text.trim()) return [];
+  return [text];
+}
 
 /**
  * Serialize an error — Otrs-specific or generic — into an admin-friendly

@@ -82,6 +82,10 @@ const attText = {
   content: Buffer.from('Hello, world!\n').toString('base64'),
 };
 
+// Fixture ticket uses ticketNumber=TN-1001 and title="Ticket 1001", so
+// files land as "TN-1001-Ticket 1001.pdf" / "…-att-NN-<name>.pdf".
+const MAIN_1001 = 'TN-1001-Ticket 1001.pdf';
+
 describe('renderExtractPdfs — file assembly', () => {
   it('emits exactly one main PDF per ticket when no non-image attachments are present', async () => {
     const xml = ticketsToXml([fixtureTicket({ attachments: [attPng] })], { mode: 'single' });
@@ -91,7 +95,7 @@ describe('renderExtractPdfs — file assembly', () => {
 
     assert.equal(tickets, 1);
     assert.equal(files.length, 1);
-    assert.equal(files[0].filename, 'ticket-1001.pdf');
+    assert.equal(files[0].filename, MAIN_1001);
     assert.equal(files[0].contentType, 'application/pdf');
     assert.equal(warnings.length, 0);
   });
@@ -108,13 +112,13 @@ describe('renderExtractPdfs — file assembly', () => {
 
     // Main PDF + 3 siblings (PNG is embedded, not siblinged).
     assert.equal(files.length, 4);
-    assert.deepEqual(names[0], 'ticket-1001.pdf');
+    assert.deepEqual(names[0], MAIN_1001);
 
     // Sibling index reflects position across ALL attachments in the
     // ticket (image included) — so PDF = 02, unknown = 03, txt = 04.
-    assert.ok(names.includes('ticket-1001-att-02-report.pdf'));
-    assert.ok(names.includes('ticket-1001-att-03-mystery.pdf'));
-    assert.ok(names.includes('ticket-1001-att-04-notes.pdf'));
+    assert.ok(names.includes('TN-1001-Ticket 1001-att-02-report.pdf'));
+    assert.ok(names.includes('TN-1001-Ticket 1001-att-03-mystery.pdf'));
+    assert.ok(names.includes('TN-1001-Ticket 1001-att-04-notes.pdf'));
     assert.equal(warnings.length, 0);
   });
 
@@ -128,11 +132,12 @@ describe('renderExtractPdfs — file assembly', () => {
 
     const { tickets, files } = await renderExtractPdfs({ xml, deps });
     assert.equal(tickets, 2);
-    // 2 main PDFs + 1 sibling for ticket AAA
+    // 2 main PDFs + 1 sibling for ticket AAA. ticketNumber on the
+    // fixture is derived from ticketId → "TN-AAA", title "Ticket AAA".
     assert.equal(files.length, 3);
-    assert.ok(files.some(f => f.filename === 'ticket-AAA.pdf'));
-    assert.ok(files.some(f => f.filename === 'ticket-BBB.pdf'));
-    assert.ok(files.some(f => /^ticket-AAA-att-01-report\.pdf$/.test(f.filename)));
+    assert.ok(files.some(f => f.filename === 'TN-AAA-Ticket AAA.pdf'));
+    assert.ok(files.some(f => f.filename === 'TN-BBB-Ticket BBB.pdf'));
+    assert.ok(files.some(f => /^TN-AAA-Ticket AAA-att-01-report\.pdf$/.test(f.filename)));
   });
 });
 
@@ -196,7 +201,7 @@ describe('renderExtractPdfs — warnings are non-fatal', () => {
     const { tickets, files, warnings } = await renderExtractPdfs({ xml, deps });
 
     assert.equal(tickets, 1);
-    assert.ok(files.some(f => f.filename === 'ticket-1001.pdf'), 'main PDF should still be produced');
+    assert.ok(files.some(f => f.filename === MAIN_1001), 'main PDF should still be produced');
     assert.ok(warnings.length >= 1, 'docx-with-garbage should surface as a warning');
     assert.equal(warnings[0].filename, 'broken.docx');
     assert.match(warnings[0].reason, /.+/);
