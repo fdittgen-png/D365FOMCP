@@ -28,6 +28,8 @@ import { runExtract, toExtractedTicket } from '../azure/otrs-extract-core.js';
 import { ticketsToXml } from '../azure/otrs-xml.js';
 import { ticketPdfBaseName } from '../azure/ticket-pdf-helpers.js';
 import { splitExtractPerTicket } from '../azure/otrs-xml-split.js';
+import { parseExtractXml } from '../azure/otrs-xml-parse.js';
+import { ticketToRagText } from '../azure/ticket-to-rag-text.js';
 import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { createWikiStore } from '../azure/wiki-storage.js';
 import { createWikiWriter } from '../azure/wiki-writer.js';
@@ -179,6 +181,22 @@ const PAGE_HTML = `<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>Step 4 — Send tickets to the RAG service</h2>
+    <p class="hint">Pushes the ticket content into the RAG store as external documents tagged <code>source_type=otrs</code>, <code>reliability=low</code> (so the RAG's quality-aware retrieval knows to treat these as useful-but-unreliable). The ticket's full text (metadata + problem + resolution + every article body) is chunked and embedded server-side; re-uploading the same ticket upserts in place via <code>otrs://&lt;ticketId&gt;</code>. Accepts the same input shapes as Step 3.</p>
+    <form id="ragForm">
+      <div class="drop" id="ragDropZone">
+        <div>Drop one or more XML files (or a ZIP), or click to browse</div>
+        <div class="file" id="ragFileName"></div>
+      </div>
+      <input type="file" id="ragXmlFile" accept=".xml,.zip,text/xml,application/xml,application/zip" multiple>
+      <div class="row" style="margin-top:12px">
+        <button type="submit" class="btn" id="ragBtn" disabled>Upload to RAG</button>
+      </div>
+    </form>
+    <div id="ragResult" class="result" data-id="ragResult"></div>
+  </div>
+
+  <div class="card">
     <h2>Step 3 — Convert XML(s) to PDFs</h2>
     <p class="hint">Drop one or many XML files (or a single <code>.zip</code> of XMLs from Step 1) and get a ZIP of PDFs back. Each ticket produces one main PDF named <code>&lt;ticketnumber&gt;-&lt;title&gt;.pdf</code> with filled-in metadata, non-empty dynamic fields, and inline PNG/JPEG attachments. Every non-image attachment becomes a sibling PDF (docx → readable text, xlsx → cell tables, pdf → passthrough, other → placeholder). Raw base64 is never rendered. Single-PDF responses stream directly for in-browser preview.</p>
     <form id="pdfForm">
@@ -220,6 +238,12 @@ const PAGE_HTML = `<!DOCTYPE html>
     const pdfDropZone = document.getElementById('pdfDropZone');
     const pdfFileInput = document.getElementById('pdfXmlFile');
     const pdfFileName = document.getElementById('pdfFileName');
+    const ragForm = document.getElementById('ragForm');
+    const ragBtn = document.getElementById('ragBtn');
+    const ragResult = document.getElementById('ragResult');
+    const ragDropZone = document.getElementById('ragDropZone');
+    const ragFileInput = document.getElementById('ragXmlFile');
+    const ragFileName = document.getElementById('ragFileName');
 
     function setResult(el, cls, html) {
       el.className = 'result ' + cls;
@@ -532,6 +556,85 @@ const PAGE_HTML = `<!DOCTYPE html>
       } finally {
         pdfBtn.disabled = false;
         pdfBtn.textContent = 'Convert & Download';
+      }
+    });
+
+    // ── Step 4 — Upload to RAG ───────────────────────────────────────────
+    ragDropZone.addEventListener('click', () => ragFileInput.click());
+    ragDropZone.addEventListener('dragover', e => { e.preventDefault(); ragDropZone.classList.add('dragover'); });
+    ragDropZone.addEventListener('dragleave', () => ragDropZone.classList.remove('dragover'));
+    ragDropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      ragDropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) {
+        ragFileInput.files = e.dataTransfer.files;
+        onRagFile();
+      }
+    });
+    ragFileInput.addEventListener('change', onRagFile);
+
+    function onRagFile() {
+      const list = ragFileInput.files;
+      if (!list || list.length === 0) { ragFileName.textContent = ''; ragBtn.disabled = true; return; }
+      if (list.length === 1) {
+        const f = list[0];
+        ragFileName.textContent = f.name + ' (' + (f.size / 1024).toFixed(1) + ' KB)';
+      } else {
+        let total = 0;
+        for (const f of list) total += f.size;
+        ragFileName.textContent = list.length + ' files, ' + (total / 1024).toFixed(1) + ' KB total';
+      }
+      ragBtn.disabled = false;
+    }
+
+    ragForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const list = ragFileInput.files;
+      if (!list || list.length === 0) return;
+
+      ragBtn.disabled = true;
+      ragBtn.innerHTML = '<span class="spinner"></span> Uploading...';
+      setResult(ragResult, 'info', 'Parsing XML(s), chunking text, generating embeddings, inserting into RAG — this can take 30-60 seconds for a large batch.');
+
+      try {
+        const isZip = list.length === 1 && /\.zip$/i.test(list[0].name);
+        let init;
+        if (list.length === 1 && !isZip) {
+          const xml = await list[0].text();
+          init = { method: 'POST', headers: { 'Content-Type': 'application/xml' }, body: xml };
+        } else if (isZip) {
+          init = { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: list[0] };
+        } else {
+          const form = new FormData();
+          for (let i = 0; i < list.length; i++) form.append('xml', list[i], list[i].name);
+          init = { method: 'POST', body: form };
+        }
+
+        const resp = await fetch('/api/otrs-admin/upload-to-rag', init);
+        const data = await resp.json().catch(() => ({ error: 'HTTP ' + resp.status + ' (non-JSON response)' }));
+        if (!resp.ok) {
+          renderError(ragResult, 'upload-to-rag', data);
+          return;
+        }
+
+        let summary = '<strong>Uploaded.</strong> '
+          + data.uploaded + '/' + data.total + ' ticket(s) indexed into RAG'
+          + (data.ragEndpoint ? ' at <code>' + data.ragEndpoint + '</code>' : '');
+        if (data.failed > 0) {
+          summary += '<br/><strong style="color:#82071e">' + data.failed + ' ticket(s) failed.</strong> See details below.';
+        }
+        summary += '<details style="margin-top:10px;"><summary style="cursor:pointer;font-weight:600;">Full JSON result</summary>'
+          + '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre></details>';
+        setResult(ragResult, data.failed > 0 ? 'error' : 'success', summary);
+      } catch (err) {
+        renderError(ragResult, 'upload-to-rag', {
+          error: err.message || String(err),
+          category: 'browser-network',
+          timestamp: new Date().toISOString(),
+        });
+      } finally {
+        ragBtn.disabled = false;
+        ragBtn.textContent = 'Upload to RAG';
       }
     });
 
@@ -921,6 +1024,140 @@ async function collectXmlInputs(request) {
   if (!text || !text.trim()) return [];
   return [text];
 }
+
+/**
+ * POST /api/otrs-admin/upload-to-rag — Ingest OTRS tickets into the RAG
+ * service as external documents. Accepts the same input shapes as
+ * /convert-to-pdf (XML / ZIP / multipart). For each ticket:
+ *   1. Parse the envelope
+ *   2. Build a plain-text representation via ticketToRagText
+ *   3. POST to the RAG service's /api/d365rag/admin/ingest-external
+ *      with metadata tagging the document as OTRS-origin, reliability=low
+ *
+ * Response: JSON summary { total, uploaded, failed, results, errors }.
+ * One ticket failing does not abort the batch — errors are collected.
+ */
+app.http('otrs-admin-upload-to-rag', {
+  methods: ['POST'],
+  route: 'otrs-admin/upload-to-rag',
+  authLevel: 'anonymous',
+  handler: async (request, context) => {
+    try {
+      const ragBase = (process.env.RAG_SERVICE_URL || 'https://tis-d-ragsvc-func.azurewebsites.net').replace(/\/$/, '');
+      const ragKey  = process.env.RAG_SERVICE_FUNCTION_KEY || null;
+
+      const xmlDocs = await collectXmlInputs(request);
+      if (xmlDocs.length === 0) {
+        return { status: 400, jsonBody: { error: 'No XML documents found in the request.' } };
+      }
+
+      // Flatten all XMLs into a single list of parsed tickets so duplicate
+      // detection is global (two XMLs containing the same ticket collapse
+      // via RAG's upsert-by-file_path behavior).
+      const tickets = [];
+      for (const xml of xmlDocs) {
+        try {
+          const parsed = parseExtractXml(xml);
+          for (const t of parsed.tickets) tickets.push(t);
+        } catch (err) {
+          context.error(`upload-to-rag: could not parse one of the XMLs — ${err.message}`);
+        }
+      }
+      if (tickets.length === 0) {
+        return { status: 400, jsonBody: { error: 'No <Ticket> elements found in any of the XMLs.' } };
+      }
+
+      const uploaded = [];
+      const errors = [];
+      for (const ticket of tickets) {
+        try {
+          const text = ticketToRagText(ticket);
+          if (!text.trim()) {
+            errors.push({ ticketId: ticket.ticketId, reason: 'text representation was empty' });
+            continue;
+          }
+
+          const pdfBase = ticketPdfBaseName(ticket);
+          const ingestBody = {
+            text,
+            metadata: {
+              // file_path must be globally unique per doc in RAG — use the
+              // OTRS internal TicketID so re-ingests of the same ticket
+              // UPSERT instead of duplicating.
+              file_path:   `otrs://${ticket.ticketId}`,
+              file_name:   `${pdfBase}.pdf`,
+              title:       ticket.title || pdfBase,
+              category:    'otrs-ticket',
+              subcategory: ticket.service || null,
+              format:      'text',
+              source_type: 'otrs',
+              reliability: 'low',
+              ticketId:       ticket.ticketId,
+              ticketNumber:   ticket.ticketNumber,
+              closedAt:       ticket.closedAt,
+              service:        ticket.service,
+              queue:          ticket.queue,
+              customerUserId: ticket.customerUserId,
+              originUrl:      null,
+            },
+          };
+
+          const url = `${ragBase}/api/d365rag/admin/ingest-external`
+            + (ragKey ? `?code=${encodeURIComponent(ragKey)}` : '');
+          const resp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(ingestBody),
+          });
+
+          if (!resp.ok) {
+            let detail = '';
+            try { detail = (await resp.json()).error || (await resp.text()).slice(0, 400); }
+            catch { /* best-effort */ }
+            errors.push({
+              ticketId: ticket.ticketId, ticketNumber: ticket.ticketNumber,
+              status: resp.status, reason: `RAG returned HTTP ${resp.status}${detail ? ': ' + detail : ''}`,
+            });
+            continue;
+          }
+          const data = await resp.json();
+          uploaded.push({
+            ticketId: ticket.ticketId,
+            ticketNumber: ticket.ticketNumber,
+            title: ticket.title,
+            doc_id: data.doc_id,
+            chunk_count: data.chunk_count,
+            embeddings_generated: data.embeddings_generated,
+          });
+        } catch (err) {
+          errors.push({
+            ticketId: ticket.ticketId, ticketNumber: ticket.ticketNumber,
+            reason: err?.message || String(err),
+          });
+        }
+      }
+
+      context.log(`upload-to-rag: total=${tickets.length} uploaded=${uploaded.length} failed=${errors.length} → ${ragBase}`);
+
+      return {
+        status: 200,
+        jsonBody: {
+          total: tickets.length,
+          uploaded: uploaded.length,
+          failed: errors.length,
+          ragEndpoint: ragBase,
+          results: uploaded,
+          errors,
+        },
+      };
+    } catch (err) {
+      context.error('upload-to-rag error:', err);
+      return structuredErrorResponse(err, 'upload-to-rag', {
+        hint: 'Check RAG_SERVICE_URL on the Function App and confirm the RAG service is reachable.',
+      });
+    }
+  },
+});
 
 /**
  * Serialize an error — Otrs-specific or generic — into an admin-friendly
