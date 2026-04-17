@@ -214,6 +214,8 @@ function createXmlParser() {
       'SYSTEMSECURITYUSERROLEORGANIZATIONENTITY',
       'SYSTEMUSERENTITY', 'USERINFOENTITY',
       'SYSTEMSECURITYDUTYENTITY',
+      'SYSTEMSECURITYPRIVILEGEENTITY',
+      'SYSTEMSECURITYPERMISSIONENTITY',
     ].includes(name),
   });
 }
@@ -224,6 +226,11 @@ function createXmlParser() {
  */
 function findAxDirs(basePath, dirName) {
   const results = [];
+  // AOT directories are stored with inconsistent casing across modules:
+  // `ApplicationSuite/Foundation/axsecurityduty` is lowercase while most
+  // other modules use TitleCase. A case-sensitive match silently drops
+  // ~1,700 duty XMLs from Foundation (CR-SEC-006 root cause).
+  const target = dirName.toLowerCase();
   function walk(dir, depth) {
     if (depth > 4) return;
     try {
@@ -232,7 +239,7 @@ function findAxDirs(basePath, dirName) {
         if (!entry.isDirectory()) continue;
         if (entry.name === 'bin' || entry.name === 'node_modules') continue;
         const fullPath = join(dir, entry.name);
-        if (entry.name === dirName) {
+        if (entry.name.toLowerCase() === target) {
           results.push(fullPath);
         } else {
           walk(fullPath, depth + 1);
@@ -784,75 +791,65 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
       }
 
       // 2d: Duty-Privilege Mappings (from System Security Duty DMF export)
+      //
+      // The full DMF export for `System Security Duty.xml` is ~4 GB with
+      // 10M+ entities. The earlier implementation accumulated every
+      // (duty,priv) pair in a JS Set for dedup before insertion — that
+      // breaks Node's 4 GB default heap around 8M entries. INSERT OR
+      // REPLACE in SQLite is already idempotent on the (duty_id,
+      // privilege_name) PK, so we dedup at the DB layer instead and
+      // insert directly inside the stream callback.
       const dutyPrivFile = findDmfFile(dmfInputDir,
         'System Security Duty.xml', 'SystemSecurityDuty.xml');
       if (dutyPrivFile) {
         const fileSize = statSync(dutyPrivFile).size;
         const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
 
-        // Collect unique duty-privilege pairs (works for both streaming and DOM paths)
-        const dutyPrivPairs = new Set();
-        const dutyNames = new Map();  // rawDutyId → label
-        const privLabels = new Map(); // privId → label
+        const existingPrivsUpper = new Map();
+        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+          existingPrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
+        }
 
-        const collectEntity = (dutyId, dutyName, privId, privLabel) => {
-          if (!dutyId || !privId) return;
-          dutyPrivPairs.add(`${dutyId}\t${privId}`);
-          if (dutyName && !dutyNames.has(dutyId)) dutyNames.set(dutyId, dutyName);
-          if (privLabel && !privLabels.has(privId)) privLabels.set(privId, privLabel);
+        let inserted = 0;
+        const onEntity = (rawDutyId, dutyName, rawPrivId, privLabel) => {
+          if (!rawDutyId || !rawPrivId) return;
+          const resolvedDutyId = aotDutyUpper.get(rawDutyId.toUpperCase()) || rawDutyId;
+          const resolvedPrivId = existingPrivsUpper.get(rawPrivId.toUpperCase()) || rawPrivId;
+          if (!aotDutyUpper.has(rawDutyId.toUpperCase())) {
+            stmts.insertDuty.run(resolvedDutyId, dutyName || null, null, null);
+            aotDutyUpper.set(resolvedDutyId.toUpperCase(), resolvedDutyId);
+          }
+          if (!existingPrivsUpper.has(rawPrivId.toUpperCase())) {
+            stmts.insertPrivilege.run(resolvedPrivId, null, privLabel || null);
+            existingPrivsUpper.set(rawPrivId.toUpperCase(), resolvedPrivId);
+          }
+          stmts.insertDutyPriv.run(resolvedDutyId, resolvedPrivId);
+          inserted++;
         };
 
         if (fileSize > 100 * 1024 * 1024) {
-          // Large file (>100 MB): stream to avoid OOM
+          // Large file (>100 MB): stream + direct-insert (no in-memory Set)
           log(`    Reading (streaming, ${sizeMB} MB): ${basename(dutyPrivFile)}`);
           const entityCount = streamParseLargeDmfXmlSync(
             dutyPrivFile, 'SYSTEMSECURITYDUTYENTITY',
-            (inner) => collectEntity(
+            (inner) => onEntity(
               extractField(inner, 'SECURITYDUTYIDENTIFIER'),
               extractField(inner, 'SECURITYDUTYNAME'),
               extractField(inner, 'SECURITYPRIVILEGEIDENTIFIER'),
               extractField(inner, 'SECURITYPRIVILEGENAME'),
             ),
           );
-          log(`    Parsed ${entityCount.toLocaleString()} entities → ${dutyPrivPairs.size.toLocaleString()} unique duty-privilege pairs`);
+          log(`    Parsed ${entityCount.toLocaleString()} entities → ${inserted.toLocaleString()} duty-privilege insertions (INSERT OR REPLACE dedupes)`);
         } else {
           // Small file: regular DOM parser
           const entities = parseDmfXml(xmlParser, dutyPrivFile, 'SYSTEMSECURITYDUTYENTITY', log);
           for (const e of entities) {
-            collectEntity(e.SECURITYDUTYIDENTIFIER, e.SECURITYDUTYNAME,
+            onEntity(e.SECURITYDUTYIDENTIFIER, e.SECURITYDUTYNAME,
               e.SECURITYPRIVILEGEIDENTIFIER, e.SECURITYPRIVILEGENAME);
           }
-          log(`    Found ${dutyPrivPairs.size.toLocaleString()} unique duty-privilege pairs`);
-        }
-
-        // Build privilege lookup for fast existence checks
-        const existingPrivsUpper = new Map();
-        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
-          existingPrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
-        }
-
-        // Insert unique pairs
-        let inserted = 0;
-        for (const pair of dutyPrivPairs) {
-          const [rawDutyId, rawPrivId] = pair.split('\t');
-          const resolvedDutyId = aotDutyUpper.get(rawDutyId.toUpperCase()) || rawDutyId;
-          const resolvedPrivId = existingPrivsUpper.get(rawPrivId.toUpperCase()) || rawPrivId;
-
-          // Ensure duty exists
-          if (!aotDutyUpper.has(rawDutyId.toUpperCase())) {
-            stmts.insertDuty.run(resolvedDutyId, dutyNames.get(rawDutyId) || null, null, null);
-            aotDutyUpper.set(resolvedDutyId.toUpperCase(), resolvedDutyId);
-          }
-          // Ensure privilege exists
-          if (!existingPrivsUpper.has(rawPrivId.toUpperCase())) {
-            stmts.insertPrivilege.run(resolvedPrivId, null, privLabels.get(rawPrivId) || null);
-            existingPrivsUpper.set(resolvedPrivId.toUpperCase(), resolvedPrivId);
-          }
-          stmts.insertDutyPriv.run(resolvedDutyId, resolvedPrivId);
-          inserted++;
+          log(`    Duty-privilege mappings: ${inserted.toLocaleString()}`);
         }
         stats.dmfDutyPrivileges = inserted;
-        log(`    Duty-privilege mappings: ${inserted.toLocaleString()}`);
       }
 
       // 2d-bis: Duty-Privilege Mappings from System Security Duty V2 (CR-SEC-006)
@@ -1018,6 +1015,135 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
           }
           log(`    Company-scoped assignments: ${stats.dmfCompanyAssignments}`);
         }
+      }
+
+      // 2h: Direct Role-Privilege Mappings (CR-SEC-007)
+      // -------------------------------------------------------------------
+      // `System Security Privilege.xml` exports the DIRECT role→privilege
+      // graph (bypassing duties). In a DMF-only build this is the only way
+      // to complete the role-privilege chain for roles whose AOT-side
+      // duty tree isn't present. Entity shape:
+      //   SYSTEMSECURITYPRIVILEGEENTITY
+      //     SECURITYPRIVILEGEIDENTIFIER — privilege name (PK in privileges)
+      //     SECURITYPRIVILEGENAME      — human label
+      //     SECURITYROLEIDENTIFIER     — role id (GUID matching roles.role_id
+      //                                  populated from System Security Role.xml)
+      //     SECURITYROLENAME           — role display name
+      // The full DMF export is multi-GB, so stream even though the current
+      // sample is 55 MB.
+      const privFile = findDmfFile(dmfInputDir,
+        'System Security Privilege.xml', 'SystemSecurityPrivilege.xml');
+      stats.dmfDirectPrivileges = 0;
+      stats.dmfDirectPrivilegesSkipped = 0;
+      if (privFile) {
+        const fileSize = statSync(privFile).size;
+        const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
+
+        const existingPrivsUpper = new Map();
+        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+          existingPrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
+        }
+
+        const onPrivEntity = (privId, privLabel, roleId) => {
+          if (!privId || !roleId) { stats.dmfDirectPrivilegesSkipped++; return; }
+          const resolvedPrivId = existingPrivsUpper.get(privId.toUpperCase()) || privId;
+          if (!existingPrivsUpper.has(privId.toUpperCase())) {
+            stmts.insertPrivilege.run(resolvedPrivId, null, privLabel || null);
+            existingPrivsUpper.set(privId.toUpperCase(), resolvedPrivId);
+          }
+          // INSERT OR REPLACE on (role_id, privilege_name) PK — idempotent.
+          stmts.insertDirectPriv.run(roleId, resolvedPrivId);
+          stats.dmfDirectPrivileges++;
+        };
+
+        if (fileSize > 10 * 1024 * 1024) {
+          log(`    Reading Privilege (streaming, ${sizeMB} MB): ${basename(privFile)}`);
+          const cnt = streamParseLargeDmfXmlSync(
+            privFile, 'SYSTEMSECURITYPRIVILEGEENTITY',
+            (inner) => onPrivEntity(
+              extractField(inner, 'SECURITYPRIVILEGEIDENTIFIER'),
+              extractField(inner, 'SECURITYPRIVILEGENAME'),
+              extractField(inner, 'SECURITYROLEIDENTIFIER'),
+            ),
+          );
+          log(`    Privilege parsed ${cnt.toLocaleString()} entities → ${stats.dmfDirectPrivileges.toLocaleString()} direct role-privilege rows`);
+        } else {
+          const entities = parseDmfXml(xmlParser, privFile, 'SYSTEMSECURITYPRIVILEGEENTITY', log);
+          for (const e of entities) {
+            onPrivEntity(e.SECURITYPRIVILEGEIDENTIFIER, e.SECURITYPRIVILEGENAME, e.SECURITYROLEIDENTIFIER);
+          }
+          log(`    Privilege: ${stats.dmfDirectPrivileges.toLocaleString()} direct role-privilege rows`);
+        }
+        stats.directPrivileges += stats.dmfDirectPrivileges;
+      } else {
+        log('    System Security Privilege.xml not found — role_direct_privileges will be AOT-only');
+      }
+
+      // 2i: Direct Role-Entity Permissions (CR-SEC-007)
+      // -------------------------------------------------------------------
+      // `System Security Permissions.xml` exports role→resource CRUD
+      // permissions directly (menu items, tables, entities). Entity shape:
+      //   SYSTEMSECURITYPERMISSIONENTITY
+      //     CORRECTACCESS, CREATEACCESS, DELETEACCESS,
+      //     INVOKEACCESS, READACCESS, UPDATEACCESS — 0=Unset,1=Grant,2=Deny
+      //     RESOURCENAME, RESOURCETYPE
+      //     SECURITYROLEIDENTIFIER, SECURITYROLENAME
+      const permsFile = findDmfFile(dmfInputDir,
+        'System Security Permissions.xml', 'SystemSecurityPermissions.xml');
+      stats.dmfDirectEntityPerms = 0;
+      stats.dmfDirectEntityPermsSkipped = 0;
+      if (permsFile) {
+        const fileSize = statSync(permsFile).size;
+        const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
+
+        // DMF codes 0/1/2 → 'Allow'/'Deny'/null, compatible with formatCrudFlag.
+        const mapAccess = (code) => {
+          if (code === '1' || code === 1) return 'Allow';
+          if (code === '2' || code === 2) return 'Deny';
+          return null;
+        };
+
+        const onPermEntity = (roleId, resourceName, read, create, update, del, correct, invoke) => {
+          if (!roleId || !resourceName) { stats.dmfDirectEntityPermsSkipped++; return; }
+          stmts.insertDirectEntityPerm.run(
+            roleId, resourceName,
+            mapAccess(read), mapAccess(create),
+            mapAccess(update), mapAccess(del),
+            mapAccess(correct), mapAccess(invoke),
+          );
+          stats.dmfDirectEntityPerms++;
+        };
+
+        if (fileSize > 10 * 1024 * 1024) {
+          log(`    Reading Permissions (streaming, ${sizeMB} MB): ${basename(permsFile)}`);
+          const cnt = streamParseLargeDmfXmlSync(
+            permsFile, 'SYSTEMSECURITYPERMISSIONENTITY',
+            (inner) => onPermEntity(
+              extractField(inner, 'SECURITYROLEIDENTIFIER'),
+              extractField(inner, 'RESOURCENAME'),
+              extractField(inner, 'READACCESS'),
+              extractField(inner, 'CREATEACCESS'),
+              extractField(inner, 'UPDATEACCESS'),
+              extractField(inner, 'DELETEACCESS'),
+              extractField(inner, 'CORRECTACCESS'),
+              extractField(inner, 'INVOKEACCESS'),
+            ),
+          );
+          log(`    Permissions parsed ${cnt.toLocaleString()} entities → ${stats.dmfDirectEntityPerms.toLocaleString()} direct entity-permission rows`);
+        } else {
+          const entities = parseDmfXml(xmlParser, permsFile, 'SYSTEMSECURITYPERMISSIONENTITY', log);
+          for (const e of entities) {
+            onPermEntity(
+              e.SECURITYROLEIDENTIFIER, e.RESOURCENAME,
+              e.READACCESS, e.CREATEACCESS, e.UPDATEACCESS,
+              e.DELETEACCESS, e.CORRECTACCESS, e.INVOKEACCESS,
+            );
+          }
+          log(`    Permissions: ${stats.dmfDirectEntityPerms.toLocaleString()} direct entity-permission rows`);
+        }
+        stats.directEntityPerms += stats.dmfDirectEntityPerms;
+      } else {
+        log('    System Security Permissions.xml not found — role_direct_entity_permissions will be AOT-only');
       }
     });
 
