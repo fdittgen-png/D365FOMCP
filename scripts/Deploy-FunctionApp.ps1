@@ -222,6 +222,17 @@ if (Test-Path $wwwDir) {
     Write-Host "  [OK] www/ directory copied." -ForegroundColor Green
 }
 
+# Copy config/ directory (wiki registry and any future JSON configs).
+# wiki-registry.js falls back to config/wikis.json when WIKI_CONFIG_JSON
+# is not set on the Function App; shipping it keeps the file-based path
+# usable without an app-settings override.
+$configDir = Join-Path $projectDir 'config'
+if (Test-Path $configDir) {
+    New-Item -ItemType Directory -Path (Join-Path $deployDir 'config') -Force | Out-Null
+    Copy-Item "$configDir\*" (Join-Path $deployDir 'config') -Recurse
+    Write-Host "  [OK] config/ directory copied." -ForegroundColor Green
+}
+
 # List what's being deployed
 Write-Host "  Source files:" -ForegroundColor DarkGray
 Get-ChildItem (Join-Path $deployDir 'src\functions') -Filter '*.js' | ForEach-Object {
