@@ -12,4 +12,6 @@ import './d365sec.js';
 import './d365sec-upload.js';
 import './d365taskrecorder.js';
 import './otrs-extract.js';
+import './otrs-ingest.js';
+import './otrs-admin.js';
 import './wiki-mcp.js';
