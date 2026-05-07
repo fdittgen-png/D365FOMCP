@@ -18,6 +18,24 @@ export function registerKbTools(server, db) {
 
   const q = (sql, params = []) => query(db, sql, params);
 
+  /**
+   * Issue #17: detect whether the FTS5 virtual table `kb_search_fts` exists
+   * in the attached KB database. Computed once per server registration —
+   * the schema doesn't change at runtime, so we don't pay the lookup cost
+   * on every search call. Existing built KBs (sql.js builds) will not have
+   * the table, in which case d365_search falls back to LIKE scanning.
+   */
+  const ftsAvailable = (() => {
+    try {
+      const rows = q(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name='kb_search_fts'`
+      );
+      return rows.length > 0;
+    } catch {
+      return false;
+    }
+  })();
+
   function queryFormatted(sql, params = [], columns) {
     try {
       const rows = q(sql, params);
@@ -207,32 +225,69 @@ export function registerKbTools(server, db) {
       if (_v) return patternErrorResult(_v);
       const lim = limit || 20;
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
+      if (!terms.length) return textResult(`No results for "${searchQuery}".`);
 
-      const likeParts = [];
-      const likeParams = [];
-
-      terms.forEach((term) => {
-        likeParts.push(`(object_name LIKE ? OR content LIKE ?)`);
-        likeParams.push(`%${term}%`, `%${term}%`);
-      });
-
-      let sql = `SELECT object_type, object_name, module_id, SUBSTR(content, 1, 120) as context
-                 FROM kb_search
-                 WHERE ${likeParts.join(' AND ')}`;
-
-      if (object_type) {
-        sql += ` AND object_type = ? COLLATE NOCASE`;
-        likeParams.push(object_type);
+      // Issue #17: try FTS5 MATCH first (10-50x faster than chained LIKEs),
+      // fall back to LIKE if the kb_search_fts virtual table is missing
+      // (sql.js builds) or if MATCH itself errors. Mirrors the sec_search
+      // FTS5+LIKE fallback pattern.
+      let rows;
+      let usedFts = false;
+      if (ftsAvailable) {
+        try {
+          // Each term becomes a prefix-match token. Quotes escape any FTS5
+          // operator characters in the input.
+          const ftsExpr = terms.map(t => `"${t.replace(/"/g, '""')}"*`).join(' AND ');
+          let ftsSql = `
+            SELECT s.object_type, s.object_name, s.module_id,
+                   SUBSTR(s.content, 1, 120) AS context
+            FROM kb_search_fts f
+            JOIN kb_search s ON s.rowid = f.rowid
+            WHERE kb_search_fts MATCH ?`;
+          const ftsParams = [ftsExpr];
+          if (object_type) {
+            ftsSql += ` AND s.object_type = ? COLLATE NOCASE`;
+            ftsParams.push(object_type);
+          }
+          ftsSql += ` LIMIT ?`;
+          ftsParams.push(lim);
+          rows = q(ftsSql, ftsParams);
+          usedFts = true;
+        } catch {
+          // FTS5 MATCH failed (e.g., malformed expression) — fall through
+          // to LIKE so the user still gets a result.
+          rows = undefined;
+        }
       }
 
-      sql += ` LIMIT ?`;
-      likeParams.push(lim);
+      if (!usedFts) {
+        // LIKE fallback — preserves the original behaviour for built KBs
+        // that don't have the kb_search_fts virtual table.
+        const likeParts = [];
+        const likeParams = [];
 
-      let rows;
-      try {
-        rows = q(sql, likeParams);
-      } catch (err) {
-        return textResult(`Search error: ${err.message}`);
+        terms.forEach((term) => {
+          likeParts.push(`(object_name LIKE ? OR content LIKE ?)`);
+          likeParams.push(`%${term}%`, `%${term}%`);
+        });
+
+        let sql = `SELECT object_type, object_name, module_id, SUBSTR(content, 1, 120) as context
+                   FROM kb_search
+                   WHERE ${likeParts.join(' AND ')}`;
+
+        if (object_type) {
+          sql += ` AND object_type = ? COLLATE NOCASE`;
+          likeParams.push(object_type);
+        }
+
+        sql += ` LIMIT ?`;
+        likeParams.push(lim);
+
+        try {
+          rows = q(sql, likeParams);
+        } catch (err) {
+          return textResult(`Search error: ${err.message}`);
+        }
       }
 
       if (!rows || rows.length === 0) {
