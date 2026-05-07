@@ -580,7 +580,7 @@ CREATE INDEX IF NOT EXISTS idx_entity_fields ON entity_fields(entity_name);
 `;
 
 const FTS_SCHEMA = `
--- Full-text search (regular table -- sql.js WASM does not include FTS5)
+-- Full-text search base table.
 CREATE TABLE IF NOT EXISTS kb_search (
   object_type TEXT,
   object_name TEXT,
@@ -590,6 +590,23 @@ CREATE TABLE IF NOT EXISTS kb_search (
 CREATE INDEX IF NOT EXISTS idx_search_name ON kb_search(object_name);
 CREATE INDEX IF NOT EXISTS idx_search_type ON kb_search(object_type);
 CREATE INDEX IF NOT EXISTS idx_search_module ON kb_search(module_id);
+`;
+
+// Issue #17: FTS5 virtual table mirroring sec_search_fts. Content-external —
+// the FTS index does NOT duplicate the rows; it references kb_search via
+// rowid. Keeps the DB size manageable while enabling 10-50x faster
+// multi-word queries via MATCH instead of multiple LIKE '%term%' scans.
+//
+// Wrapped in try/catch on creation because the sql.js WASM build does not
+// include the FTS5 module. better-sqlite3 (and the Azure runtime) do
+// support it, so the index is built whenever the runtime allows. The
+// d365_search handler auto-detects whether kb_search_fts exists and falls
+// back to LIKE scanning when it doesn't.
+const FTS5_SCHEMA = `
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_search_fts USING fts5(
+  object_name, content,
+  content='kb_search', content_rowid='rowid'
+);
 `;
 
 // ─── Extraction Functions ────────────────────────────────────────────────────
@@ -1127,6 +1144,17 @@ function buildFtsIndex() {
     }
   }
 
+  // Issue #17: populate the FTS5 index from kb_search rows. This is the
+  // same 'rebuild' command sec-builder uses to backfill sec_search_fts.
+  // Skipped silently when the FTS5 module is unavailable (sql.js).
+  try {
+    db.run(`INSERT INTO kb_search_fts(kb_search_fts) VALUES('rebuild')`);
+    console.log('  kb_search_fts populated');
+  } catch (err) {
+    // FTS5 table doesn't exist (sql.js build) — d365_search will fall
+    // back to LIKE scanning. Not an error condition.
+  }
+
   console.log('  FTS5 index built');
 }
 
@@ -1286,6 +1314,18 @@ async function main() {
   }
   for (const stmt of FTS_SCHEMA.split(';').filter(s => s.trim())) {
     db.run(stmt + ';');
+  }
+  // Issue #17: try to create the FTS5 virtual table. This is best-effort
+  // because the sql.js WASM build does not include the FTS5 module — the
+  // d365_search handler falls back to LIKE scanning when kb_search_fts
+  // is absent.
+  try {
+    for (const stmt of FTS5_SCHEMA.split(';').filter(s => s.trim())) {
+      db.run(stmt + ';');
+    }
+    console.log('  kb_search_fts virtual table created (FTS5 available)');
+  } catch (err) {
+    console.log(`  kb_search_fts skipped (FTS5 not available: ${err.message}) — d365_search will use LIKE fallback`);
   }
 
   // Prepare statements
