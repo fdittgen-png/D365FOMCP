@@ -9,7 +9,7 @@
  *   registerKbTools(server, db);
  */
 
-import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult } from './shared.js';
+import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult, runWithBudget, QueryBudgetExceededError, timeoutErrorResult } from './shared.js';
 import { z } from 'zod';
 
 // ── Register all 17 KB tools ────────────────────────────────────────────────
@@ -697,13 +697,14 @@ export function registerKbTools(server, db) {
         if (!/\bLIMIT\b/i.test(safeSql)) {
           safeSql += ' LIMIT 500';
         }
-        const rows = q(safeSql);
+        const rows = runWithBudget('d365_raw_sql', () => q(safeSql));
         let out = formatMarkdownTable(rows);
         if (rows.length >= 500) {
           out += `\n\n> ⚠️ Showing first 500 results. There may be more — increase limit or refine your query.`;
         }
         return textResult(out);
       } catch (err) {
+        if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return textResult(`Error: ${err.message}`);
       }
     }

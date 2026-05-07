@@ -6,7 +6,7 @@
  * better-sqlite3 database.
  */
 
-import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult } from './shared.js';
+import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult, runWithBudget, QueryBudgetExceededError, timeoutErrorResult } from './shared.js';
 import { z } from 'zod';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
@@ -610,12 +610,13 @@ export function registerXrefTools(server, db) {
       }
 
       try {
-        const result = q(finalSql);
+        const result = runWithBudget('xref_raw_sql', () => q(finalSql));
         if (!result || result.length === 0) return textResult('No results found.');
         let out = formatMarkdownTable(result);
         if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
         return textResult(out);
       } catch (err) {
+        if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return textResult(`SQL Error: ${err.message}`);
       }
     },

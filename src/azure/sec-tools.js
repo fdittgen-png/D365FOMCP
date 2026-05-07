@@ -9,7 +9,7 @@
  *   registerSecTools(server, db);
  */
 
-import { query, formatMarkdownTable, textResult } from './shared.js';
+import { query, formatMarkdownTable, textResult, runWithBudget, QueryBudgetExceededError, timeoutErrorResult } from './shared.js';
 import { z } from 'zod';
 
 // ── Register all 15 Security tools ──────────────────────────────────────────
@@ -785,12 +785,13 @@ export function registerSecTools(server, db) {
       }
 
       try {
-        const rows = q(limited);
+        const rows = runWithBudget('sec_raw_sql', () => q(limited));
         if (!rows.length) return textResult('No results found.');
         let out = formatMarkdownTable(rows);
         if (rows.length >= 500) out += `\n\n> ⚠️ Showing first 500 results. There may be more — add a LIMIT clause or refine your query.`;
         return textResult(out);
       } catch (err) {
+        if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return textResult(`SQL Error: ${err.message}`);
       }
     }
