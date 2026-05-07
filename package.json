@@ -12,11 +12,12 @@
     "start:xref": "node src/local/mcp-server-xref.js",
     "start:sec": "node src/local/mcp-server-sec.js",
     "start:taskrecorder": "node src/local/mcp-server-taskrecorder.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/*.test.js test/integration/*.test.js",
     "test:sec": "node --test test/sec-tools.test.js",
     "test:kb": "node --test test/kb-tools.test.js",
     "test:xref": "node --test test/xref-tools.test.js",
     "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
     "start:azure": "func start"
   },
   "engines": {
