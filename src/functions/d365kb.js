@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getKbDb } from '../azure/shared.js';
 import { registerKbTools } from '../azure/kb-tools.js';
+import { validateRequestSize } from '../azure/request-size.js';
 
 function createKbServer() {
   const server = new McpServer({
@@ -41,6 +42,8 @@ app.http('d365kb', {
       // Parse body for POST, pass as parsedBody option
       let options;
       if (request.method === 'POST') {
+        const sizeRejection = validateRequestSize(request);
+        if (sizeRejection) return sizeRejection;
         const parsedBody = await request.json();
         options = { parsedBody };
       }

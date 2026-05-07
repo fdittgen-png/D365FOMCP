@@ -17,6 +17,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
+import { validateRequestSize } from '../azure/request-size.js';
 
 /**
  * Per-endpoint upload ceiling for Task Recorder recordings.
@@ -96,6 +97,8 @@ app.http('d365taskrecorder', {
 
       let options;
       if (request.method === 'POST') {
+        const sizeRejection = validateRequestSize(request);
+        if (sizeRejection) return sizeRejection;
         const parsedBody = await request.json();
         options = { parsedBody };
       }
