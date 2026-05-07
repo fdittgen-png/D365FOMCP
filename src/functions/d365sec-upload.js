@@ -22,14 +22,17 @@
 
 import { app } from '@azure/functions';
 import { createRequire } from 'module';
-import { mkdtempSync, rmSync, readdirSync, existsSync } from 'fs';
-import { join } from 'path';
+import { mkdtempSync, rmSync, readdirSync, existsSync, readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import { buildSecurityDatabase } from '../azure/sec-builder.js';
 import { getSecDb, reloadSecDb, query } from '../azure/shared.js';
 
 const require = createRequire(import.meta.url);
 const AdmZip = require('adm-zip');
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Azure RBAC role definition IDs ───────────────────────────────────────────
 
@@ -168,177 +171,25 @@ export function decideUploadAuthorization({ user, easyAuth, authorized, requireA
 }
 
 // ── HTML Upload Form ─────────────────────────────────────────────────────────
+//
+// The form template is loaded from `www/upload.html` (issue #35) so the same
+// page can also be served by the new admin dashboard. The static file contains
+// the placeholders `{{AUTH_BAR}}`, `{{DB_INFO}}`, `{{UPLOAD_DISABLED}}` and
+// `{{INPUT_DISABLED}}` which the GET handler substitutes per-request.
 
-const UPLOAD_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>D365FO Security Database Update</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-           max-width: 860px; margin: 0 auto; padding: 32px 20px; color: #24292f; background: #f6f8fa; }
-    h1 { font-size: 24px; margin-bottom: 8px; }
-    .subtitle { color: #57606a; margin-bottom: 24px; }
-    .card { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 24px; margin-bottom: 16px; }
-    .card h2 { font-size: 16px; margin-bottom: 12px; }
-    .help-list { font-size: 14px; color: #57606a; padding-left: 20px; }
-    .help-list li { margin-bottom: 4px; }
-    .help-list code { background: #f0f3f6; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
-    .help-list strong { color: #24292f; }
+const UPLOAD_HTML_PATH = join(__dirname, '..', '..', 'www', 'upload.html');
 
-    .db-info { display: flex; gap: 24px; flex-wrap: wrap; font-size: 14px; color: #57606a;
-               background: #f0f3f6; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; }
-    .db-info .item { display: flex; gap: 6px; }
-    .db-info .label { font-weight: 600; color: #24292f; }
+let UPLOAD_HTML;
+try {
+  UPLOAD_HTML = readFileSync(UPLOAD_HTML_PATH, 'utf8');
+} catch {
+  UPLOAD_HTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Upload form unavailable</title></head>
+<body style="font-family:system-ui;padding:32px"><h1>Upload form unavailable</h1>
+<p>The static page <code>www/upload.html</code> is not bundled in this deployment.</p>
+{{AUTH_BAR}}{{DB_INFO}}</body></html>`;
+}
 
-    .auth-bar { font-size: 14px; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; }
-    .auth-bar.signed-in { background: #dafbe1; border: 1px solid #4ac26b; color: #116329; }
-    .auth-bar.signed-out { background: #fff8c5; border: 1px solid #d4a72c; color: #6a5300; }
-    .auth-bar.denied { background: #ffebe9; border: 1px solid #ff8182; color: #82071e; }
-    .auth-bar a { color: inherit; font-weight: 600; }
-
-    .upload-area { border: 2px dashed #d0d7de; border-radius: 6px; padding: 40px 20px;
-                   text-align: center; cursor: pointer; transition: all 0.15s; }
-    .upload-area:hover { border-color: #0969da; background: #f0f6ff; }
-    .upload-area.dragover { border-color: #0969da; background: #ddf4ff; }
-    .upload-area.disabled { pointer-events: none; opacity: 0.5; }
-    .upload-area p { color: #57606a; margin-bottom: 12px; }
-    .upload-area .filename { font-weight: 600; color: #0969da; margin-top: 8px; }
-
-    input[type="file"] { display: none; }
-    .btn { display: inline-block; background: #2da44e; color: #fff; border: none; padding: 10px 24px;
-           border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; transition: background 0.15s;
-           text-decoration: none; }
-    .btn:hover { background: #218838; }
-    .btn:disabled { background: #94d3a2; cursor: not-allowed; }
-    .btn-blue { background: #0969da; }
-    .btn-blue:hover { background: #0550ae; }
-    .btn-row { margin-top: 16px; display: flex; align-items: center; gap: 12px; }
-
-    .status { margin-top: 16px; padding: 16px; border-radius: 6px; display: none; font-size: 14px; }
-    .status.info    { display: block; background: #ddf4ff; border: 1px solid #54aeff; color: #0550ae; }
-    .status.success { display: block; background: #dafbe1; border: 1px solid #4ac26b; color: #116329; }
-    .status.error   { display: block; background: #ffebe9; border: 1px solid #ff8182; color: #82071e; }
-    .status h3 { font-size: 15px; margin-bottom: 8px; }
-    pre { background: #f6f8fa; padding: 12px; border-radius: 4px; overflow-x: auto;
-          font-size: 13px; line-height: 1.5; margin-top: 8px; }
-    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #fff;
-               border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
-</head>
-<body>
-  <h1>D365FO Security Database Update</h1>
-  <p class="subtitle">Upload a ZIP file containing DMF XML exports to rebuild the security database.</p>
-
-  {{AUTH_BAR}}
-
-  <div class="db-info" id="dbInfo">{{DB_INFO}}</div>
-
-  <div class="card">
-    <h2>Expected ZIP contents</h2>
-    <ul class="help-list">
-      <li><strong>Required (DMF):</strong> <code>System Security Role.xml</code>,
-          <code>System Security Sub Role V2.xml</code>,
-          <code>System Security Role Duty.xml</code></li>
-      <li><strong>Optional (DMF):</strong> <code>SystemSecurityUserRoleEntity.xml</code>,
-          <code>SystemSecurityUserRoleOrganizationEntity.xml</code>,
-          <code>User information.xml</code>,
-          <code>SecurityDatabaseCustomizations.xml</code></li>
-      <li><strong>Optional (AOT):</strong> Place AOT security XMLs in an <code>aot/</code>
-          subdirectory (preserving the PackagesLocalDirectory structure)</li>
-    </ul>
-  </div>
-
-  <div class="card">
-    <form id="uploadForm">
-      <div class="upload-area {{UPLOAD_DISABLED}}" id="dropZone">
-        <p>Drag &amp; drop a ZIP file here, or click to browse</p>
-        <div id="fileName" class="filename"></div>
-      </div>
-      <input type="file" id="zipFile" accept=".zip" {{INPUT_DISABLED}}>
-      <div class="btn-row">
-        <button type="submit" class="btn" id="submitBtn" disabled>
-          Upload &amp; Rebuild Database
-        </button>
-      </div>
-    </form>
-
-    <div id="status" class="status"></div>
-  </div>
-
-  <script>
-    const form = document.getElementById('uploadForm');
-    const statusEl = document.getElementById('status');
-    const submitBtn = document.getElementById('submitBtn');
-    const dropZone = document.getElementById('dropZone');
-    const fileInput = document.getElementById('zipFile');
-    const fileNameEl = document.getElementById('fileName');
-    const canUpload = !fileInput.disabled;
-
-    if (canUpload) {
-      dropZone.addEventListener('click', () => fileInput.click());
-      dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-      dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-      dropZone.addEventListener('drop', e => {
-        e.preventDefault();
-        dropZone.classList.remove('dragover');
-        if (e.dataTransfer.files.length && e.dataTransfer.files[0].name.endsWith('.zip')) {
-          fileInput.files = e.dataTransfer.files;
-          onFileSelected();
-        }
-      });
-      fileInput.addEventListener('change', onFileSelected);
-    }
-
-    function onFileSelected() {
-      const file = fileInput.files[0];
-      if (file) {
-        fileNameEl.textContent = file.name + ' (' + (file.size / (1024*1024)).toFixed(1) + ' MB)';
-        submitBtn.disabled = false;
-        statusEl.className = 'status';
-      }
-    }
-
-    form.addEventListener('submit', async e => {
-      e.preventDefault();
-      if (!canUpload) return;
-      const file = fileInput.files[0];
-      if (!file) return;
-
-      submitBtn.disabled = true;
-      submitBtn.innerHTML = '<span class="spinner"></span> Building...';
-      statusEl.className = 'status info';
-      statusEl.innerHTML = '<h3>Processing</h3>Uploading ZIP and rebuilding the security database. This may take a minute...';
-
-      try {
-        const formData = new FormData();
-        formData.append('zipfile', file);
-        const resp = await fetch(window.location.href, { method: 'POST', body: formData });
-        const result = await resp.json();
-
-        if (resp.ok) {
-          statusEl.className = 'status success';
-          statusEl.innerHTML = '<h3>Database rebuilt successfully</h3>'
-            + '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
-        } else {
-          statusEl.className = 'status error';
-          statusEl.innerHTML = '<h3>' + (resp.status === 403 ? 'Access denied' : 'Build failed') + '</h3>'
-            + '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
-        }
-      } catch (err) {
-        statusEl.className = 'status error';
-        statusEl.innerHTML = '<h3>Error</h3><p>' + err.message + '</p>';
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Upload & Rebuild Database';
-      }
-    });
-  </script>
-</body>
-</html>`;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

@@ -11,3 +11,5 @@ import './d365xref.js';
 import './d365sec.js';
 import './d365sec-upload.js';
 import './d365taskrecorder.js';
+import './d365health.js';
+import './d365admin-pages.js';
