@@ -194,7 +194,100 @@ The storage account also runs a blob lifecycle policy on the `mcpsec-uploads/` c
 
 ---
 
-## 5. Related documentation
+## 5. Database snapshots and restore
+
+The MCP databases are not authoritative — `Update-Databases.ps1` rebuilds them from D365 source (PackagesLocalDirectory + the XRef SQL Server + DMF exports). However, the rebuild can take an hour or more, and a bad build that has been deployed needs to be rolled back **fast**, not rebuilt. Snapshots cover that gap.
+
+### 5.1 What is captured
+
+After every successful build, `scripts/Backup-Databases.ps1` uploads the resulting `.sqlite` files to the Function App's storage account, container `mcpsec-snapshots`, with a dated blob name:
+
+```
+mcpsec-snapshots/d365fo_kb_2026-05-06-103412.sqlite
+mcpsec-snapshots/d365fo_xref_2026-05-06-103412.sqlite
+mcpsec-snapshots/d365fo_sec_2026-05-06-103412.sqlite
+```
+
+The script auto-runs at the end of `Update-Databases.ps1` when `-BackupEnvironment d|p` is passed. It can also be called standalone after any local build.
+
+### 5.2 Retention
+
+Two layers, defence-in-depth:
+
+| Mechanism | Where defined | Behaviour |
+|-----------|---------------|-----------|
+| Per-DB count cap | `Backup-Databases.ps1` `-KeepCount` (default **5**) | After uploading a new snapshot, blobs matching `d365fo_<db>_*.sqlite` are sorted by modified-date descending and any beyond `KeepCount` are deleted. |
+| Calendar lifecycle | `infra/modules/functionApp.bicep` (`managementPolicies/default`) | Any snapshot blob older than **90 days** is deleted by the platform. Catches snapshots the script's prune step missed (e.g., script aborted mid-run). |
+
+The "last 5 snapshots" criterion from issue #37 is enforced by the script's count cap. The 90-day lifecycle is a calendar-based safety net — the platform's lifecycle engine cannot count blobs, only age them.
+
+### 5.3 Restore procedure
+
+When a deployed build is bad and you need to roll back to the previous snapshot. Examples below use the **dev** storage account `tisdmcpd365fost`; for prod substitute `tispmcpd365fost`.
+
+1. **List snapshots for the affected database:**
+   ```powershell
+   az storage blob list `
+       --account-name tisdmcpd365fost `
+       --container-name mcpsec-snapshots `
+       --prefix d365fo_sec_ `
+       --auth-mode login `
+       --query "sort_by([].{name:name,modified:properties.lastModified}, &modified) | reverse(@)" `
+       -o table
+   ```
+
+2. **Download the desired snapshot to local disk:**
+   ```powershell
+   az storage blob download `
+       --account-name tisdmcpd365fost `
+       --container-name mcpsec-snapshots `
+       --name d365fo_sec_2026-05-06-103412.sqlite `
+       --file $env:USERPROFILE\.claude\d365fo_sec.sqlite `
+       --auth-mode login
+   ```
+   This overwrites the local `.sqlite` so the next deploy uses the snapshot.
+
+3. **Re-deploy the snapshot to the Function App** using either path:
+
+   **Option A — Re-run `Deploy-Databases.ps1` (preferred):** It will pick up the file you just downloaded and push it via Kudu VFS to `/home/data/d365fo_sec.sqlite`, then restart the Function App.
+   ```powershell
+   .\scripts\Deploy-Databases.ps1 -Environment p -SecOnly
+   ```
+
+   **Option B — Manual Kudu VFS upload:** When the deploy script is unavailable, push directly:
+   ```powershell
+   $rg = 'tis-p-mcpd365fo-rg'
+   $func = 'tis-p-mcpd365fo-func'
+   $creds = az functionapp deployment list-publishing-credentials `
+       --resource-group $rg --name $func -o json | ConvertFrom-Json
+   $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(
+       "$($creds.publishingUserName):$($creds.publishingPassword)"))
+   Invoke-RestMethod `
+       -Uri "https://$func.scm.azurewebsites.net/api/vfs/data/d365fo_sec.sqlite" `
+       -Method PUT `
+       -Headers @{ Authorization = "Basic $auth"; 'If-Match' = '*' } `
+       -InFile $env:USERPROFILE\.claude\d365fo_sec.sqlite `
+       -ContentType 'application/octet-stream'
+   az functionapp restart --resource-group $rg --name $func
+   ```
+
+   **Option C — `sec-upload` endpoint:** Only the Sec database has an upload endpoint (`POST /api/d365sec/upload`); KB/XRef must use Kudu. See `src/functions/d365sec-upload.js`.
+
+4. **Verify** by hitting the health endpoint and a known-good query:
+   ```powershell
+   Invoke-RestMethod "https://$func.azurewebsites.net/api/d365sec"
+   ```
+
+### 5.4 Container layout reference
+
+| Container | Purpose | Lifecycle |
+|-----------|---------|-----------|
+| `mcpsec-snapshots` | Dated snapshots from successful builds (issue #37) | 90-day delete + 5-deep prune in script |
+| `mcpsec-uploads` (if present) | Async DMF upload staging for `sec-upload` endpoint | per existing endpoint config |
+
+---
+
+## 6. Related documentation
 
 | Document | Description |
 |----------|-------------|
