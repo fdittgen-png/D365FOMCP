@@ -95,6 +95,47 @@ async function isOwnerOrContributor(principalId) {
   });
 }
 
+/**
+ * Decide whether an upload request is authorized. Pure function — easy to unit-test.
+ * Returns `null` when the request may proceed; otherwise returns the rejection
+ * response `{ status, jsonBody }` to send back to the client.
+ *
+ * Fail-closed on `authorized === null` (issue #27): when the RBAC check cannot run
+ * (no managed identity, ARM token unavailable, missing Reader role), we reject
+ * with 503 instead of allowing the upload through.
+ */
+export function decideUploadAuthorization({ user, easyAuth, authorized }) {
+  if (!user && easyAuth) {
+    return {
+      status: 401,
+      jsonBody: {
+        error: 'Authentication required.',
+        hint: 'Sign in via Azure AD at /api/d365sec/upload.',
+      },
+    };
+  }
+  if (!user) return null; // local dev / no Easy Auth — anonymous allowed
+  if (authorized === false) {
+    return {
+      status: 403,
+      jsonBody: {
+        error: `Access denied for ${user.principalName}.`,
+        hint: 'Owner or Contributor role on the resource group is required.',
+      },
+    };
+  }
+  if (authorized === null) {
+    return {
+      status: 503,
+      jsonBody: {
+        error: 'Authorization check unavailable — upload rejected.',
+        hint: 'Configure a system-assigned managed identity with Reader role on the resource group, then retry.',
+      },
+    };
+  }
+  return null;
+}
+
 // ── HTML Upload Form ─────────────────────────────────────────────────────────
 
 const UPLOAD_HTML = `<!DOCTYPE html>
@@ -383,30 +424,13 @@ app.http('d365sec-upload', {
       const user = getAuthUser(request);
       const easyAuth = isEasyAuthEnabled();
 
-      if (!user && easyAuth) {
-        return {
-          status: 401,
-          jsonBody: {
-            error: 'Authentication required.',
-            hint: 'Sign in via Azure AD at /api/d365sec/upload.',
-          },
-        };
-      }
-
-      if (user) {
-        const authorized = await isOwnerOrContributor(user.principalId);
-        if (authorized === false) {
-          return {
-            status: 403,
-            jsonBody: {
-              error: `Access denied for ${user.principalName}.`,
-              hint: 'Owner or Contributor role on the resource group is required.',
-            },
-          };
+      const authorized = user ? await isOwnerOrContributor(user.principalId) : null;
+      const rejection = decideUploadAuthorization({ user, easyAuth, authorized });
+      if (rejection) {
+        if (authorized === null && user) {
+          context.error(`RBAC check unavailable for ${user.principalName} — rejecting upload (fail-closed; issue #27)`);
         }
-        if (authorized === null) {
-          context.warn(`RBAC check unavailable — allowing ${user.principalName} (managed identity not configured)`);
-        }
+        return rejection;
       }
 
       const uploaderName = user?.principalName || 'anonymous (no Easy Auth)';
