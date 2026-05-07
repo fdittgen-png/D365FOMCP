@@ -31,7 +31,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_lookup_table',
     'Get complete metadata for a D365FO table: fields (name, type, EDT), primary key, indexes, and foreign key relations. Returns a compact Markdown summary.',
-    { table_name: z.string().max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)') },
+    { table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)') },
     async ({ table_name }) => {
       const _v = validateLikePattern(table_name);
       if (_v) return patternErrorResult(_v);
@@ -137,8 +137,8 @@ export function registerKbTools(server, db) {
     'd365_get_join_keys',
     'Get the exact join fields between two D365FO tables. Critical for writing correct SQL joins.',
     {
-      table1: z.string().max(500).describe('First table name'),
-      table2: z.string().max(500).describe('Second table name'),
+      table1: z.string().min(1).max(500).describe('First table name'),
+      table2: z.string().min(1).max(500).describe('Second table name'),
     },
     async ({ table1, table2 }) => {
       const t1 = table1.trim();
@@ -198,9 +198,9 @@ export function registerKbTools(server, db) {
     'd365_search',
     'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release".',
     {
-      query: z.string().max(1000).describe('Search query (keywords)'),
-      object_type: z.string().max(500).optional().describe('Optional filter: table, class, enum, entity'),
-      limit: z.number().optional().default(20).describe('Max results (default 20)'),
+      query: z.string().min(1).max(1000).describe('Search query (keywords)'),
+      object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
+      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20, max 500)'),
     },
     async ({ query: searchQuery, object_type, limit }) => {
       const _v = validateLikePattern(searchQuery);
@@ -250,7 +250,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_get_enum',
     'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++.',
-    { enum_name: z.string().max(500).describe('Enum name (e.g. StatusIssue, InventTransType)') },
+    { enum_name: z.string().min(1).max(500).describe('Enum name (e.g. StatusIssue, InventTransType)') },
     async ({ enum_name }) => {
       const _v = validateLikePattern(enum_name);
       if (_v) return patternErrorResult(_v);
@@ -289,8 +289,8 @@ export function registerKbTools(server, db) {
     'd365_check_field_exists',
     'Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names.',
     {
-      table_name: z.string().max(500).describe('Table name'),
-      field_names: z.array(z.string().max(500)).describe('Array of field names to check'),
+      table_name: z.string().min(1).max(500).describe('Table name'),
+      field_names: z.array(z.string().min(1).max(500)).describe('Array of field names to check'),
     },
     async ({ table_name, field_names }) => {
       const tn = table_name.trim();
@@ -352,10 +352,10 @@ export function registerKbTools(server, db) {
     'd365_get_class_methods',
     'Get method signatures (and optionally full X++ source code) for a D365FO class or table. Use include_source=true to get the complete method bodies.',
     {
-      name: z.string().max(500).describe('Class or table name'),
-      filter: z.string().max(500).optional().describe('Optional filter on method name (LIKE pattern)'),
+      name: z.string().min(1).max(500).describe('Class or table name'),
+      filter: z.string().min(1).max(500).optional().describe('Optional filter on method name (LIKE pattern)'),
       include_source: z.boolean().optional().default(false).describe('If true, include full X++ source code for each method'),
-      limit: z.number().optional().default(100).describe('Max results (default 100)'),
+      limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ name, filter, include_source, limit }) => {
       const _vn = validateLikePattern(name);
@@ -430,8 +430,8 @@ export function registerKbTools(server, db) {
     'd365_get_method_source',
     'Get the full X++ source code for a specific method on a class or table. Use this for targeted code analysis when you know the exact method name.',
     {
-      owner_name: z.string().max(500).describe('Class or table name'),
-      method_name: z.string().max(500).describe('Method name'),
+      owner_name: z.string().min(1).max(500).describe('Class or table name'),
+      method_name: z.string().min(1).max(500).describe('Method name'),
     },
     async ({ owner_name, method_name }) => {
       const _vo = validateLikePattern(owner_name);
@@ -479,7 +479,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_find_referencing_tables',
     'Find all tables that have foreign key relationships TO a given table. Useful for impact analysis.',
-    { table_name: z.string().max(500).describe('Target table name') },
+    { table_name: z.string().min(1).max(500).describe('Target table name') },
     async ({ table_name }) => {
       const tn = table_name.trim();
 
@@ -514,7 +514,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_get_module_summary',
     'Get a summary of a D365FO module/package: object counts and key tables/classes.',
-    { module_name: z.string().max(500).describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)') },
+    { module_name: z.string().min(1).max(500).describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)') },
     async ({ module_name }) => {
       const _v = validateLikePattern(module_name);
       if (_v) return patternErrorResult(_v);
@@ -562,7 +562,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_get_entity_sources',
     'Get data source chain and fields for a D365FO data entity. Shows the primary table and OData name.',
-    { entity_name: z.string().max(500).describe('Data entity name') },
+    { entity_name: z.string().min(1).max(500).describe('Data entity name') },
     async ({ entity_name }) => {
       const _v = validateLikePattern(entity_name);
       if (_v) return patternErrorResult(_v);
@@ -644,7 +644,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_hallucination_check',
     'Check for known D365FO hallucination traps for a table. Returns common LLM mistakes and their corrections.',
-    { table_name: z.string().max(500).describe('Table name to check traps for') },
+    { table_name: z.string().min(1).max(500).describe('Table name to check traps for') },
     async ({ table_name }) => {
       const tn = table_name.trim();
 
@@ -672,7 +672,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_raw_sql',
     'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...)',
-    { sql: z.string().max(50000).describe('SQL SELECT query to execute') },
+    { sql: z.string().min(1).max(50000).describe('SQL SELECT query to execute') },
     async ({ sql: rawSql }) => {
       const trimmed = rawSql.trim();
       const upper = trimmed.toUpperCase();
@@ -715,9 +715,9 @@ export function registerKbTools(server, db) {
     'd365_graph_traverse',
     'Traverse the D365FO object dependency graph. Find related tables, class hierarchies, or entity-to-table mappings within N hops.',
     {
-      start_node: z.string().max(500).describe('Starting object name'),
-      max_depth: z.number().optional().default(2).describe('Maximum traversal depth (default 2)'),
-      edge_type: z.string().max(500).optional().describe('Optional edge type filter: FK, extends, datasource'),
+      start_node: z.string().min(1).max(500).describe('Starting object name'),
+      max_depth: z.number().int().min(0).max(10).optional().default(2).describe('Maximum traversal depth (default 2, range 0–10)'),
+      edge_type: z.string().min(1).max(500).optional().describe('Optional edge type filter: FK, extends, datasource'),
     },
     async ({ start_node, max_depth, edge_type }) => {
       const sn = start_node.trim();
@@ -783,7 +783,7 @@ export function registerKbTools(server, db) {
   server.tool(
     'd365_field_renames',
     'Look up AX2012-to-D365FO field renames for a table. Prevents using obsolete field names.',
-    { table_name: z.string().max(500).describe('Table name') },
+    { table_name: z.string().min(1).max(500).describe('Table name') },
     async ({ table_name }) => {
       const tn = table_name.trim();
       const result = q(
@@ -824,7 +824,7 @@ export function registerKbTools(server, db) {
     'd365_resolve_label',
     'Resolve D365FO label IDs (like @SYS12345) to human-readable text. Use when you encounter unresolved label references.',
     {
-      label_ids: z.array(z.string().max(500)).describe('Array of label IDs to resolve (e.g. ["@SYS12345", "@SYS67890"])'),
+      label_ids: z.array(z.string().min(1).max(500)).describe('Array of label IDs to resolve (e.g. ["@SYS12345", "@SYS67890"])'),
     },
     async ({ label_ids }) => {
       if (!label_ids || label_ids.length === 0) {

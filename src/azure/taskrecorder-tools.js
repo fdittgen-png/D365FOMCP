@@ -22,13 +22,13 @@ export function registerTaskRecorderTools(server) {
       + 'The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), '
       + 'data sources, security roles, navigation flow, and scope tree.',
     {
-      file_url: z.string().max(2000).optional().describe(
+      file_url: z.string().min(1).max(2000).optional().describe(
         'URL to the .axtr file (e.g. from a file upload or attachment). The server will download and parse it directly.'
       ),
-      file_content: z.string().max(20000000).optional().describe(
+      file_content: z.string().min(1).max(20000000).optional().describe(
         'Base64-encoded contents of the .axtr file. Use file_url instead when the file is available as a URL.'
       ),
-      file_name: z.string().max(255).optional().default('recording.axtr').describe(
+      file_name: z.string().min(1).max(255).optional().default('recording.axtr').describe(
         'Original filename (used in the generated footer)'
       ),
     },

@@ -23,7 +23,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_role',
     'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.',
-    { role_name: z.string().max(500).describe('Role name (case-insensitive)') },
+    { role_name: z.string().min(1).max(500).describe('Role name (case-insensitive)') },
     async ({ role_name }) => {
       const rn = role_name.trim();
       const role = q(`SELECT * FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
@@ -93,7 +93,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_duty',
     'Get duty details: parent roles, privileges granted, and entry points.',
-    { duty_name: z.string().max(500).describe('Duty ID or name (case-insensitive)') },
+    { duty_name: z.string().min(1).max(500).describe('Duty ID or name (case-insensitive)') },
     async ({ duty_name }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT * FROM duties WHERE duty_id = ? COLLATE NOCASE
@@ -143,7 +143,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_privilege',
     'Get privilege details: entry points with CRUD grants, parent duties, and parent roles.',
-    { privilege_name: z.string().max(500).describe('Privilege name (case-insensitive)') },
+    { privilege_name: z.string().min(1).max(500).describe('Privilege name (case-insensitive)') },
     async ({ privilege_name }) => {
       const pn = privilege_name.trim();
       const priv = q(`SELECT * FROM privileges WHERE privilege_name = ? COLLATE NOCASE`, [pn]);
@@ -203,7 +203,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_lookup_user',
     'Get user profile: roles, company scoping, enabled status, and email.',
-    { user_id: z.string().max(500).describe('User ID (case-insensitive)') },
+    { user_id: z.string().min(1).max(500).describe('User ID (case-insensitive)') },
     async ({ user_id }) => {
       const uid = user_id.trim();
       const user = q(`SELECT * FROM users WHERE user_id = ? COLLATE NOCASE`, [uid]);
@@ -258,7 +258,7 @@ export function registerSecTools(server, db) {
     'sec_role_hierarchy',
     'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from).',
     {
-      role_name: z.string().max(500).describe('Role name'),
+      role_name: z.string().min(1).max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
     },
     async ({ role_name, direction }) => {
@@ -291,9 +291,9 @@ export function registerSecTools(server, db) {
     'sec_find_users_by_role',
     'Find all users assigned to a role, optionally filtered to a specific company.',
     {
-      role_name: z.string().max(500).describe('Role name'),
-      company_id: z.string().max(500).optional().describe('Filter to users scoped to this company'),
-      limit: z.number().optional().default(100).describe('Max results'),
+      role_name: z.string().min(1).max(500).describe('Role name'),
+      company_id: z.string().min(1).max(500).optional().describe('Filter to users scoped to this company'),
+      limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ role_name, company_id, limit: rawLimit }) => {
       const limit = rawLimit || 100;
@@ -336,7 +336,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_find_roles_by_duty',
     'Find all roles that contain a specific duty.',
-    { duty_name: z.string().max(500).describe('Duty ID or name') },
+    { duty_name: z.string().min(1).max(500).describe('Duty ID or name') },
     async ({ duty_name }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT duty_id FROM duties
@@ -360,7 +360,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_find_roles_by_privilege',
     'Find all roles that grant a privilege (via the duty chain or directly).',
-    { privilege_name: z.string().max(500).describe('Privilege name') },
+    { privilege_name: z.string().min(1).max(500).describe('Privilege name') },
     async ({ privilege_name }) => {
       const pn = privilege_name.trim();
 
@@ -405,8 +405,8 @@ export function registerSecTools(server, db) {
     'sec_company_users',
     'List all users and their roles for a specific company (legal entity).',
     {
-      company_id: z.string().max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
-      limit: z.number().optional().default(200).describe('Max results'),
+      company_id: z.string().min(1).max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
+      limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results (default 200, max 500)'),
     },
     async ({ company_id, limit: rawLimit }) => {
       const limit = rawLimit || 200;
@@ -435,9 +435,9 @@ export function registerSecTools(server, db) {
     'sec_permission_trace',
     'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object.',
     {
-      role_name: z.string().max(500).describe('Role name'),
-      object_name: z.string().max(500).optional().describe('Filter to entry points targeting this object'),
-      limit: z.number().optional().default(500).describe('Max results'),
+      role_name: z.string().min(1).max(500).describe('Role name'),
+      object_name: z.string().min(1).max(500).optional().describe('Filter to entry points targeting this object'),
+      limit: z.number().int().min(1).max(500).optional().default(500).describe('Max results (default 500, max 500)'),
     },
     async ({ role_name, object_name, limit: rawLimit }) => {
       const limit = rawLimit || 500;
@@ -508,8 +508,8 @@ export function registerSecTools(server, db) {
     'sec_compare_roles',
     'Compare two roles side by side: shared vs unique duties and privileges.',
     {
-      role1: z.string().max(500).describe('First role name'),
-      role2: z.string().max(500).describe('Second role name'),
+      role1: z.string().min(1).max(500).describe('First role name'),
+      role2: z.string().min(1).max(500).describe('Second role name'),
     },
     async ({ role1, role2 }) => {
       const r1 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role1.trim()]);
@@ -582,10 +582,10 @@ export function registerSecTools(server, db) {
     'sec_effective_permissions',
     'Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name or company.',
     {
-      user_id: z.string().max(500).optional().describe('User ID (provide this OR role_name)'),
-      role_name: z.string().max(500).optional().describe('Role name (provide this OR user_id)'),
-      object_name: z.string().max(500).optional().describe('Filter to entry points for this object'),
-      limit: z.number().optional().default(200).describe('Max results'),
+      user_id: z.string().min(1).max(500).optional().describe('User ID (provide this OR role_name)'),
+      role_name: z.string().min(1).max(500).optional().describe('Role name (provide this OR user_id)'),
+      object_name: z.string().min(1).max(500).optional().describe('Filter to entry points for this object'),
+      limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results (default 200, max 500)'),
     },
     async ({ user_id, role_name, object_name, limit: rawLimit }) => {
       const limit = rawLimit || 200;
@@ -684,9 +684,9 @@ export function registerSecTools(server, db) {
     'sec_search',
     'Full-text search across roles, duties, privileges, and users.',
     {
-      query: z.string().max(500).describe('Search keywords'),
+      query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
-      limit: z.number().optional().default(20).describe('Max results'),
+      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20, max 500)'),
     },
     async ({ query: searchQuery, object_type, limit: rawLimit }) => {
       const limit = rawLimit || 20;
@@ -763,7 +763,7 @@ export function registerSecTools(server, db) {
   server.tool(
     'sec_raw_sql',
     'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)',
-    { sql: z.string().max(50000).describe('SQL SELECT query') },
+    { sql: z.string().min(1).max(50000).describe('SQL SELECT query') },
     async ({ sql: rawSql }) => {
       const trimmed = rawSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
