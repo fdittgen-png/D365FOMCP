@@ -6,6 +6,7 @@
  */
 
 import { app } from '@azure/functions';
+import { validateRequestSize } from '../azure/request-size.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getXrefDb } from '../azure/shared.js';
@@ -40,6 +41,8 @@ app.http('d365xref', {
 
       let options;
       if (request.method === 'POST') {
+        const sizeRejection = validateRequestSize(request);
+        if (sizeRejection) return sizeRejection;
         const parsedBody = await request.json();
         options = { parsedBody };
       }
