@@ -540,6 +540,43 @@ For configuration of Cursor, GitHub Copilot, ChatGPT, Google Gemini, and other M
 
 ---
 
+## 11. Dependency Update Policy
+
+The runtime is locked to a single Node.js major version and selected dependencies are pinned to exact versions to prevent uncontrolled drift in the deployed Azure Function App and local MCP servers.
+
+### 11.1 Node.js version
+
+- `package.json` declares `"engines": { "node": ">=20.0.0 <21.0.0" }` — npm warns if a different major is used.
+- `.nvmrc` pins the local development version to `20` for `nvm`/`fnm`/Volta users.
+- Azure Function App runtime stack must remain on Node 20 LTS; any change to `engines` requires a matching infra update in `infra/`.
+
+### 11.2 Pinned dependencies (exact version, no caret)
+
+| Package | Reason |
+|---------|--------|
+| `better-sqlite3` | Native binding — minor changes can break Azure Functions Linux build |
+| `sql.js` | Bundled WASM — version drift can shift query semantics |
+| `adm-zip` | Used in DMF ingestion path — silent behavior changes have caused incidents |
+| `@modelcontextprotocol/sdk` | Tool registration API surface — `registerTool` shape must match the static-scan tests in `test/response-format.test.js` |
+
+### 11.3 How to update a pinned dependency
+
+1. Open a dedicated branch: `chore/bump-<package>-<version>`.
+2. Edit `package.json` to the new exact version, run `npm install` to refresh `package-lock.json`.
+3. Run `npm test` and the relevant build (`npm run build:sec` etc.) on a representative dataset.
+4. Open a PR. CI runs `npm ci` to verify lockfile integrity.
+5. Note the change in the PR description: motivation, breaking changes scanned, test coverage.
+
+### 11.4 How to update a non-pinned dependency
+
+`@azure/functions`, `fast-xml-parser`, `zod`, `mssql` use `^` and follow npm semver. Refresh quarterly with `npm outdated` + `npm update` on a `chore/deps-refresh-<yyyy-mm>` branch; do not bump majors without a dedicated review.
+
+### 11.5 CI lockfile verification
+
+`.github/workflows/ci.yml` runs `npm ci` on every push and PR to `main`. `npm ci` fails fast if `package-lock.json` is missing, out of sync with `package.json`, or has a hash mismatch — preventing accidental ad-hoc dependency changes from reaching `main`.
+
+---
+
 ## Related Documentation
 
 | Document | Description |

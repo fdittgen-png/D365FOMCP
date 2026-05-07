@@ -19,16 +19,19 @@
     "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
     "start:azure": "func start"
   },
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
+  },
   "dependencies": {
     "@azure/functions": "^4.9.0",
-    "@modelcontextprotocol/sdk": "^1.27.0",
-    "adm-zip": "^0.5.16",
-    "better-sqlite3": "^12.8.0",
+    "@modelcontextprotocol/sdk": "1.27.0",
+    "adm-zip": "0.5.16",
+    "better-sqlite3": "12.8.0",
     "fast-xml-parser": "^5.2.3",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "mssql": "^11.0.0",
-    "sql.js": "^1.12.0"
+    "sql.js": "1.12.0"
   }
 }
