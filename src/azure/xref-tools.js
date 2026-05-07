@@ -6,7 +6,7 @@
  * better-sqlite3 database.
  */
 
-import { query, formatMarkdownTable, textResult } from './shared.js';
+import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult } from './shared.js';
 import { z } from 'zod';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
@@ -93,6 +93,8 @@ export function registerXrefTools(server, db) {
       limit: z.number().default(100).describe('Max results (default 100)'),
     },
     async ({ object_name, kind, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found in XRef database.`);
 
@@ -148,6 +150,8 @@ export function registerXrefTools(server, db) {
       limit: z.number().default(100).describe('Max results (default 100)'),
     },
     async ({ object_name, kind, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found in XRef database.`);
 
@@ -377,6 +381,8 @@ export function registerXrefTools(server, db) {
       limit: z.number().default(50).describe('Max results'),
     },
     async ({ pattern, object_type, limit }) => {
+      const _v = validateLikePattern(pattern);
+      if (_v) return patternErrorResult(_v);
       const likePattern = pattern.includes('%') ? pattern : `%${pattern}%`;
       let typeFilter = '';
       const params = [likePattern];
@@ -625,6 +631,8 @@ export function registerXrefTools(server, db) {
       object_name: z.string().max(500).describe('Object name or path'),
     },
     async ({ object_name }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found.`);
       const { id: targetId, path: targetPath } = resolved;
@@ -712,6 +720,8 @@ export function registerXrefTools(server, db) {
       object_name: z.string().max(500).describe('Object name or path'),
     },
     async ({ object_name }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found.`);
       const { id: objId, path: objPath } = resolved;
@@ -787,6 +797,8 @@ export function registerXrefTools(server, db) {
       limit: z.number().default(100).describe('Max results'),
     },
     async ({ object_name, object_type, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       // Strategy: Extension classes reference /Classes/ExtensionOf via kind=7 (Attribute)
       // and their name typically contains the target object name + "_Extension" suffix.
       // We also check xref for classes that have an Attribute (kind=7) reference to the target object.
@@ -910,6 +922,10 @@ export function registerXrefTools(server, db) {
       limit: z.number().default(100).describe('Max results'),
     },
     async ({ table_name, field_name, kind, limit }) => {
+      const _vt = validateLikePattern(table_name);
+      if (_vt) return patternErrorResult(_vt);
+      const _vf = validateLikePattern(field_name);
+      if (_vf) return patternErrorResult(_vf);
       // Fields are stored as /Tables/TableName/Fields/FieldName in xref
       const fieldPath = `/Tables/${table_name}/Fields/${field_name}`;
 
@@ -999,6 +1015,10 @@ export function registerXrefTools(server, db) {
       limit: z.number().default(100).describe('Max results'),
     },
     async ({ object_name, method_name, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
+      const _vm = validateLikePattern(method_name);
+      if (_vm) return patternErrorResult(_vm);
       let text = '';
 
       // Part 1: Find delegate definitions on this object (kind=6 references FROM the object)

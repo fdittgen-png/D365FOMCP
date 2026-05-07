@@ -9,7 +9,7 @@
  *   registerKbTools(server, db);
  */
 
-import { query, formatMarkdownTable, textResult } from './shared.js';
+import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult } from './shared.js';
 import { z } from 'zod';
 
 // ── Register all 17 KB tools ────────────────────────────────────────────────
@@ -33,6 +33,8 @@ export function registerKbTools(server, db) {
     'Get complete metadata for a D365FO table: fields (name, type, EDT), primary key, indexes, and foreign key relations. Returns a compact Markdown summary.',
     { table_name: z.string().max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)') },
     async ({ table_name }) => {
+      const _v = validateLikePattern(table_name);
+      if (_v) return patternErrorResult(_v);
       const tn = table_name.trim();
 
       // Table header
@@ -201,6 +203,8 @@ export function registerKbTools(server, db) {
       limit: z.number().optional().default(20).describe('Max results (default 20)'),
     },
     async ({ query: searchQuery, object_type, limit }) => {
+      const _v = validateLikePattern(searchQuery);
+      if (_v) return patternErrorResult(_v);
       const lim = limit || 20;
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
 
@@ -248,6 +252,8 @@ export function registerKbTools(server, db) {
     'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++.',
     { enum_name: z.string().max(500).describe('Enum name (e.g. StatusIssue, InventTransType)') },
     async ({ enum_name }) => {
+      const _v = validateLikePattern(enum_name);
+      if (_v) return patternErrorResult(_v);
       const en = enum_name.trim();
       const result = q(
         `SELECT enum_name, module_id, label, values_json FROM enums WHERE enum_name = ? COLLATE NOCASE`, [en]
@@ -352,6 +358,10 @@ export function registerKbTools(server, db) {
       limit: z.number().optional().default(100).describe('Max results (default 100)'),
     },
     async ({ name, filter, include_source, limit }) => {
+      const _vn = validateLikePattern(name);
+      if (_vn) return patternErrorResult(_vn);
+      const _vf = validateLikePattern(filter);
+      if (_vf) return patternErrorResult(_vf);
       const n = name.trim();
 
       let sql = `SELECT owner_type, method_name, signature, is_static${include_source ? ', source_code' : ''}
@@ -424,6 +434,10 @@ export function registerKbTools(server, db) {
       method_name: z.string().max(500).describe('Method name'),
     },
     async ({ owner_name, method_name }) => {
+      const _vo = validateLikePattern(owner_name);
+      if (_vo) return patternErrorResult(_vo);
+      const _vm = validateLikePattern(method_name);
+      if (_vm) return patternErrorResult(_vm);
       const on = owner_name.trim();
       const mn = method_name.trim();
 
@@ -502,6 +516,8 @@ export function registerKbTools(server, db) {
     'Get a summary of a D365FO module/package: object counts and key tables/classes.',
     { module_name: z.string().max(500).describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)') },
     async ({ module_name }) => {
+      const _v = validateLikePattern(module_name);
+      if (_v) return patternErrorResult(_v);
       const mn = module_name.trim();
 
       const mod = q(
@@ -548,6 +564,8 @@ export function registerKbTools(server, db) {
     'Get data source chain and fields for a D365FO data entity. Shows the primary table and OData name.',
     { entity_name: z.string().max(500).describe('Data entity name') },
     async ({ entity_name }) => {
+      const _v = validateLikePattern(entity_name);
+      if (_v) return patternErrorResult(_v);
       const en = entity_name.trim();
       const result = q(
         `SELECT entity_name, module_id, label, public_name, public_collection, is_public, primary_table, staging_table, config_key
@@ -593,6 +611,8 @@ export function registerKbTools(server, db) {
       scenario: z.string().max(500).optional().describe('Search term for template (e.g. "customer invoice", "vendor", "GL entries"). Leave empty to list all.'),
     },
     async ({ scenario }) => {
+      const _v = validateLikePattern(scenario);
+      if (_v) return patternErrorResult(_v);
       let sql, params;
       if (scenario) {
         sql = `SELECT template_id, title, description, sql_template, tables_used
