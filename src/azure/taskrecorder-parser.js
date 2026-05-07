@@ -550,7 +550,21 @@ export function parseTaskRecording(buffer, fileName = 'recording.axtr') {
 
   // ── Recording.xml ─────────────────────────────────────────────────────
   const recXml = zip.readAsText(entryMap['Recording.xml'], 'utf8');
-  const rec = xmlParser.parse(recXml).Recording;
+  // Issue #33: malformed / empty / wrong-root Recording.xml used to leak a
+  // cryptic `TypeError: Cannot read properties of undefined (reading
+  // 'FormContexts')` from the next property access. Validate the parse
+  // outcome here so callers see a clear error and can distinguish a parse
+  // failure from a missing entry.
+  let parsed;
+  try {
+    parsed = xmlParser.parse(recXml);
+  } catch (err) {
+    throw new Error(`Recording.xml could not be parsed as XML: ${err.message}`);
+  }
+  const rec = parsed && parsed.Recording;
+  if (!rec) {
+    throw new Error('Recording.xml could not be parsed: <Recording> root element missing or empty. The file may be corrupt or not a valid .axtr file.');
+  }
 
   // ── recording_resource.xml (optional) ─────────────────────────────────
   let language = null;

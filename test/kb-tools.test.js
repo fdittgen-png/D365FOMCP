@@ -808,3 +808,194 @@ describe('wildcard pattern length validation (issue #42)', () => {
     assert.ok(result.includes('CustTable'));
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Issue #33 — Edge-case tests: empty results, no-match queries
+//
+//  All NEW tests assert STRUCTURAL shape (assert.match against /regex/) —
+//  never `assert.ok(string.includes(...))`. Each suite injects an isolated
+//  fixture and cleans up so existing happy-path tests remain unaffected.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('issue #33 — d365_lookup_table on a table with zero fields', () => {
+  before(() => {
+    // Table exists in `tables` but has zero rows in `fields`. This exercises
+    // the empty-fields branch of the lookup tool.
+    db.exec(`
+      INSERT OR REPLACE INTO tables VALUES
+        ('IssueEmptyTable', 'TestModule', 'Empty', 'Main', 1,
+         'Found', 'Idx', NULL, 0);
+    `);
+  });
+  after(() => {
+    db.exec(`DELETE FROM tables WHERE table_name = 'IssueEmptyTable';`);
+  });
+
+  it('given a table with zero fields, when d365_lookup_table runs, then the Fields section renders a no-results sentinel (no crash, no isError)', async () => {
+    const tool = toolHandlers['d365_lookup_table'];
+    const result = await tool.handler({ table_name: 'IssueEmptyTable' });
+    // Shape: success channel (no isError flag).
+    assert.notEqual(result.isError, true);
+    const text = result.content[0].text;
+    // Header renders.
+    assert.match(text, /^# IssueEmptyTable$/m);
+    // The Fields section is present, followed by the empty-rows sentinel
+    // produced by formatMarkdownTable.
+    assert.match(text, /^## Fields$/m);
+    assert.match(text, /No results found/);
+  });
+});
+
+describe('issue #33 — d365_check_field_exists on a table with zero fields', () => {
+  before(() => {
+    db.exec(`
+      INSERT OR REPLACE INTO tables VALUES
+        ('IssueFieldlessTable', 'TestModule', 'No fields', 'Main', 1,
+         'Found', 'Idx', NULL, 0);
+    `);
+  });
+  after(() => {
+    db.exec(`DELETE FROM tables WHERE table_name = 'IssueFieldlessTable';`);
+  });
+
+  it('given a known table with zero fields and an arbitrary field name to check, when d365_check_field_exists runs, then every field reports DOES NOT EXIST', async () => {
+    const tool = toolHandlers['d365_check_field_exists'];
+    const result = await tool.handler({
+      table_name: 'IssueFieldlessTable',
+      field_names: ['SomeField', 'AnotherField'],
+    });
+    // Shape: success channel.
+    assert.notEqual(result.isError, true);
+    const text = result.content[0].text;
+    // Header renders.
+    assert.match(text, /^## Field Check: IssueFieldlessTable$/m);
+    // Each requested field is reported with the **NO** + DOES NOT EXIST shape.
+    assert.match(text, /\|SomeField\|\*\*NO\*\*\|DOES NOT EXIST/);
+    assert.match(text, /\|AnotherField\|\*\*NO\*\*\|DOES NOT EXIST/);
+    // No "YES" rows because there are zero actual fields.
+    assert.doesNotMatch(text, /\|YES\|/);
+  });
+
+  it('given an unknown table, when d365_check_field_exists runs, then the response identifies the missing table (not the missing fields)', async () => {
+    const tool = toolHandlers['d365_check_field_exists'];
+    const result = await tool.handler({
+      table_name: 'CompletelyUnknownTable_Issue33',
+      field_names: ['x', 'y'],
+    });
+    // Shape: success channel (the tool reports "table not found" via text,
+    // it does not throw / set isError in this codebase state).
+    assert.notEqual(result.isError, true);
+    // The message references the table name and the not-found shape.
+    assert.match(
+      result.content[0].text,
+      /Table "CompletelyUnknownTable_Issue33" not found/,
+    );
+    // It MUST NOT pretend the fields don't exist — the table itself is missing.
+    assert.doesNotMatch(result.content[0].text, /DOES NOT EXIST/);
+  });
+});
+
+describe('issue #33 — d365_search no-match scenarios', () => {
+  it('given a query keyword absent from the search index, when d365_search runs, then the no-results sentinel is on the success channel', async () => {
+    const tool = toolHandlers['d365_search'];
+    const result = await tool.handler({ query: 'absolutelyzeroentries_issue33' });
+    // Shape: success channel.
+    assert.notEqual(result.isError, true);
+    // Match the shape of the no-results message.
+    assert.match(result.content[0].text, /No results for "absolutelyzeroentries_issue33"\./);
+  });
+
+  it('given a real keyword filtered to a wrong object_type, when d365_search runs, then the result is empty (the filter excludes everything)', async () => {
+    // "Customer" hits CustTable rows, but filtering to object_type=enum
+    // should produce zero results since no enum mentions "Customer".
+    const tool = toolHandlers['d365_search'];
+    const result = await tool.handler({ query: 'Customer', object_type: 'enum' });
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No results for "Customer"\./);
+  });
+});
+
+describe('issue #33 — d365_get_class_methods empty / no-match scenarios', () => {
+  before(() => {
+    // A class with exactly one method, used for the "filter-no-match"
+    // empty branch test below.
+    db.exec(`
+      INSERT OR REPLACE INTO classes VALUES
+        ('Issue33Class', 'TestModule', NULL, NULL, 0, 1);
+      INSERT OR REPLACE INTO methods VALUES
+        ('class', 'Issue33Class', 'theOnlyMethod',
+         'public void theOnlyMethod()', 0, 'public void theOnlyMethod() {}');
+    `);
+  });
+  after(() => {
+    db.exec(`
+      DELETE FROM classes WHERE class_name = 'Issue33Class';
+      DELETE FROM methods WHERE owner_name = 'Issue33Class';
+    `);
+  });
+
+  it('given a class with no methods at all, when d365_get_class_methods runs, then the no-methods sentinel is on the success channel', async () => {
+    const tool = toolHandlers['d365_get_class_methods'];
+    const result = await tool.handler({
+      name: 'NoMethodsClass_Issue33',
+      include_source: false,
+      limit: 100,
+    });
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No methods found for "NoMethodsClass_Issue33"/);
+  });
+
+  it('given a class with methods but a filter that matches none, when d365_get_class_methods runs, then the response is empty (not the full method list)', async () => {
+    const tool = toolHandlers['d365_get_class_methods'];
+    const result = await tool.handler({
+      name: 'Issue33Class',
+      filter: 'doesnotmatchanything',
+      include_source: false,
+      limit: 100,
+    });
+    assert.notEqual(result.isError, true);
+    // The filter excluded the only method, so we get the no-methods text.
+    assert.match(result.content[0].text, /No methods found for "Issue33Class"/);
+    // The actual method name MUST NOT leak into the empty response.
+    assert.doesNotMatch(result.content[0].text, /theOnlyMethod/);
+  });
+});
+
+describe('issue #33 — d365_field_renames on a table with no renames', () => {
+  it('given a table that exists but has zero rename rows, when d365_field_renames runs, then the no-renames message identifies the table', async () => {
+    // VendTable exists in the fixtures but has zero rows in `field_renames`.
+    const tool = toolHandlers['d365_field_renames'];
+    const result = await tool.handler({ table_name: 'VendTable' });
+    assert.notEqual(result.isError, true);
+    // Match shape: must mention the no-renames signal AND the table name.
+    assert.match(result.content[0].text, /No known field renames/);
+    assert.match(result.content[0].text, /VendTable/);
+  });
+});
+
+describe('issue #33 — d365_resolve_label structural empty paths', () => {
+  it('given a non-empty label_ids list where every id is unknown, when d365_resolve_label runs, then the no-labels message is on the success channel', async () => {
+    const tool = toolHandlers['d365_resolve_label'];
+    const result = await tool.handler({ label_ids: ['@NOTREAL_ISSUE33_A', '@NOTREAL_ISSUE33_B'] });
+    assert.notEqual(result.isError, true);
+    // Match the structural empty signal.
+    assert.match(result.content[0].text, /No labels found/);
+  });
+
+  it('given an empty label_ids array, when d365_resolve_label runs, then the response is on the success channel and identifies the missing input', async () => {
+    const tool = toolHandlers['d365_resolve_label'];
+    const result = await tool.handler({ label_ids: [] });
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No label IDs provided/);
+  });
+});
+
+describe('issue #33 — d365_raw_sql on a SELECT that returns zero rows', () => {
+  it('given a SELECT with no matching rows, when d365_raw_sql runs, then it surfaces a no-results indicator (not a crash)', async () => {
+    const result = await callTool('d365_raw_sql', {
+      sql: "SELECT table_name FROM tables WHERE table_name = 'definitely-not-a-real-table-issue33'",
+    });
+    // shared.formatMarkdownTable returns "No results found." for empty rows.
+    assert.match(result, /No results found/);
+  });
+});
