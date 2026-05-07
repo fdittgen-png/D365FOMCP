@@ -15,3 +15,8 @@ infra/*.json
 # Temporary / diagnostic scripts
 diag*.ps1
 .claude/
+
+# Internal SoD matrix exports — input for scripts/New-SodRulesPackage.ps1.
+# Contains real role/duty assignments; keep local-only.
+Security roles assignment_*.csv
+*SOD matrix*.csv
