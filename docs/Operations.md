@@ -142,7 +142,59 @@ This is **not** an emergency — the current split is functional. Treat it as cl
 
 ---
 
-## 4. Related documentation
+## 4. Storage cost expectations
+
+### 4.1 Steady-state monthly cost (production, west europe)
+
+The workload runs in a single resource group (`tis-p-mcpd365fo-rg`) with the following cost structure. Figures are pay-as-you-go list prices, EUR, rounded to whole euros, and assume the steady-state usage pattern (no rebuild storms, no abnormal traffic).
+
+| Component | SKU | Approx. monthly cost (EUR) | Notes |
+|-----------|-----|----------------------------:|-------|
+| Storage account (`tispmcpd365fost`) | Standard_LRS, StorageV2 | 5–15 | Hosts the SQLite DBs (`d365fo_kb.sqlite` ~1 GB, `d365fo_xref.sqlite` ~3.3 GB, `d365fo_sec.sqlite` ~60 MB) plus `mcpsec-uploads/` ZIP staging (lifecycle-deleted after 7 days) |
+| App Service Plan | P0v3 Linux, 1 instance, alwaysOn | ~75 | Largest single line item — fixed cost regardless of traffic |
+| Function App | Consumption on the P0v3 plan | included in ASP | No separate metered cost while running on the dedicated plan |
+| Log Analytics workspace | PerGB2018, 30-day retention | 1–5 | Volume scales with App Insights ingestion |
+| Application Insights | Workspace-based | included in Log Analytics | Telemetry is routed into the same workspace |
+| **Estimated total RG cost** | — | **~85–100 / month** | — |
+
+The **storage account alone** is the cheapest line item (5–15 EUR/month) and is the only component the budget alert tracks. The 50 EUR default ceiling is intentionally well above the expected steady state — it leaves headroom for one bad month (e.g. a stuck `mcpsec-uploads/` lifecycle policy, an accidental retention bump, a runaway log export) without firing on every minor blip.
+
+### 4.2 Budget alert configuration
+
+A `Microsoft.Consumption/budgets` resource is provisioned at the resource-group scope (`infra/modules/costAlerts.bicep`) and filtered to `microsoft.storage/storageaccounts` so it tracks blob/table/queue/file spend only — not the App Service Plan, Function App, Log Analytics, or App Insights line items.
+
+| Property | Value | Source |
+|----------|-------|--------|
+| Scope | resource group (`tis-{env}-mcpd365fo-rg`) | implicit from module deployment |
+| Time grain | Monthly | hardcoded |
+| Filter | `ResourceType In microsoft.storage/storageaccounts` | hardcoded |
+| Amount | `monthlyBudgetAmount` parameter (default **50**) | `parameters.prod.json` / `--parameters` override |
+| Notifications | 80 % Actual, 100 % Actual (or higher) | hardcoded |
+| Recipients | `budgetContactEmails` parameter (required) | `--parameters` override at deploy time |
+
+The currency follows the subscription billing currency (EUR for the Trelleborg west-europe subscription). Override `monthlyBudgetAmount` only when the steady-state cost shifts — for example after onboarding a fourth database, or if blob egress becomes a meaningful line item.
+
+### 4.3 Recipient privacy
+
+`budgetContactEmails` is **not** committed to any parameter file. Supply it at deploy time:
+
+```powershell
+az deployment sub create `
+  --template-file infra/main.bicep `
+  --parameters infra/parameters.prod.json `
+  --parameters budgetContactEmails="['ops@example.com']" `
+  --location westeurope
+```
+
+The parameter is required (`@minLength(1)`) — the deployment will fail closed if no recipients are supplied. This avoids the "alert fires into the void" failure mode.
+
+### 4.4 Blob lifecycle
+
+The storage account also runs a blob lifecycle policy on the `mcpsec-uploads/` container that deletes ZIP stagings after 7 days. This is configured separately in `functionApp.bicep` and is the only automated cleanup path — the SQLite databases themselves are pinned to `/home/data/` on the Function App's mounted file share, not in blob storage, and are rebuilt from source rather than backed up. There is no `/backups/` container in this workload.
+
+---
+
+## 5. Related documentation
 
 | Document | Description |
 |----------|-------------|
