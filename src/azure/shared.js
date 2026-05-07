@@ -22,6 +22,7 @@ function openDb(filePath, mmapSize = 3221225472) {
   db.pragma('journal_mode = OFF');
   db.pragma(`cache_size = -50000`);   // 50 MB cache
   db.pragma(`mmap_size = ${mmapSize}`);
+  db.pragma(`busy_timeout = 30000`);  // 30 s — issue #50: bound lock-contention waits
   return db;
 }
 
@@ -124,5 +125,64 @@ export function patternErrorResult(validationResult) {
     content: [{ type: 'text', text: validationResult.error }],
     isError: true,
     structuredContent: validationResult,
+  };
+}
+
+// ── Query budget enforcement (issue #50) ─────────────────────────────────────
+
+/**
+ * Wall-clock budget for a single SQLite call. Configurable via the
+ * QUERY_TIMEOUT_MS env var; defaults to 25 s (well under the Azure Functions
+ * Premium 60-min ceiling, but high enough for legitimate large traversals).
+ *
+ * Note: better-sqlite3 is synchronous, so this CANNOT preempt an in-flight
+ * query. The check runs after the call returns and converts a budget overrun
+ * into a typed error the caller can map to HTTP 504 / a tool-level timeout.
+ * Companion measure: the busy_timeout pragma above bounds *lock* waits to 30 s.
+ */
+export const QUERY_TIMEOUT_MS = Number(process.env.QUERY_TIMEOUT_MS) || 25000;
+
+export class QueryBudgetExceededError extends Error {
+  constructor(label, elapsedMs, budgetMs) {
+    super(`Query "${label}" exceeded budget: ${elapsedMs}ms > ${budgetMs}ms`);
+    this.name = 'QueryBudgetExceededError';
+    this.label = label;
+    this.elapsedMs = elapsedMs;
+    this.budgetMs = budgetMs;
+  }
+}
+
+/**
+ * Run a synchronous DB call and throw QueryBudgetExceededError if it exceeded
+ * the wall-clock budget. The injectable `now` clock is for tests.
+ */
+export function runWithBudget(label, fn, budgetMs = QUERY_TIMEOUT_MS, now = Date.now) {
+  const start = now();
+  const result = fn();
+  const elapsed = now() - start;
+  if (elapsed > budgetMs) {
+    throw new QueryBudgetExceededError(label, elapsed, budgetMs);
+  }
+  return result;
+}
+
+/**
+ * Render a QueryBudgetExceededError as an MCP tool error response. Tools that
+ * wrap raw SQL in runWithBudget() should catch the error and return this so
+ * the user sees a clean "Query timeout" message rather than an internal trace.
+ */
+export function timeoutErrorResult(err) {
+  return {
+    content: [{
+      type: 'text',
+      text: `Query timeout — try a more specific search. (${err.elapsedMs}ms > ${err.budgetMs}ms budget)`,
+    }],
+    isError: true,
+    structuredContent: {
+      error: 'query-timeout',
+      label: err.label,
+      elapsedMs: err.elapsedMs,
+      budgetMs: err.budgetMs,
+    },
   };
 }
