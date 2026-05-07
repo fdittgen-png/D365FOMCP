@@ -45,6 +45,21 @@ function isEasyAuthEnabled() {
   return process.env.WEBSITE_AUTH_ENABLED === 'True';
 }
 
+/**
+ * Whether authentication is required for upload requests.
+ *
+ * Defaults to `true` (fail-closed). Set `REQUIRE_AUTH=false` only as an explicit
+ * opt-out for local development. In production, leaving this at the default
+ * combined with Easy Auth being disabled will cause uploads to be refused with
+ * HTTP 503 — this prevents an Easy Auth misconfiguration from silently
+ * accepting unauthenticated uploads (issue #28).
+ */
+export function isAuthRequired() {
+  // Any value other than the literal string 'false' (case-insensitive) is treated as true.
+  const v = String(process.env.REQUIRE_AUTH ?? 'true').trim().toLowerCase();
+  return v !== 'false';
+}
+
 /** Read the user identity from Easy Auth headers (set by App Service Authentication). */
 function getAuthUser(request) {
   const principalId = request.headers.get('x-ms-client-principal-id');
@@ -103,8 +118,24 @@ async function isOwnerOrContributor(principalId) {
  * Fail-closed on `authorized === null` (issue #27): when the RBAC check cannot run
  * (no managed identity, ARM token unavailable, missing Reader role), we reject
  * with 503 instead of allowing the upload through.
+ *
+ * Fail-closed when Easy Auth is disabled (issue #28): if `requireAuth` is true
+ * (the default) and Easy Auth is not enabled on the Function App, refuse the
+ * upload with HTTP 503. The previous behavior — silently allowing anonymous
+ * uploads when `WEBSITE_AUTH_ENABLED !== 'True'` — meant a production deploy
+ * without Easy Auth would accept unauthenticated database replacements. Set
+ * `REQUIRE_AUTH=false` explicitly only for local development.
  */
-export function decideUploadAuthorization({ user, easyAuth, authorized }) {
+export function decideUploadAuthorization({ user, easyAuth, authorized, requireAuth = true }) {
+  if (!easyAuth && requireAuth) {
+    return {
+      status: 503,
+      jsonBody: {
+        error: 'Authentication is required but Easy Auth is not enabled — upload rejected.',
+        hint: 'Enable Easy Auth (App Service Authentication) on the Function App, or set REQUIRE_AUTH=false for local development.',
+      },
+    };
+  }
   if (!user && easyAuth) {
     return {
       status: 401,
@@ -114,7 +145,7 @@ export function decideUploadAuthorization({ user, easyAuth, authorized }) {
       },
     };
   }
-  if (!user) return null; // local dev / no Easy Auth — anonymous allowed
+  if (!user) return null; // local dev / no Easy Auth + REQUIRE_AUTH=false — anonymous allowed
   if (authorized === false) {
     return {
       status: 403,
@@ -375,14 +406,22 @@ app.http('d365sec-upload', {
     // ── GET: serve the upload form ───────────────────────────────────────────
     if (request.method === 'GET') {
       const user = getAuthUser(request);
+      const easyAuth = isEasyAuthEnabled();
+      const requireAuth = isAuthRequired();
       let authBarHtml;
       let formAllowed = false;
 
-      if (!isEasyAuthEnabled() && !user) {
-        // Easy Auth not configured — allow access with warning (typical in dev)
+      if (!easyAuth && requireAuth) {
+        // Fail-closed (issue #28): Easy Auth disabled but auth is required.
+        // Show a denial banner instead of the form — POST will return 503 anyway.
+        authBarHtml = `<div class="auth-bar denied">`
+          + `Uploads are disabled: Easy Auth is not enabled on this Function App and <code>REQUIRE_AUTH</code> is true. `
+          + `Enable Easy Auth in the Azure Portal, or set <code>REQUIRE_AUTH=false</code> for local development.</div>`;
+      } else if (!easyAuth && !user) {
+        // Easy Auth not configured AND REQUIRE_AUTH=false (explicit local-dev opt-out)
         formAllowed = true;
         authBarHtml = `<div class="auth-bar signed-in">`
-          + `<span style="opacity:0.7">Authentication not configured — uploads allowed without sign-in. `
+          + `<span style="opacity:0.7">Authentication not configured (REQUIRE_AUTH=false) — uploads allowed without sign-in. `
           + `Enable Easy Auth in Azure Portal for production use.</span></div>`;
       } else if (!user) {
         // Easy Auth enabled but not signed in — show login prompt
@@ -423,11 +462,15 @@ app.http('d365sec-upload', {
       // Auth check
       const user = getAuthUser(request);
       const easyAuth = isEasyAuthEnabled();
+      const requireAuth = isAuthRequired();
 
       const authorized = user ? await isOwnerOrContributor(user.principalId) : null;
-      const rejection = decideUploadAuthorization({ user, easyAuth, authorized });
+      const rejection = decideUploadAuthorization({ user, easyAuth, authorized, requireAuth });
       if (rejection) {
-        if (authorized === null && user) {
+        if (!easyAuth && requireAuth) {
+          context.error('CRITICAL: Easy Auth is disabled but REQUIRE_AUTH=true — rejecting upload with 503 (fail-closed; issue #28). '
+            + 'Enable Easy Auth on the Function App, or set REQUIRE_AUTH=false for local development.');
+        } else if (authorized === null && user) {
           context.error(`RBAC check unavailable for ${user.principalName} — rejecting upload (fail-closed; issue #27)`);
         }
         return rejection;
