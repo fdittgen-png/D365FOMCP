@@ -686,3 +686,25 @@ describe('xref_find_event_handlers', () => {
     assert.ok(result.includes('CustTableEventHandler') || result.includes('event handler'));
   });
 });
+
+// -- Issue #42: wildcard pattern length validation ---------------------------
+
+describe('wildcard pattern length validation (issue #42)', () => {
+  it('rejects oversized object_name before reaching the DB (LIKE-fuzzy path)', async () => {
+    // Path-form input to exercise the LIKE branch in resolveNameId().
+    const oversized = '/Classes/' + 'X'.repeat(200);
+    const tool = toolHandlers['xref_find_references'];
+    const result = await tool.handler({ object_name: oversized, limit: 50 });
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.content[0].text.includes('Search pattern too long'),
+      `expected pattern-length error, got: ${result.content[0].text}`,
+    );
+  });
+
+  it('accepts valid object_name lookups (regression guard)', async () => {
+    const result = await callTool('xref_find_references', { object_name: 'CustTable', limit: 10 });
+    // Should produce a real response (either references or a not-found / empty message), never an error.
+    assert.ok(typeof result === 'string');
+  });
+});

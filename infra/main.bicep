@@ -13,6 +13,14 @@ param location string = 'westeurope'
 param workload string = 'mcpd365fo'
 param prefix string = 'tis'
 
+@description('Monthly cost ceiling (subscription billing currency, typically EUR for westeurope) used by the storage-account budget alert. Default 50 covers steady-state usage; raise only if usage patterns change.')
+@minValue(1)
+param monthlyBudgetAmount int = 50
+
+@description('Recipients for the storage-account budget alert email at 80 % and 100 % thresholds. Required at deploy time — do not commit real addresses to the repo. Pass via parameter file or `--parameters` override.')
+@minLength(1)
+param budgetContactEmails array
+
 // ─── Naming ─────────────────────────────────────────────
 var rgName    = '${prefix}-${env}-${workload}-rg'
 var funcName  = '${prefix}-${env}-${workload}-func'
@@ -21,6 +29,7 @@ var stName    = '${prefix}${env}${workload}st'        // slug format (max 24 cha
 var kvName    = '${prefix}-${env}-${workload}-kv'
 var appiName  = '${prefix}-${env}-${workload}-appi'
 var logName   = '${prefix}-${env}-${workload}-log'
+var budgetName = '${prefix}-${env}-${workload}-storage-budget'
 
 var tags = {
   Owner: 'TIS'
@@ -64,6 +73,19 @@ module func 'modules/functionApp.bicep' = {
   }
 }
 
+// ─── Cost Alerts ────────────────────────────────────────
+module costAlerts 'modules/costAlerts.bicep' = {
+  scope: rg
+  name: 'costAlerts'
+  params: {
+    budgetName: budgetName
+    monthlyBudgetAmount: monthlyBudgetAmount
+    contactEmails: budgetContactEmails
+  }
+}
+
 // ─── Outputs ────────────────────────────────────────────
 output resourceGroupName string = rg.name
 output functionAppUrl string = func.outputs.functionAppUrl
+output storageBudgetName string = costAlerts.outputs.budgetName
+output storageBudgetAmount int = costAlerts.outputs.budgetAmount

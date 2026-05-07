@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getSecDb, query } from '../azure/shared.js';
 import { registerSecTools } from '../azure/sec-tools.js';
+import { validateRequestSize } from '../azure/request-size.js';
 
 function createSecServer() {
   const server = new McpServer({
@@ -46,6 +47,8 @@ app.http('d365sec', {
 
       let options;
       if (request.method === 'POST') {
+        const sizeRejection = validateRequestSize(request);
+        if (sizeRejection) return sizeRejection;
         const parsedBody = await request.json();
         options = { parsedBody };
       }

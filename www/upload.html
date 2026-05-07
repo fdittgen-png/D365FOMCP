@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D365FO Security Database Update</title>
+<style>
+  :root {
+    --accent:        #1f3a5f;
+    --accent-strong: #16294a;
+    --bg:            #ffffff;
+    --shell:         #f4f6f9;
+    --border:        #dbe1e8;
+    --text:          #1c2733;
+    --muted:         #5b6b7c;
+    --ok:            #1e7d45;
+    --ok-bg:         #e6f4ec;
+    --warn:          #8a5a00;
+    --warn-bg:       #fdf3df;
+    --bad:           #a4262c;
+    --bad-bg:        #fde7e9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    max-width: 860px; margin: 0 auto; padding: 28px 20px;
+    color: var(--text); background: var(--shell); font-size: 15px; line-height: 1.5;
+  }
+  a { color: var(--accent); }
+  a:hover { text-decoration: underline; }
+
+  .crumbs { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  h1 { font-size: 22px; margin-bottom: 6px; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-bottom: 22px; font-size: 14px; }
+
+  .card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 22px 24px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; margin-bottom: 12px; color: var(--text); font-weight: 600; }
+  .help-list { font-size: 13px; color: var(--muted); padding-left: 20px; }
+  .help-list li { margin-bottom: 4px; }
+  .help-list code {
+    background: var(--shell); padding: 2px 6px; border-radius: 3px; font-size: 12px;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+  }
+  .help-list strong { color: var(--text); }
+
+  .db-info {
+    display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--muted);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 16px; margin-bottom: 16px;
+  }
+  .db-info .item { display: flex; gap: 6px; }
+  .db-info .label { font-weight: 600; color: var(--text); }
+
+  .auth-bar { font-size: 13px; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px;
+              border: 1px solid var(--border); background: var(--bg); }
+  .auth-bar.signed-in { background: var(--ok-bg); border-color: #b9dec7; color: #0f5b30; }
+  .auth-bar.signed-out { background: var(--warn-bg); border-color: #e7c781; color: #6a5300; }
+  .auth-bar.denied { background: var(--bad-bg); border-color: #f0b0b3; color: #82071e; }
+  .auth-bar a { color: inherit; font-weight: 600; }
+
+  .upload-area {
+    border: 2px dashed var(--border); border-radius: 6px; padding: 36px 20px;
+    text-align: center; cursor: pointer; transition: all 0.15s;
+    background: var(--shell);
+  }
+  .upload-area:hover { border-color: var(--accent); background: #eef2f7; }
+  .upload-area.dragover { border-color: var(--accent); background: #e3eaf3; }
+  .upload-area.disabled { pointer-events: none; opacity: 0.5; }
+  .upload-area p { color: var(--muted); margin-bottom: 8px; }
+  .upload-area .filename { font-weight: 600; color: var(--accent); margin-top: 8px; }
+
+  input[type="file"] { display: none; }
+  .btn {
+    display: inline-block; background: var(--accent); color: #fff; border: none;
+    padding: 9px 22px; border-radius: 4px; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: background 0.15s; text-decoration: none;
+    font-family: inherit;
+  }
+  .btn:hover { background: var(--accent-strong); }
+  .btn:disabled { background: #9aa6b6; cursor: not-allowed; }
+  .btn-row { margin-top: 14px; display: flex; align-items: center; gap: 12px; }
+
+  .status { margin-top: 14px; padding: 14px 16px; border-radius: 4px; display: none; font-size: 13px;
+            border: 1px solid var(--border); }
+  .status.info    { display: block; background: #e8eef6; border-color: #b9c9e0; color: #16294a; }
+  .status.success { display: block; background: var(--ok-bg);  border-color: #b9dec7; color: #0f5b30; }
+  .status.error   { display: block; background: var(--bad-bg); border-color: #f0b0b3; color: #82071e; }
+  .status h3 { font-size: 14px; margin-bottom: 6px; font-weight: 600; }
+  pre {
+    background: var(--shell); padding: 10px 12px; border-radius: 4px; overflow-x: auto;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+    font-size: 12px; line-height: 1.5; margin-top: 8px;
+  }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; border: 2px solid #fff;
+    border-top-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite;
+    vertical-align: -2px; margin-right: 4px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 600px) {
+    body { padding: 18px 14px; }
+    .card { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="crumbs"><a href="/api/admin">Dashboard</a> &middot; <a href="/api/admin/db-health">DB health</a> &middot; Sec upload</div>
+<h1>Security Database Update</h1>
+<p class="subtitle">Upload a ZIP file containing DMF XML exports to rebuild the security database.</p>
+
+{{AUTH_BAR}}
+
+<div class="db-info" id="dbInfo">{{DB_INFO}}</div>
+
+<div class="card">
+  <h2>Expected ZIP contents</h2>
+  <ul class="help-list">
+    <li><strong>Required (DMF):</strong> <code>System Security Role.xml</code>,
+        <code>System Security Sub Role V2.xml</code>,
+        <code>System Security Role Duty.xml</code></li>
+    <li><strong>Optional (DMF):</strong> <code>SystemSecurityUserRoleEntity.xml</code>,
+        <code>SystemSecurityUserRoleOrganizationEntity.xml</code>,
+        <code>User information.xml</code>,
+        <code>SecurityDatabaseCustomizations.xml</code></li>
+    <li><strong>Optional (AOT):</strong> Place AOT security XMLs in an <code>aot/</code>
+        subdirectory (preserving the PackagesLocalDirectory structure)</li>
+  </ul>
+</div>
+
+<div class="card">
+  <form id="uploadForm">
+    <div class="upload-area {{UPLOAD_DISABLED}}" id="dropZone">
+      <p>Drag &amp; drop a ZIP file here, or click to browse</p>
+      <div id="fileName" class="filename"></div>
+    </div>
+    <input type="file" id="zipFile" accept=".zip" {{INPUT_DISABLED}}>
+    <div class="btn-row">
+      <button type="submit" class="btn" id="submitBtn" disabled>
+        Upload &amp; Rebuild Database
+      </button>
+    </div>
+  </form>
+
+  <div id="status" class="status"></div>
+</div>
+
+<script>
+"use strict";
+
+const form = document.getElementById('uploadForm');
+const statusEl = document.getElementById('status');
+const submitBtn = document.getElementById('submitBtn');
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('zipFile');
+const fileNameEl = document.getElementById('fileName');
+const canUpload = !fileInput.disabled;
+
+if (canUpload) {
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length && e.dataTransfer.files[0].name.endsWith('.zip')) {
+      fileInput.files = e.dataTransfer.files;
+      onFileSelected();
+    }
+  });
+  fileInput.addEventListener('change', onFileSelected);
+}
+
+function onFileSelected() {
+  const file = fileInput.files[0];
+  if (file) {
+    fileNameEl.textContent = file.name + ' (' + (file.size / (1024*1024)).toFixed(1) + ' MB)';
+    submitBtn.disabled = false;
+    statusEl.className = 'status';
+  }
+}
+
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!canUpload) return;
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  submitBtn.disabled = true;
+  submitBtn.innerHTML = '<span class="spinner"></span> Building...';
+  statusEl.className = 'status info';
+  statusEl.innerHTML = '<h3>Processing</h3>Uploading ZIP and rebuilding the security database. This may take a minute...';
+
+  try {
+    const formData = new FormData();
+    formData.append('zipfile', file);
+    const resp = await fetch('/api/d365sec/upload', { method: 'POST', body: formData });
+    const result = await resp.json();
+
+    if (resp.ok) {
+      statusEl.className = 'status success';
+      statusEl.innerHTML = '<h3>Database rebuilt successfully</h3>'
+        + '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+    } else {
+      statusEl.className = 'status error';
+      statusEl.innerHTML = '<h3>' + (resp.status === 403 ? 'Access denied' : 'Build failed') + '</h3>'
+        + '<pre>' + JSON.stringify(result, null, 2) + '</pre>';
+    }
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.innerHTML = '<h3>Error</h3><p>' + err.message + '</p>';
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Upload & Rebuild Database';
+  }
+});
+</script>
+
+</body>
+</html>

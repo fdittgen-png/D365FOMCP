@@ -806,6 +806,125 @@ describe('parseTaskRecording', () => {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
+  // Issue #33 — Edge-case tests: empty ZIP, malformed XML, BPM corruption
+  //
+  // These cover failure modes the existing tests miss: a structurally-valid
+  // empty archive, a Recording.xml present but malformed/empty, and a BPM
+  // package that's a valid ZIP but missing the inner ProcessStep.xml.
+  // Assertions are STRUCTURAL — assert.match against /regex/ — never
+  // assert.ok(string.includes(...)) per the issue's TDD constraint.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  describe('issue #33 edge cases — empty / malformed input', () => {
+    it('given a structurally-valid empty ZIP (zero entries), when parsed, then throws Recording.xml-not-found', () => {
+      // Distinct from "throws on empty buffer" — this archive parses as a
+      // valid ZIP with zero entries (just the EOCD record, ~22 bytes). The
+      // parser must reject it with the same clear "not a valid .axtr"
+      // message as a non-empty archive missing Recording.xml.
+      const zip = new AdmZip();
+      const buf = zip.toBuffer();
+      // sanity: AdmZip produces a parseable empty archive
+      assert.equal(new AdmZip(buf).getEntries().length, 0);
+      assert.throws(
+        () => parseTaskRecording(buf, 'empty-zip.axtr'),
+        /Recording\.xml not found/,
+      );
+    });
+
+    it('given a ZIP whose Recording.xml is malformed XML, when parsed, then throws a clear, structured error (not a TypeError)', () => {
+      // Pre-fix bug: fast-xml-parser returns `{}` for malformed input, so
+      // `.Recording` is undefined and a downstream property access throws
+      // `TypeError: Cannot read properties of undefined (reading 'FormContexts')`.
+      // Post-fix: the parser must validate the XML root and throw a clear
+      // "Recording.xml could not be parsed" / "Recording root element
+      // missing" error so callers can distinguish "parse failure" from
+      // "missing entry" and from a true bug.
+      const zip = new AdmZip();
+      zip.addFile('Recording.xml', Buffer.from('this is not xml at all {{{'));
+      assert.throws(
+        () => parseTaskRecording(zip.toBuffer(), 'malformed.axtr'),
+        // Must match a clear message; must NOT be a raw TypeError shape.
+        // Acceptable phrasings: "Recording.xml could not be parsed" / "Recording root element missing" / "not a valid .axtr"
+        (err) => {
+          assert.ok(err instanceof Error);
+          // The error MUST NOT be the cryptic JS TypeError we used to leak.
+          assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+          // It must reference Recording.xml or the parse failure shape.
+          assert.match(err.message, /Recording\.xml|Recording root|not a valid|could not be parsed/i);
+          return true;
+        },
+      );
+    });
+
+    it('given an empty Recording.xml (zero bytes), when parsed, then throws a clear error (not a TypeError)', () => {
+      // Same crash class: empty content -> xmlParser returns {}, .Recording
+      // is undefined, downstream crash. Must be replaced with a clear error.
+      const zip = new AdmZip();
+      zip.addFile('Recording.xml', Buffer.from(''));
+      assert.throws(
+        () => parseTaskRecording(zip.toBuffer(), 'empty-rec.axtr'),
+        (err) => {
+          assert.ok(err instanceof Error);
+          assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+          assert.match(err.message, /Recording\.xml|Recording root|not a valid|could not be parsed/i);
+          return true;
+        },
+      );
+    });
+
+    it('given a ZIP where Recording.xml is XML but lacks the <Recording> root element, when parsed, then throws a clear error', () => {
+      // Well-formed XML but with the wrong root element → our parser
+      // accesses `.Recording` and gets undefined. Must surface this with
+      // a clear error rather than a TypeError on the next property read.
+      const zip = new AdmZip();
+      zip.addFile('Recording.xml', Buffer.from('<?xml version="1.0"?><WrongRoot><Name>x</Name></WrongRoot>'));
+      assert.throws(
+        () => parseTaskRecording(zip.toBuffer(), 'wrong-root.axtr'),
+        (err) => {
+          assert.ok(err instanceof Error);
+          assert.doesNotMatch(err.message, /Cannot read properties of undefined/);
+          assert.match(err.message, /Recording\.xml|Recording root|not a valid|could not be parsed/i);
+          return true;
+        },
+      );
+    });
+
+    it('given a BPM nested ZIP with no ProcessStep.xml entry, when parsed, then succeeds (BPM is optional)', () => {
+      // BPM data is enrichment, not required. A valid Recording.xml plus a
+      // BPM zip that doesn't contain ProcessStep.xml (e.g. a stray inner
+      // archive) must still produce a successful parse, just without BPM
+      // sections — never crash.
+      const recXml = wrapRecording('BpmNoProcStep', '');
+      const innerZip = new AdmZip();
+      innerZip.addFile('Other.xml', Buffer.from('<root/>'));
+      const outerZip = new AdmZip();
+      outerZip.addFile('Recording.xml', Buffer.from(recXml));
+      outerZip.addFile('BPMPackage.ax7bpm', innerZip.toBuffer());
+      const md = parseTaskRecording(outerZip.toBuffer(), 'bpm-no-procstep.axtr');
+      // Markdown produced — assert structural shape, not a phrase that may change.
+      assert.match(md, /^# Task Recording: BpmNoProcStep/m);
+      // No BPM-derived sections should appear when the inner ZIP lacks
+      // ProcessStep.xml. Both these section headings are absent.
+      assert.doesNotMatch(md, /^## Data Sources$/m);
+      assert.doesNotMatch(md, /^## Security Roles$/m);
+    });
+
+    it('given a Recording with zero recorded actions (empty Children), when parsed, then renders the no-actions sentinel', () => {
+      // Distinct from "empty recording" already tested: this asserts the
+      // sentinel is rendered as a STRUCTURAL marker (italic line) rather
+      // than a free-form English phrase that may drift.
+      const xml = wrapRecording('TrulyEmpty', '');
+      const buffer = buildAxtr(xml);
+      const md = parseTaskRecording(buffer, 'truly-empty.axtr');
+      // The output MUST contain the "(no user actions recorded)" sentinel
+      // surrounded by italic markers — match shape, not exact phrase.
+      assert.match(md, /\*\(no user actions recorded\)\*/);
+      // And the action count should be exactly 0 in the overview table.
+      assert.match(md, /\*\*Total User Actions\*\* \| 0/);
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
   // 17. FILENAME PARAMETER
   // ══════════════════════════════════════════════════════════════════════════
 

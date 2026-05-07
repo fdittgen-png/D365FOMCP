@@ -1146,3 +1146,169 @@ describe('sec_object_access', () => {
     assert.ok(directPaths.length >= 1, 'Expected at least one direct privilege path');
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Issue #33 — Edge-case tests: empty results / leaf nodes
+//
+//  All NEW tests assert STRUCTURAL properties (assert.match against /regex/,
+//  assert.equal against shape) — never `assert.ok(string.includes(...))`.
+//  Each test injects an isolated fixture, runs the tool, and cleans up — so
+//  the existing happy-path tests remain unaffected.
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('issue #33 — sec_lookup_role with no duties / no privileges', () => {
+  before(() => {
+    // Inject an isolated role with zero duties, zero direct privileges,
+    // zero direct entity permissions, and zero assigned users.
+    db.exec(`
+      INSERT OR REPLACE INTO roles VALUES
+        ('R_ISSUE33_EMPTY', 'IssueEmptyRole', 'TestModule', 'Test',
+         'Role with no duties', NULL, 'Grant', 0, 'test');
+    `);
+  });
+  after(() => {
+    db.exec(`DELETE FROM roles WHERE role_id = 'R_ISSUE33_EMPTY';`);
+  });
+
+  it('given a role with no duties, when sec_lookup_role runs, then it returns the role header without crashing or emitting a Duties section', async () => {
+    const result = await callTool('sec_lookup_role', { role_name: 'IssueEmptyRole' });
+    // The role header must render — assert structural shape with anchored regex.
+    assert.match(result, /^# IssueEmptyRole$/m);
+    // The Property table is rendered.
+    assert.match(result, /^\| Property \| Value \|$/m);
+    // No Duties section appears (because there are zero rows).
+    assert.doesNotMatch(result, /^## Duties \(/m);
+    // No Direct Privileges section.
+    assert.doesNotMatch(result, /^## Direct Privileges \(/m);
+    // The Assigned Users count is exactly 0.
+    assert.match(result, /^## Assigned Users: 0$/m);
+  });
+});
+
+describe('issue #33 — sec_lookup_user with no roles', () => {
+  before(() => {
+    db.exec(`
+      INSERT OR REPLACE INTO users VALUES
+        ('lonely.user@trelleborg.com', 'Lonely User',
+         'lonely.user@trelleborg.com', 1, 'TAB');
+    `);
+  });
+  after(() => {
+    db.exec(`DELETE FROM users WHERE user_id = 'lonely.user@trelleborg.com';`);
+  });
+
+  it('given a user with zero role assignments, when sec_lookup_user runs, then it renders the profile without a Roles section', async () => {
+    const result = await callTool('sec_lookup_user', { user_id: 'lonely.user@trelleborg.com' });
+    // Profile header renders — anchored regex.
+    assert.match(result, /^# lonely\.user@trelleborg\.com$/m);
+    // The user metadata table renders with the expected fields.
+    assert.match(result, /^\| Name \| Lonely User \|$/m);
+    assert.match(result, /^\| Enabled \| Yes \|$/m);
+    // No Roles or Company-Scoped Roles section appears.
+    assert.doesNotMatch(result, /^## Roles \(/m);
+    assert.doesNotMatch(result, /^## Company-Scoped Roles \(/m);
+  });
+
+  it('given a user with zero roles, when sec_lookup_user runs, then the response is on the success channel (no isError flag)', async () => {
+    const tool = toolHandlers['sec_lookup_user'];
+    const result = await tool.handler({ user_id: 'lonely.user@trelleborg.com' });
+    // A user that exists but has no roles is a valid leaf result, not an error.
+    assert.notEqual(result.isError, true, 'a user with zero roles must NOT carry isError=true');
+  });
+});
+
+describe('issue #33 — sec_company_users on empty / unknown company', () => {
+  it('given a company id that is not present in user_role_companies, when sec_company_users runs, then it returns a clear no-results message', async () => {
+    const tool = toolHandlers['sec_company_users'];
+    const result = await tool.handler({ company_id: 'NOTACOMPANY' });
+    // Shape: success channel — no isError flag.
+    assert.notEqual(result.isError, true);
+    // The message identifies the queried company (uppercased per the
+    // tool's own normalization). Match the structural shape, not exact phrasing.
+    assert.match(result.content[0].text, /^No users found for company "NOTACOMPANY"\.$/);
+  });
+
+  it('given lowercase input for an empty company, when sec_company_users runs, then the message echoes the upper-cased id', async () => {
+    // Documents the company_id normalization contract: even on the empty
+    // path, the response must echo the canonical (uppercase) form so a
+    // caller can correlate the result with their request.
+    const tool = toolHandlers['sec_company_users'];
+    const result = await tool.handler({ company_id: 'notacompany' });
+    assert.match(result.content[0].text, /"NOTACOMPANY"/);
+  });
+});
+
+describe('issue #33 — sec_role_hierarchy on a leaf role', () => {
+  it('given a role with zero children, when sec_role_hierarchy(direction=children) runs, then it returns a clear empty-result message', async () => {
+    // SystemAdministrator has no sub-roles in the fixture.
+    const tool = toolHandlers['sec_role_hierarchy'];
+    const result = await tool.handler({ role_name: 'SystemAdministrator', direction: 'children' });
+    // Shape: success channel.
+    assert.notEqual(result.isError, true);
+    // Must reference the role and the direction.
+    assert.match(result.content[0].text, /No children found for role "SystemAdministrator"/);
+  });
+
+  it('given a role with zero parents, when sec_role_hierarchy(direction=parents) runs, then it returns a clear empty-result message', async () => {
+    // SystemAdministrator has no parent roles in the fixture either.
+    const tool = toolHandlers['sec_role_hierarchy'];
+    const result = await tool.handler({ role_name: 'SystemAdministrator', direction: 'parents' });
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No parents found for role "SystemAdministrator"/);
+  });
+});
+
+describe('issue #33 — sec_find_users_by_role on a role with zero assignments', () => {
+  before(() => {
+    // Inject a role that no user is assigned to.
+    db.exec(`
+      INSERT OR REPLACE INTO roles VALUES
+        ('R_ISSUE33_NOUSERS', 'NoUsersRole', 'TestModule', 'Test',
+         'Role nobody has', NULL, 'Grant', 0, 'test');
+    `);
+  });
+  after(() => {
+    db.exec(`DELETE FROM roles WHERE role_id = 'R_ISSUE33_NOUSERS';`);
+  });
+
+  it('given an existing role with zero user assignments, when sec_find_users_by_role runs, then it returns a clear no-users message', async () => {
+    const tool = toolHandlers['sec_find_users_by_role'];
+    const result = await tool.handler({ role_name: 'NoUsersRole' });
+    // Shape: success channel — empty is valid, not an error.
+    assert.notEqual(result.isError, true);
+    // Match the shape of the message: identifies the role.
+    assert.match(result.content[0].text, /No users found with role "NoUsersRole"/);
+  });
+});
+
+describe('issue #33 — sec_find_roles_by_duty on a duty with zero roles', () => {
+  before(() => {
+    // Duty exists but no role contains it.
+    db.exec(`
+      INSERT OR REPLACE INTO duties VALUES
+        ('D_ISSUE33_ORPHAN', 'Orphan duty', 'TestModule',
+         'A duty no role contains');
+    `);
+  });
+  after(() => {
+    db.exec(`DELETE FROM duties WHERE duty_id = 'D_ISSUE33_ORPHAN';`);
+  });
+
+  it('given an existing duty with zero parent roles, when sec_find_roles_by_duty runs, then it returns a clear no-roles message', async () => {
+    const tool = toolHandlers['sec_find_roles_by_duty'];
+    const result = await tool.handler({ duty_name: 'D_ISSUE33_ORPHAN' });
+    // Shape: success channel.
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No roles contain duty "D_ISSUE33_ORPHAN"/);
+  });
+});
+
+describe('issue #33 — sec_raw_sql on a SELECT that returns zero rows', () => {
+  it('given a SELECT with no matching rows, when sec_raw_sql runs, then it surfaces a no-results indicator (not a crash)', async () => {
+    const result = await callTool('sec_raw_sql', {
+      sql: "SELECT role_name FROM roles WHERE role_name = 'definitely-not-a-real-role'",
+    });
+    // The shared formatMarkdownTable returns "No results found." for empty rows.
+    assert.match(result, /No results found/);
+  });
+});

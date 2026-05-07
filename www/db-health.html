@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D365FO MCP — Database Health</title>
+<style>
+  :root {
+    --accent:        #1f3a5f;
+    --bg:            #ffffff;
+    --shell:         #f4f6f9;
+    --border:        #dbe1e8;
+    --text:          #1c2733;
+    --muted:         #5b6b7c;
+    --ok:            #1e7d45;
+    --ok-bg:         #e6f4ec;
+    --bad:           #a4262c;
+    --bad-bg:        #fde7e9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: var(--shell); color: var(--text); font-size: 15px; line-height: 1.5;
+    min-height: 100vh;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header {
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    padding: 14px 28px;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+  }
+  header h1 { font-size: 16px; font-weight: 600; color: var(--accent); }
+  header nav { font-size: 13px; color: var(--muted); }
+  header nav a { margin-left: 12px; }
+
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 24px; }
+
+  .toolbar {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 16px; font-size: 13px; color: var(--muted);
+  }
+  .btn {
+    background: var(--accent); color: #fff; border: none; padding: 7px 16px;
+    border-radius: 4px; font-size: 13px; font-weight: 600; cursor: pointer;
+    font-family: inherit; transition: background 0.15s;
+  }
+  .btn:hover { background: #16294a; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .db-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .db-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; gap: 12px;
+  }
+  .db-head h3 { font-size: 15px; font-weight: 600; color: var(--accent); }
+  .db-head .desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .pill.ok  { background: var(--ok-bg);  color: var(--ok); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+
+  .db-body { padding: 16px 20px; }
+  .kv {
+    display: grid; gap: 10px 24px;
+    grid-template-columns: max-content 1fr;
+    font-size: 14px;
+  }
+  .kv dt { color: var(--muted); }
+  .kv dd { color: var(--text); font-weight: 500; }
+  .kv code { font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+             font-size: 13px; background: var(--shell); padding: 1px 6px; border-radius: 3px; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 10px; font-style: italic; }
+
+  .raw {
+    margin-top: 24px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 14px 18px;
+  }
+  .raw h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--muted); margin-bottom: 8px; }
+  .raw pre {
+    background: var(--shell); border-radius: 4px; padding: 12px;
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 12px; overflow-x: auto; line-height: 1.55;
+  }
+
+  @media (max-width: 600px) {
+    header { padding: 12px 16px; }
+    main { padding: 20px 16px; }
+    .kv { grid-template-columns: 1fr; gap: 4px 0; }
+    .kv dt { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Database Health</h1>
+  <nav>
+    <a href="/api/admin">&larr; Dashboard</a>
+    <a href="/api/d365sec/upload">Sec upload</a>
+  </nav>
+</header>
+
+<main>
+
+  <div class="toolbar">
+    <button class="btn" id="btnRefresh">Refresh now</button>
+    <span id="lastFetched">Loading…</span>
+  </div>
+
+  <div id="dbList"></div>
+
+  <div class="raw">
+    <h2>Raw response (/api/health)</h2>
+    <pre id="rawJson">…</pre>
+  </div>
+
+</main>
+
+<script>
+"use strict";
+
+const dbList = document.getElementById('dbList');
+const rawJson = document.getElementById('rawJson');
+const lastFetched = document.getElementById('lastFetched');
+const btnRefresh = document.getElementById('btnRefresh');
+
+const DESC = {
+  kb:   'D365FO metadata index — tables, classes, forms, labels.',
+  xref: 'Cross-reference graph — references, callers, extensions.',
+  sec:  'Security model — roles, duties, privileges, user assignments.',
+};
+
+const NICE = {
+  kb:   'Knowledge Base',
+  xref: 'Cross-Reference',
+  sec:  'Security',
+};
+
+function formatBytes(bytes) {
+  if (bytes == null || !Number.isFinite(bytes)) return '—';
+  const units = ['B','KB','MB','GB','TB'];
+  let i = 0; let v = bytes;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+function formatNumber(n) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  return n.toLocaleString('en-GB');
+}
+
+function formatDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[c]);
+}
+
+function renderDb(db) {
+  const pillCls = db.healthy ? 'ok' : 'bad';
+  const pillText = db.healthy ? 'Healthy' : 'Unavailable';
+  const note = db.note ? '<p class="note">' + escapeHtml(db.note) + '</p>' : '';
+  return `
+    <div class="db-block">
+      <div class="db-head">
+        <div>
+          <h3>${escapeHtml(NICE[db.name] || db.name)}</h3>
+          <div class="desc">${escapeHtml(DESC[db.name] || '')}</div>
+        </div>
+        <span class="pill ${pillCls}">${pillText}</span>
+      </div>
+      <div class="db-body">
+        <dl class="kv">
+          <dt>Service</dt><dd><code>${escapeHtml(db.name)}</code></dd>
+          <dt>Size</dt><dd>${formatBytes(db.size_bytes)}</dd>
+          <dt>Records (metadata)</dt><dd>${formatNumber(db.record_count)}</dd>
+          <dt>Last built</dt><dd>${formatDate(db.last_modified)}</dd>
+        </dl>
+        ${note}
+      </div>
+    </div>`;
+}
+
+async function load() {
+  btnRefresh.disabled = true;
+  lastFetched.textContent = 'Fetching…';
+  try {
+    const resp = await fetch('/api/health', { credentials: 'same-origin', cache: 'no-store' });
+    if (resp.status === 401) {
+      dbList.innerHTML = '<div class="db-block"><div class="db-body">Sign-in required. <a href="/.auth/login/aad?post_login_redirect_uri=/api/admin/db-health">Sign in</a> to view health data.</div></div>';
+      rawJson.textContent = '(unauthenticated)';
+      lastFetched.textContent = 'Not signed in';
+      return;
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const report = await resp.json();
+    rawJson.textContent = JSON.stringify(report, null, 2);
+    dbList.innerHTML = (report.databases || []).map(renderDb).join('');
+    lastFetched.textContent = 'Last fetched ' + formatDate(report.server_time);
+  } catch (err) {
+    dbList.innerHTML = '<div class="db-block"><div class="db-body">Failed to load: ' + escapeHtml(err.message || String(err)) + '</div></div>';
+    rawJson.textContent = '';
+    lastFetched.textContent = 'Error';
+  } finally {
+    btnRefresh.disabled = false;
+  }
+}
+
+btnRefresh.addEventListener('click', load);
+load();
+</script>
+
+</body>
+</html>

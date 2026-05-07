@@ -14,19 +14,23 @@
     "start:taskrecorder": "node src/local/mcp-server-taskrecorder.js",
     "start:wiki": "node src/local/mcp-server-wiki.js",
     "ticket-to-pdf": "node scripts/ticket-xml-to-pdf.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/*.test.js test/integration/*.test.js",
     "test:sec": "node --test test/sec-tools.test.js",
     "test:kb": "node --test test/kb-tools.test.js",
     "test:xref": "node --test test/xref-tools.test.js",
     "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
+    "test:integration": "node --test test/integration/*.test.js",
     "start:azure": "func start"
+  },
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
   },
   "dependencies": {
     "@azure/functions": "^4.9.0",
     "@azure/storage-blob": "^12.31.0",
-    "@modelcontextprotocol/sdk": "^1.27.0",
-    "adm-zip": "^0.5.16",
-    "better-sqlite3": "^12.8.0",
+    "@modelcontextprotocol/sdk": "1.27.0",
+    "adm-zip": "0.5.16",
+    "better-sqlite3": "12.8.0",
     "fast-xml-parser": "^5.2.3",
     "html-to-text": "^9.0.5",
     "mammoth": "^1.8.0",
@@ -36,6 +40,6 @@
   },
   "devDependencies": {
     "mssql": "^11.0.0",
-    "sql.js": "^1.12.0"
+    "sql.js": "1.12.0"
   }
 }

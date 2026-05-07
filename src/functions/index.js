@@ -15,3 +15,5 @@ import './otrs-extract.js';
 import './otrs-ingest.js';
 import './otrs-admin.js';
 import './wiki-mcp.js';
+import './d365health.js';
+import './d365admin-pages.js';

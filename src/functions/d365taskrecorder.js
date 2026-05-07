@@ -17,8 +17,46 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
+import { validateRequestSize } from '../azure/request-size.js';
 
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+/**
+ * Per-endpoint upload ceiling for Task Recorder recordings.
+ * Recordings are typically < 1 MB. The 2 GB host.json limit is set for
+ * security DB uploads (KB ~1 GB, XRef ~3.3 GB) and is too permissive for
+ * this endpoint specifically — Azure Functions has no per-route override,
+ * so we enforce it here.
+ */
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * Decide whether an upload's declared size is acceptable. Pure function — easy to unit-test.
+ * Returns `null` when the request may proceed; otherwise returns the rejection
+ * `{ status, body }` to send back. Issue #43: enforce the size check via the
+ * `Content-Length` header BEFORE the body is read into memory, so a 60 MB
+ * upload is rejected with 413 before allocating a 60 MB buffer.
+ */
+export function checkUploadSize(contentLengthHeader, max = MAX_UPLOAD_BYTES) {
+  if (contentLengthHeader == null || contentLengthHeader === '') {
+    return {
+      status: 413,
+      body: `Content-Length header is required (max ${max / 1024 / 1024} MB).`,
+    };
+  }
+  const len = Number(contentLengthHeader);
+  if (!Number.isFinite(len) || len < 0) {
+    return {
+      status: 413,
+      body: `Invalid Content-Length header (max ${max / 1024 / 1024} MB).`,
+    };
+  }
+  if (len > max) {
+    return {
+      status: 413,
+      body: `File exceeds ${max / 1024 / 1024} MB limit (${(len / 1024 / 1024).toFixed(1)} MB declared).`,
+    };
+  }
+  return null;
+}
 
 // ── Load test UI HTML at startup ────────────────────────────────────────────
 
@@ -59,6 +97,8 @@ app.http('d365taskrecorder', {
 
       let options;
       if (request.method === 'POST') {
+        const sizeRejection = validateRequestSize(request);
+        if (sizeRejection) return sizeRejection;
         const parsedBody = await request.json();
         options = { parsedBody };
       }
@@ -99,11 +139,19 @@ app.http('d365taskrecorder-upload', {
 
     // POST: parse uploaded file, return markdown as plain text
     try {
+      // Pre-check Content-Length BEFORE reading the body (issue #43).
+      const sizeRejection = checkUploadSize(request.headers.get('content-length'));
+      if (sizeRejection) return sizeRejection;
+
       const formData = await request.formData();
       const file = formData.get('file');
       if (!file) {
         return { status: 400, body: 'No file uploaded.' };
       }
+      // Defence-in-depth: re-check the actual file size (Content-Length covers
+      // the whole multipart envelope, so a near-limit envelope might wrap a
+      // file just under the per-part cap — but a file *larger* than the
+      // overall envelope is impossible, so this check only catches edge cases).
       if (file.size > MAX_UPLOAD_BYTES) {
         return { status: 413, body: `File exceeds ${MAX_UPLOAD_BYTES / 1024 / 1024} MB limit.` };
       }

@@ -13,6 +13,9 @@
     },
     "prefix": {
       "value": "tis"
+    },
+    "monthlyBudgetAmount": {
+      "value": 50
     }
   }
 }

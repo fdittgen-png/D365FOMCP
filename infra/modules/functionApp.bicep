@@ -20,22 +20,34 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-// ─── Blob services (parent for management policies) ────
+// ─── Blob services (parent for containers + management policies) ────────────
+// Holds:
+//   - mcpsec-snapshots: dated copies of d365fo_*.sqlite from successful builds
+//     (issue #37 — snapshot preservation, not DR; source DBs can be rebuilt)
+//   - mcpsec-uploads:   transient ZIPs from the d365sec upload pipeline,
+//                       deleted in the async build's finally block
 resource blobServices 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storageAccount
   name: 'default'
   properties: {}
 }
 
-// ─── Lifecycle management: auto-delete orphan upload blobs (P6-02) ─────
-// The d365sec upload pipeline writes ZIPs to the `mcpsec-uploads` container
-// and deletes them in the async build's finally block. Cleanup failures
-// (network blip, function restart) leave orphans behind. CR-SEC hygiene
-// audit projected ~20 GB of orphans over 6 months without retention.
-//
-// This rule deletes any blob in mcpsec-uploads/ that hasn't been modified
-// in 7 days. Block blob only — page/append blobs (none used today) are
-// untouched. Policy evaluation runs once per 24h server-side.
+resource snapshotContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: blobServices
+  name: 'mcpsec-snapshots'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+// ─── Lifecycle management ───────────────────────────────────────────────────
+// Two rules:
+//   1. DeleteOldSecUploads (P6-02) — purges orphan upload ZIPs older than 7 days
+//      from `mcpsec-uploads/`. Cleanup-failure hygiene; ~20 GB/6mo projection.
+//   2. expire-old-snapshots (issue #37) — purges build snapshots older than 90
+//      days from `mcpsec-snapshots/`. Backup-Databases.ps1 also prunes to the
+//      5 most recent; this is the calendar-based safety net.
+// Policy evaluation runs once per 24h server-side; block blob only.
 resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
   parent: storageAccount
   name: 'default'
@@ -61,6 +73,22 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
               prefixMatch: [
                 'mcpsec-uploads/'
               ]
+            }
+          }
+        }
+        {
+          name: 'expire-old-snapshots'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [ 'blockBlob' ]
+              prefixMatch: [ 'mcpsec-snapshots/' ]
+            }
+            actions: {
+              baseBlob: {
+                delete: { daysAfterModificationGreaterThan: 90 }
+              }
             }
           }
         }

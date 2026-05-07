@@ -6,7 +6,7 @@
  * better-sqlite3 database.
  */
 
-import { query, formatMarkdownTable, textResult } from './shared.js';
+import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult, runWithBudget, QueryBudgetExceededError, timeoutErrorResult } from './shared.js';
 import { z } from 'zod';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
@@ -87,12 +87,14 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query.',
     {
-      object_name: z.string().max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
+      object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
       kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
         .describe('Filter by reference kind. Default: All'),
-      limit: z.number().default(100).describe('Max results (default 100)'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ object_name, kind, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found in XRef database.`);
 
@@ -142,12 +144,14 @@ export function registerXrefTools(server, db) {
     'xref_find_usages',
     'Find all objects that a given D365FO object references (what it calls/reads/extends). This is the "Uses" / outgoing references query.',
     {
-      object_name: z.string().max(500).describe('Object name or full path'),
+      object_name: z.string().min(1).max(500).describe('Object name or full path'),
       kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
         .describe('Filter by reference kind'),
-      limit: z.number().default(100).describe('Max results (default 100)'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ object_name, kind, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found in XRef database.`);
 
@@ -194,9 +198,9 @@ export function registerXrefTools(server, db) {
     'xref_find_method_callers',
     'Find all callers of a specific method on a class or table. Returns source locations with line numbers.',
     {
-      object_name: z.string().max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
-      method_name: z.string().max(500).describe('Method name (e.g. "construct", "run")'),
-      limit: z.number().default(100).describe('Max results'),
+      object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
+      method_name: z.string().min(1).max(500).describe('Method name (e.g. "construct", "run")'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ object_name, method_name, limit }) => {
       const methodPaths = [
@@ -249,7 +253,7 @@ export function registerXrefTools(server, db) {
     'xref_class_hierarchy',
     'Find the full class inheritance hierarchy — all subclasses (recursive) or the parent chain of a given class.',
     {
-      class_name: z.string().max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
+      class_name: z.string().min(1).max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
       direction: z.enum(['subclasses', 'parents']).default('subclasses')
         .describe('"subclasses" = who extends this (default), "parents" = what does this extend'),
     },
@@ -319,7 +323,7 @@ export function registerXrefTools(server, db) {
     'xref_interface_implementors',
     'Find all classes that implement a given interface, including indirect implementors through inheritance.',
     {
-      interface_name: z.string().max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
+      interface_name: z.string().min(1).max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
     },
     async ({ interface_name }) => {
       let targetId = null;
@@ -371,12 +375,14 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name.',
     {
-      pattern: z.string().max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
+      pattern: z.string().min(1).max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
       object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
         .default('All').describe('Filter by object type'),
-      limit: z.number().default(50).describe('Max results'),
+      limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
     },
     async ({ pattern, object_type, limit }) => {
+      const _v = validateLikePattern(pattern);
+      if (_v) return patternErrorResult(_v);
       const likePattern = pattern.includes('%') ? pattern : `%${pattern}%`;
       let typeFilter = '';
       const params = [likePattern];
@@ -416,10 +422,10 @@ export function registerXrefTools(server, db) {
     'xref_method_references',
     'Find all outgoing references from a specific method — what objects/methods/types does it call or use.',
     {
-      object_name: z.string().max(500).describe('Class or table name'),
-      method_name: z.string().max(500).describe('Method name'),
+      object_name: z.string().min(1).max(500).describe('Class or table name'),
+      method_name: z.string().min(1).max(500).describe('Method name'),
       kind: z.enum(['All', 'Call', 'Read']).default('All').describe('Filter: All, Call (method invocations only), Read (type/field reads only)'),
-      limit: z.number().default(100).describe('Max results'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ object_name, method_name, kind, limit }) => {
       const methodPaths = [
@@ -476,10 +482,10 @@ export function registerXrefTools(server, db) {
     'xref_module_objects',
     'List all top-level objects (classes, tables, forms, etc.) in a given D365FO module from the cross-reference database.',
     {
-      module_name: z.string().max(500).describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
+      module_name: z.string().min(1).max(500).describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
       object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views'])
         .default('All').describe('Filter by object type'),
-      limit: z.number().default(200).describe('Max results'),
+      limit: z.number().int().min(1).max(500).default(200).describe('Max results (default 200, max 500)'),
     },
     async ({ module_name, object_type, limit }) => {
       let typeFilter = '';
@@ -522,10 +528,10 @@ export function registerXrefTools(server, db) {
     'xref_cross_module_deps',
     'Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it).',
     {
-      module_name: z.string().max(500).describe('Module name'),
+      module_name: z.string().min(1).max(500).describe('Module name'),
       direction: z.enum(['depends_on', 'depended_by']).default('depends_on')
         .describe('"depends_on" = modules this module references, "depended_by" = modules that reference this one'),
-      limit: z.number().default(50).describe('Max results'),
+      limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
     },
     async ({ module_name, direction, limit }) => {
       let sql;
@@ -579,8 +585,8 @@ export function registerXrefTools(server, db) {
     'xref_raw_sql',
     'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).',
     {
-      sql: z.string().max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
-      limit: z.number().default(100).describe('Max rows'),
+      sql: z.string().min(1).max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max rows (default 100, max 500)'),
     },
     async ({ sql: userSql, limit }) => {
       const trimmed = userSql.trim().replace(/;+$/, '');
@@ -604,12 +610,13 @@ export function registerXrefTools(server, db) {
       }
 
       try {
-        const result = q(finalSql);
+        const result = runWithBudget('xref_raw_sql', () => q(finalSql));
         if (!result || result.length === 0) return textResult('No results found.');
         let out = formatMarkdownTable(result);
         if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
         return textResult(out);
       } catch (err) {
+        if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return textResult(`SQL Error: ${err.message}`);
       }
     },
@@ -622,9 +629,11 @@ export function registerXrefTools(server, db) {
     'xref_impact_analysis',
     'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.',
     {
-      object_name: z.string().max(500).describe('Object name or path'),
+      object_name: z.string().min(1).max(500).describe('Object name or path'),
     },
     async ({ object_name }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found.`);
       const { id: targetId, path: targetPath } = resolved;
@@ -709,9 +718,11 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     'Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module.',
     {
-      object_name: z.string().max(500).describe('Object name or path'),
+      object_name: z.string().min(1).max(500).describe('Object name or path'),
     },
     async ({ object_name }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
       if (!resolved) return textResult(`Object "${object_name}" not found.`);
       const { id: objId, path: objPath } = resolved;
@@ -781,12 +792,14 @@ export function registerXrefTools(server, db) {
     'xref_find_extensions',
     'Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. Shows [ExtensionOf] classes that wrap the target with CoC methods using "next". Finds extensions by naming convention. Results may include false positives for common name prefixes.',
     {
-      object_name: z.string().max(500).describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
+      object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
       object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'DataEntityViews']).default('All')
         .describe('Object type to search for extensions. Default: All'),
-      limit: z.number().default(100).describe('Max results'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ object_name, object_type, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
       // Strategy: Extension classes reference /Classes/ExtensionOf via kind=7 (Attribute)
       // and their name typically contains the target object name + "_Extension" suffix.
       // We also check xref for classes that have an Attribute (kind=7) reference to the target object.
@@ -903,13 +916,17 @@ export function registerXrefTools(server, db) {
     'xref_find_field_usages',
     'Find all code locations that read or write a specific field on a D365FO table. Returns callers with line numbers, grouped by kind (Read vs Call/Write).',
     {
-      table_name: z.string().max(500).describe('Table name (e.g. "CustTable", "SalesTable")'),
-      field_name: z.string().max(500).describe('Field name (e.g. "AccountNum", "InvoiceId")'),
+      table_name: z.string().min(1).max(500).describe('Table name (e.g. "CustTable", "SalesTable")'),
+      field_name: z.string().min(1).max(500).describe('Field name (e.g. "AccountNum", "InvoiceId")'),
       kind: z.enum(['All', 'Read', 'Write']).default('All')
         .describe('Filter: All, Read (field value reads), Write (field assignments). Default: All'),
-      limit: z.number().default(100).describe('Max results'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ table_name, field_name, kind, limit }) => {
+      const _vt = validateLikePattern(table_name);
+      if (_vt) return patternErrorResult(_vt);
+      const _vf = validateLikePattern(field_name);
+      if (_vf) return patternErrorResult(_vf);
       // Fields are stored as /Tables/TableName/Fields/FieldName in xref
       const fieldPath = `/Tables/${table_name}/Fields/${field_name}`;
 
@@ -994,11 +1011,15 @@ export function registerXrefTools(server, db) {
     'xref_find_event_handlers',
     'Find all event handlers and delegates for a D365FO object or method. Discovers [SubscribesTo], [DataEventHandler], [PreHandlerFor], [PostHandlerFor] subscriptions, and delegate definitions.',
     {
-      object_name: z.string().max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
-      method_name: z.string().max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),
-      limit: z.number().default(100).describe('Max results'),
+      object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
+      method_name: z.string().min(1).max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
     },
     async ({ object_name, method_name, limit }) => {
+      const _v = validateLikePattern(object_name);
+      if (_v) return patternErrorResult(_v);
+      const _vm = validateLikePattern(method_name);
+      if (_vm) return patternErrorResult(_vm);
       let text = '';
 
       // Part 1: Find delegate definitions on this object (kind=6 references FROM the object)
