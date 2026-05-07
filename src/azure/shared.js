@@ -91,3 +91,38 @@ export function formatMarkdownTable(rows, columns) {
 export function textResult(text) {
   return { content: [{ type: 'text', text }] };
 }
+
+// ── Wildcard pattern validation (issue #42) ──────────────────────────────────
+
+/**
+ * Maximum allowed length for any user-supplied string that becomes a SQL `LIKE`
+ * pattern in kb-tools / xref-tools. Above this, full-table scans burn excessive
+ * memory and CPU on Azure Functions. Validation must happen before the DB query.
+ */
+export const MAX_LIKE_PATTERN_LENGTH = 100;
+
+/**
+ * Validate that a user-supplied wildcard pattern is within the allowed length.
+ * Returns null when valid (or when the input is not a string — Zod handles type errors).
+ * Returns `{ error: '...' }` when oversized; the caller decides how to surface it.
+ */
+export function validateLikePattern(value, max = MAX_LIKE_PATTERN_LENGTH) {
+  if (typeof value !== 'string') return null;
+  if (value.length > max) {
+    return { error: `Search pattern too long (max ${max} chars)` };
+  }
+  return null;
+}
+
+/**
+ * Wrap a `validateLikePattern` failure in the MCP error response shape used
+ * across kb-tools and xref-tools (text + isError flag, structured object retained
+ * so future structured-output handlers can pass it through unchanged).
+ */
+export function patternErrorResult(validationResult) {
+  return {
+    content: [{ type: 'text', text: validationResult.error }],
+    isError: true,
+    structuredContent: validationResult,
+  };
+}

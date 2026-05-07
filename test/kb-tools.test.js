@@ -786,3 +786,25 @@ describe('d365_resolve_label', () => {
     assert.ok(result.includes('No label IDs provided'));
   });
 });
+
+// -- Issue #42: wildcard pattern length validation ---------------------------
+
+describe('wildcard pattern length validation (issue #42)', () => {
+  it('rejects oversized table_name before reaching the DB (LIKE-fuzzy path)', async () => {
+    // 200-char input would normally trigger the fuzzy `LIKE %...%` branch.
+    // The validator must short-circuit it and return a structured error.
+    const oversized = 'X'.repeat(200);
+    const tool = toolHandlers['d365_lookup_table'];
+    const result = await tool.handler({ table_name: oversized });
+    assert.equal(result.isError, true);
+    assert.ok(
+      result.content[0].text.includes('Search pattern too long'),
+      `expected pattern-length error, got: ${result.content[0].text}`,
+    );
+  });
+
+  it('accepts valid table_name lookups (regression guard)', async () => {
+    const result = await callTool('d365_lookup_table', { table_name: 'CustTable' });
+    assert.ok(result.includes('CustTable'));
+  });
+});
