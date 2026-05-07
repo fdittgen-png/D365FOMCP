@@ -33,11 +33,20 @@
 .PARAMETER ListConfigs
     List all available configurations and exit.
 
+.PARAMETER BackupEnvironment
+    If set ('d' or 'p'), call Backup-Databases.ps1 after a successful build to
+    snapshot the resulting .sqlite files to Azure Blob (issue #37). Without
+    this parameter the build runs locally only.
+
+.PARAMETER SkipBackup
+    Force-skip the post-build snapshot even if -BackupEnvironment is set.
+
 .EXAMPLE
     .\Update-Databases.ps1
     .\Update-Databases.ps1 -ConfigName "tis-d365fo-dev-02"
     .\Update-Databases.ps1 -ConfigName "tis-d365fo-dev-02" -KbOnly
     .\Update-Databases.ps1 -ListConfigs
+    .\Update-Databases.ps1 -BackupEnvironment d        # build + snapshot
 
 .NOTES
     This script reads configurations from Get-D365Configurations.ps1
@@ -49,7 +58,10 @@ param(
     [string]$OutputDir = (Join-Path $env:USERPROFILE '.claude'),
     [switch]$KbOnly,
     [switch]$XrefOnly,
-    [switch]$ListConfigs
+    [switch]$ListConfigs,
+    [ValidateSet('d', 'p')]
+    [string]$BackupEnvironment,
+    [switch]$SkipBackup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -426,4 +438,39 @@ Write-Host ""
 if ($allOk -and ($steps | Where-Object { $_.Status -eq 'OK' }).Count -gt 0) {
     Write-Host "Next step: deploy to Azure" -ForegroundColor Yellow
     Write-Host "  .\Deploy-Databases.ps1 -Environment d" -ForegroundColor Yellow
+}
+
+# ─── Snapshot Backup (issue #37) ──────────────────────────────────────────────
+# After a successful build, copy the .sqlite files to Azure Blob Storage so a
+# bad future build that gets deployed can be rolled back to this snapshot.
+# Skipped if -SkipBackup is set, if no -BackupEnvironment was given, or if any
+# build step failed.
+if (-not $SkipBackup -and $BackupEnvironment -and $allOk) {
+    $okBuilds = @($steps | Where-Object { $_.Status -eq 'OK' })
+    if ($okBuilds.Count -gt 0) {
+        Write-Host ""
+        Write-Host "==========================================================" -ForegroundColor Yellow
+        Write-Host "  Snapshot Backup → Azure Blob (env=$BackupEnvironment)" -ForegroundColor Yellow
+        Write-Host "==========================================================" -ForegroundColor Yellow
+
+        $backupScript = Join-Path $scriptDir 'Backup-Databases.ps1'
+        if (-not (Test-Path $backupScript)) {
+            Write-Warning "Backup-Databases.ps1 not found at $backupScript — skipping."
+        } else {
+            $backupArgs = @{ Environment = $BackupEnvironment }
+            if ($KbOnly)   { $backupArgs.KbOnly   = $true }
+            if ($XrefOnly) { $backupArgs.XrefOnly = $true }
+            try {
+                & $backupScript @backupArgs
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warning "Snapshot backup reported errors (exit $LASTEXITCODE)."
+                }
+            } catch {
+                Write-Warning "Snapshot backup failed: $($_.Exception.Message)"
+            }
+        }
+    }
+} elseif (-not $SkipBackup -and -not $BackupEnvironment) {
+    Write-Host ""
+    Write-Host "Tip: pass -BackupEnvironment d|p to also snapshot to Azure Blob." -ForegroundColor DarkGray
 }
