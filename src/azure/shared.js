@@ -93,6 +93,125 @@ export function textResult(text) {
   return { content: [{ type: 'text', text }] };
 }
 
+// ── TOON (Token-Oriented Object Notation) ────────────────────────────────────
+//
+// Compact tabular text for LLM input. Header declares column names once;
+// rows list values comma-separated. Lossless round-trip on JSON-primitive
+// cells. Used as an opt-in alternative to formatMarkdownTable on tools that
+// routinely return large uniform row sets (e.g. *_raw_sql).
+//
+//   rows[3]{id,name,role}:
+//     1,Alice,admin
+//     2,Bob,user
+//     3,Charlie,user
+//
+// Quoting rules (RFC 4180-ish): a field is wrapped in double quotes when it
+// contains `,` `"` `\n` `\r` or has leading/trailing whitespace. Internal
+// quotes are doubled. Numeric/boolean values are stringified as-is.
+
+const TOON_NEEDS_QUOTE = /[",\n\r]|^\s|\s$/;
+
+function toonField(v) {
+  const s = v === null || v === undefined ? '' : String(v);
+  if (s === '' || !TOON_NEEDS_QUOTE.test(s)) return s;
+  return '"' + s.replace(/"/g, '""') + '"';
+}
+
+/**
+ * Render rows as a TOON block. Returns 'No results found.' for empty input
+ * to match formatMarkdownTable's empty-handling.
+ *
+ * @param {string} arrayName  Logical name (alphanumeric + underscore).
+ * @param {object[]} rows
+ * @param {string[]} [columns]  Explicit column order; default = keys of rows[0].
+ */
+export function formatToonBlock(arrayName, rows, columns) {
+  if (!rows || rows.length === 0) return 'No results found.';
+  const safeName = /^[A-Za-z_][A-Za-z0-9_]*$/.test(arrayName) ? arrayName : 'rows';
+  if (!columns) columns = Object.keys(rows[0]);
+  const header = `${safeName}[${rows.length}]{${columns.map(toonField).join(',')}}:`;
+  const body = rows
+    .map(r => '  ' + columns.map(c => toonField(r[c])).join(','))
+    .join('\n');
+  return `${header}\n${body}`;
+}
+
+/**
+ * Parse a TOON block emitted by formatToonBlock. Strict about the header
+ * shape; stream-decodes the body so quoted fields may contain literal
+ * newlines. Returns { arrayName, count, columns, rows }. Throws on
+ * malformed input.
+ */
+export function parseToonBlock(text) {
+  if (typeof text !== 'string') throw new Error('parseToonBlock: text must be a string');
+  const nl = text.indexOf('\n');
+  const headerLine = (nl === -1 ? text : text.slice(0, nl)).replace(/\r$/, '');
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]\{(.*)\}:\s*$/.exec(headerLine);
+  if (!m) throw new Error(`parseToonBlock: malformed header "${headerLine}"`);
+  const arrayName = m[1];
+  const count = Number(m[2]);
+  const columns = parseToonHeaderColumns(m[3]);
+
+  const body = nl === -1 ? '' : text.slice(nl + 1).replace(/\r\n/g, '\n');
+  const rows = [];
+  let i = 0;
+  const n = body.length;
+  while (i < n) {
+    if (body[i] === ' ' && body[i + 1] === ' ') i += 2;
+    if (i >= n) break;
+    if (body[i] === '\n') { i++; continue; }
+    const fields = [];
+    while (true) {
+      let field = '';
+      if (body[i] === '"') {
+        i++;
+        while (i < n) {
+          if (body[i] === '"' && body[i + 1] === '"') { field += '"'; i += 2; }
+          else if (body[i] === '"') { i++; break; }
+          else { field += body[i]; i++; }
+        }
+      } else {
+        while (i < n && body[i] !== ',' && body[i] !== '\n') { field += body[i]; i++; }
+      }
+      fields.push(field);
+      if (i < n && body[i] === ',') { i++; continue; }
+      break;
+    }
+    if (i < n && body[i] === '\n') i++;
+    const obj = {};
+    for (let j = 0; j < columns.length; j++) {
+      obj[columns[j]] = fields[j] === undefined ? '' : fields[j];
+    }
+    rows.push(obj);
+  }
+  return { arrayName, count, columns, rows };
+}
+
+function parseToonHeaderColumns(s) {
+  const out = [];
+  let i = 0;
+  const n = s.length;
+  if (n === 0) return out;
+  while (true) {
+    let field = '';
+    if (s[i] === '"') {
+      i++;
+      while (i < n) {
+        if (s[i] === '"' && s[i + 1] === '"') { field += '"'; i += 2; }
+        else if (s[i] === '"') { i++; break; }
+        else { field += s[i]; i++; }
+      }
+    } else {
+      while (i < n && s[i] !== ',') { field += s[i]; i++; }
+    }
+    out.push(field);
+    if (i >= n) break;
+    if (s[i] === ',') { i++; if (i === n) { out.push(''); break; } continue; }
+    break;
+  }
+  return out;
+}
+
 // ── Read-only DB tool annotations ────────────────────────────────────────────
 // Frozen so a tool file can't accidentally flip a hint at registration time.
 export const READ_ONLY_DB_ANNOTATIONS = Object.freeze({

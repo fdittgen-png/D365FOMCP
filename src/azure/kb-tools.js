@@ -12,6 +12,7 @@
 import {
   query,
   formatMarkdownTable,
+  formatToonBlock,
   textResult,
   emptyResult,
   notFoundResult,
@@ -1072,12 +1073,16 @@ export function registerKbTools(server, db) {
     'd365_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a Markdown rendering. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...)',
-      inputSchema: { sql: z.string().max(50000).describe('SQL SELECT query to execute') },
+      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...). Pass format="toon" to render the text channel as a TOON block (compact, ~25-35% fewer tokens than Markdown for large uniform row sets).',
+      inputSchema: {
+        sql: z.string().max(50000).describe('SQL SELECT query to execute'),
+        format: z.enum(['markdown', 'toon']).optional().default('markdown').describe('Text-channel rendering. "markdown" (default) or "toon" for token-efficient tabular output on large result sets.'),
+      },
       outputSchema: rawSqlOutput.shape,
     },
-    async ({ sql: rawSql }) => {
+    async ({ sql: rawSql, format }) => {
       const SAFETY_CAP = 500;
+      const fmt = format === 'toon' ? 'toon' : 'markdown';
       const trimmed = rawSql.trim();
 
       // Strip SQL comments (block and line) BEFORE any keyword scanning, so a
@@ -1110,9 +1115,11 @@ export function registerKbTools(server, db) {
           columns,
           rows,
         };
-        let md = formatMarkdownTable(rows);
-        if (truncated) md += truncationNote('hard', SAFETY_CAP);
-        return structuredResult(typed, md);
+        let text = fmt === 'toon'
+          ? formatToonBlock('rows', rows, columns)
+          : formatMarkdownTable(rows);
+        if (truncated) text += truncationNote('hard', SAFETY_CAP);
+        return structuredResult(typed, text);
       }
 
       // PRAGMA queries are passed through verbatim — wrapping a PRAGMA in an
