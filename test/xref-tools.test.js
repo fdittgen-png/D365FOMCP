@@ -494,6 +494,14 @@ describe('xref_raw_sql', () => {
     const result = await callTool('xref_raw_sql', { sql: 'SELECT nonexistent FROM names', limit: 100 });
     assert.ok(result.includes('Error'));
   });
+
+  it('TOON: format="toon" renders the text channel as a TOON block', async () => {
+    const md = await callTool('xref_raw_sql', { sql: 'SELECT path FROM names WHERE id = 100', limit: 100 });
+    const toon = await callTool('xref_raw_sql', { sql: 'SELECT path FROM names WHERE id = 100', limit: 100, format: 'toon' });
+    assert.match(md, /^\| path \|/m);
+    assert.match(toon, /^rows\[\d+\]\{path\}:/m);
+    assert.doesNotMatch(toon, /^\| path \|/m);
+  });
 });
 
 describe('xref_impact_analysis', () => {

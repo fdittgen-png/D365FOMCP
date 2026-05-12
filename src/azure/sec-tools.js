@@ -12,6 +12,7 @@
 import {
   query,
   formatMarkdownTable,
+  formatToonBlock,
   textResult,
   emptyResult,
   notFoundResult,
@@ -1457,12 +1458,16 @@ export function registerSecTools(server, db) {
     'sec_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a Markdown rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)',
-      inputSchema: { sql: z.string().max(50000).describe('SQL SELECT query') },
+      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Pass format="toon" to render the text channel as a TOON block (compact, ~25-35% fewer tokens than Markdown for large uniform row sets).',
+      inputSchema: {
+        sql: z.string().max(50000).describe('SQL SELECT query'),
+        format: z.enum(['markdown', 'toon']).optional().default('markdown').describe('Text-channel rendering. "markdown" (default) or "toon" for token-efficient tabular output on large result sets.'),
+      },
       outputSchema: rawSqlOutput.shape,
     },
-    async ({ sql: rawSql }) => {
+    async ({ sql: rawSql, format }) => {
       const SAFETY_CAP = 500;
+      const fmt = format === 'toon' ? 'toon' : 'markdown';
       const trimmed = rawSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
         return errorResult('invalid-input', 'Only SELECT, WITH, and PRAGMA queries are allowed.');
@@ -1493,7 +1498,9 @@ export function registerSecTools(server, db) {
           columns,
           rows,
         };
-        let out = formatMarkdownTable(rows);
+        let out = fmt === 'toon'
+          ? formatToonBlock('rows', rows, columns)
+          : formatMarkdownTable(rows);
         if (truncated) out += truncationNote('hard', SAFETY_CAP);
         return structuredResult(typed, out);
       } catch (err) {

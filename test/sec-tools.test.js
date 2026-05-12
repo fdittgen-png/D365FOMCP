@@ -501,6 +501,14 @@ describe('sec_raw_sql', () => {
     const result = await callTool('sec_raw_sql', { sql: 'SELECT role_name FROM roles' });
     assert.ok(result.includes('SystemAdministrator'));
   });
+
+  it('TOON: format="toon" renders the text channel as a TOON block; structuredContent is unchanged', async () => {
+    const md = await callToolFull('sec_raw_sql', { sql: 'SELECT role_name FROM roles ORDER BY role_name' });
+    const toon = await callToolFull('sec_raw_sql', { sql: 'SELECT role_name FROM roles ORDER BY role_name', format: 'toon' });
+    assert.match(md.content[0].text, /^\| role_name \|/m);
+    assert.match(toon.content[0].text, /^rows\[\d+\]\{role_name\}:/m);
+    assert.deepEqual(md.structuredContent, toon.structuredContent);
+  });
 });
 
 // ── P4-02 — CR-SEC-002: Deny filter across permission walkers ────────────────

@@ -913,6 +913,29 @@ describe('d365_raw_sql', () => {
     const result = await callTool('d365_raw_sql', { sql: 'VACUUM' });
     assert.match(result, /Only SELECT/);
   });
+
+  it('TOON: format="toon" renders the text channel as a TOON block; structuredContent is unchanged', async () => {
+    const md = await callToolFull('d365_raw_sql', {
+      sql: 'SELECT table_name FROM tables ORDER BY table_name',
+    });
+    const toon = await callToolFull('d365_raw_sql', {
+      sql: 'SELECT table_name FROM tables ORDER BY table_name',
+      format: 'toon',
+    });
+    // Markdown body starts with a pipe header; TOON starts with `rows[N]{...}:`.
+    assert.match(md.content[0].text, /^\| table_name \|/m);
+    assert.match(toon.content[0].text, /^rows\[\d+\]\{table_name\}:/m);
+    assert.doesNotMatch(toon.content[0].text, /^\| table_name \|/m);
+    // Typed payload must be identical regardless of text rendering.
+    assert.deepEqual(md.structuredContent, toon.structuredContent);
+  });
+
+  it('TOON: format defaults to markdown when omitted', async () => {
+    const result = await callToolFull('d365_raw_sql', {
+      sql: 'SELECT table_name FROM tables ORDER BY table_name',
+    });
+    assert.match(result.content[0].text, /^\| table_name \|/m);
+  });
 });
 
 describe('d365_graph_traverse', () => {

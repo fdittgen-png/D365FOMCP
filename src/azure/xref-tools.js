@@ -6,7 +6,7 @@
  * better-sqlite3 database.
  */
 
-import { query, formatMarkdownTable, textResult, validateLikePattern, patternErrorResult, runWithBudget, QueryBudgetExceededError, timeoutErrorResult } from './shared.js';
+import { query, formatMarkdownTable, formatToonBlock, textResult, validateLikePattern, patternErrorResult, runWithBudget, QueryBudgetExceededError, timeoutErrorResult } from './shared.js';
 import { z } from 'zod';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
@@ -583,12 +583,14 @@ export function registerXrefTools(server, db) {
   // ─────────────────────────────────────────────────────────────────────────
   server.tool(
     'xref_raw_sql',
-    'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).',
+    'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Pass format="toon" for token-efficient tabular output on large result sets.',
     {
       sql: z.string().min(1).max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
       limit: z.number().int().min(1).max(500).default(100).describe('Max rows (default 100, max 500)'),
+      format: z.enum(['markdown', 'toon']).optional().default('markdown').describe('Text rendering. "markdown" (default) or "toon".'),
     },
-    async ({ sql: userSql, limit }) => {
+    async ({ sql: userSql, limit, format }) => {
+      const fmt = format === 'toon' ? 'toon' : 'markdown';
       const trimmed = userSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
         return textResult('ERROR: Only SELECT/WITH/PRAGMA queries are allowed.');
@@ -612,7 +614,9 @@ export function registerXrefTools(server, db) {
       try {
         const result = runWithBudget('xref_raw_sql', () => q(finalSql));
         if (!result || result.length === 0) return textResult('No results found.');
-        let out = formatMarkdownTable(result);
+        let out = fmt === 'toon'
+          ? formatToonBlock('rows', result)
+          : formatMarkdownTable(result);
         if (result.length >= limit) out += `\n\n> ⚠️ Showing first ${limit} results. There may be more — increase limit or refine your query.`;
         return textResult(out);
       } catch (err) {
