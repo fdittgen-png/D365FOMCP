@@ -952,8 +952,10 @@ describe('parseTaskRecording', () => {
     before(async () => {
       const { registerTaskRecorderTools } = await import('../src/azure/taskrecorder-tools.js');
       toolHandlers = {};
+      // PM-02 migrated the tool off the deprecated server.tool() overload onto
+      // server.registerTool(name, config, handler); the mock matches the new API.
       const mockServer = {
-        tool: (name, _desc, schema, handler) => { toolHandlers[name] = { schema, handler }; },
+        registerTool: (name, config, handler) => { toolHandlers[name] = { config, handler }; },
       };
       registerTaskRecorderTools(mockServer);
     });
@@ -972,15 +974,18 @@ describe('parseTaskRecording', () => {
       const text = result.content[0].text;
       assert.ok(text.includes('# Task Recording: test'));
       assert.ok(text.includes('## Recorded Steps'));
+      // Typed-first: the same markdown is also returned as structuredContent.
+      assert.equal(result.structuredContent.markdown, text);
+      assert.equal(result.structuredContent.file_name, 'test.axtr');
     });
 
-    it('returns error for invalid base64', async () => {
+    it('returns a tool-level error for invalid base64', async () => {
       const result = await toolHandlers['taskrecorder_to_markdown'].handler({
         file_content: 'bm90YXppcA==',  // "notazip" in base64
         file_name: 'bad.axtr',
       });
-      const text = result.content[0].text;
-      assert.ok(text.includes('Error'));
+      assert.equal(result.isError, true);
+      assert.ok(result.content[0].text.includes('Error'));
     });
   });
 });

@@ -531,13 +531,19 @@ function generateMarkdown(rec, forms, formIdToName, allNodes, language, localize
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Parse a D365FO Task Recorder (.axtr) file and return a Markdown document.
+ * Parse a D365FO Task Recorder (.axtr) file into a structured model, WITHOUT
+ * rendering Markdown. This is the shared parse phase used by both
+ * `parseTaskRecording` (Markdown rendering) and the enriched-document builder
+ * (`taskrecorder-document.js`), which needs the typed data rather than a string.
  *
- * @param {Buffer} buffer  - Raw .axtr file contents
- * @param {string} [fileName='recording.axtr'] - Original filename (used in footer)
- * @returns {string} Markdown text
+ * @param {Buffer} buffer - Raw .axtr file contents
+ * @returns {{
+ *   rec: object, forms: object[], formIdToName: Record<string,string>,
+ *   allNodes: object[], language: (string|null),
+ *   localizedSteps: Record<string,string>, bpm: { processSteps: object[] }
+ * }}
  */
-export function parseTaskRecording(buffer, fileName = 'recording.axtr') {
+export function parseTaskRecordingData(buffer) {
   const zip = new AdmZip(buffer);
   const entryMap = {};
   for (const entry of zip.getEntries()) {
@@ -550,11 +556,6 @@ export function parseTaskRecording(buffer, fileName = 'recording.axtr') {
 
   // ── Recording.xml ─────────────────────────────────────────────────────
   const recXml = zip.readAsText(entryMap['Recording.xml'], 'utf8');
-  // Issue #33: malformed / empty / wrong-root Recording.xml used to leak a
-  // cryptic `TypeError: Cannot read properties of undefined (reading
-  // 'FormContexts')` from the next property access. Validate the parse
-  // outcome here so callers see a clear error and can distinguish a parse
-  // failure from a missing entry.
   let parsed;
   try {
     parsed = xmlParser.parse(recXml);
@@ -620,6 +621,18 @@ export function parseTaskRecording(buffer, fileName = 'recording.axtr') {
   }
   const allNodes = walkTree(rec.RootScope);
 
-  // ── Generate Markdown ─────────────────────────────────────────────────
+  return { rec, forms, formIdToName, allNodes, language, localizedSteps, bpm };
+}
+
+/**
+ * Parse a D365FO Task Recorder (.axtr) file and return a Markdown document.
+ *
+ * @param {Buffer} buffer  - Raw .axtr file contents
+ * @param {string} [fileName='recording.axtr'] - Original filename (used in footer)
+ * @returns {string} Markdown text
+ */
+export function parseTaskRecording(buffer, fileName = 'recording.axtr') {
+  const { rec, forms, formIdToName, allNodes, language, localizedSteps, bpm } =
+    parseTaskRecordingData(buffer);
   return generateMarkdown(rec, forms, formIdToName, allNodes, language, localizedSteps, bpm, fileName);
 }

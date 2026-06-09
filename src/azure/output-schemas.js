@@ -1071,3 +1071,68 @@ export const wikiSearchOutput = z.object({
   matches: z.array(wikiSearchMatchSchema),
   truncated: z.boolean(),
 });
+
+
+// ── Task Recorder: taskrecorder_to_markdown ──────────────────────────────────
+
+export const taskrecorderMarkdownOutput = z.object({
+  markdown: z.string(),
+  file_name: z.string(),
+});
+
+// ── Task Recorder: taskrecorder_to_document ──────────────────────────────────
+
+export const taskrecorderDocStepSchema = z.object({
+  step: z.number(),
+  docx_text: z.string().nullable(),
+  description: z.string().nullable(),
+  action_type: z.string().nullable(),
+  target: z.string().nullable(),
+  global_id: z.string().nullable(),
+  object_name: z.string().nullable(),
+  screenshot_count: z.number(),
+  has_security: z.boolean(),
+  texts_agree: z.boolean(),
+});
+
+export const taskrecorderDocFormSchema = z.object({
+  form_name: z.string(),
+  kb_available: z.boolean(),
+  kb_found: z.boolean(),
+  class_count: z.number(),
+  endpoint_count: z.number(),
+});
+
+export const taskrecorderDocRoleSchema = z.object({
+  queried: z.string(),
+  role_name: z.string().nullable(),
+  found: z.boolean(),
+  sub_role_count: z.number(),
+  duty_count: z.number(),
+  privilege_count: z.number(),
+  user_count: z.number(),
+});
+
+export const taskrecorderDocumentOutput = z.object({
+  recording: z.object({
+    name: z.string(),
+    description: z.string().nullable(),
+    canonical_id: z.string().nullable(),
+    version: z.string().nullable(),
+    language: z.string().nullable(),
+    action_count: z.number(),
+  }),
+  step_count: z.number(),
+  screenshot_count: z.number(),
+  screenshots_present: z.boolean(),
+  steps: z.array(taskrecorderDocStepSchema),
+  forms_enriched: z.array(taskrecorderDocFormSchema),
+  roles_enriched: z.array(taskrecorderDocRoleSchema),
+  bpm_role_count: z.number(),
+  kb_available: z.boolean(),
+  sec_available: z.boolean(),
+  output_path: z.string().nullable(),
+  byte_size: z.number(),
+  document_mhtml: z.string().nullable(),
+  notes: z.array(z.string()),
+});
