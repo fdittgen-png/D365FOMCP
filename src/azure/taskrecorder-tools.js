@@ -156,7 +156,8 @@ export function registerTaskRecorderTools(server) {
         include_users: z.boolean().optional().default(true).describe('Include the users assigned to each role (no email addresses are ever emitted).'),
         company: z.string().min(1).max(20).optional().describe('Restrict assigned-user lists to this company (legal entity) id.'),
         max_users_per_role: z.number().int().positive().max(1000).optional().default(50).describe('Cap on users listed per role.'),
-        return_inline: z.boolean().optional().default(false).describe('Also return the full MHTML document text inside structuredContent.document_mhtml.'),
+        return_inline: z.boolean().optional().default(false).describe('Also return the full MHTML document text inside structuredContent.document_mhtml (and the XML in document_xml when include_xml is set).'),
+        include_xml: z.boolean().optional().default(false).describe('Also emit a machine-consumable contract XML (writes a sibling .xml next to output_path; validates against schemas/task-recording-document.xsd).'),
       },
       outputSchema: taskrecorderDocumentOutput.shape,
     },
@@ -166,6 +167,7 @@ export function registerTaskRecorderTools(server) {
       const company = typeof args.company === 'string' && args.company ? args.company : null;
       const maxUsers = Number.isInteger(args.max_users_per_role) && args.max_users_per_role > 0 ? args.max_users_per_role : 50;
       const returnInline = args.return_inline === true;
+      const includeXml = args.include_xml === true;
 
       // ── load the .axtr (required) ──────────────────────────────────────────
       const axtr = await loadBuffer({ url: args.file_url, content: args.file_content, kind: '.axtr file', deriveExt: '.axtr' });
@@ -194,7 +196,7 @@ export function registerTaskRecorderTools(server) {
         return errorResult('parse-error', 'The recording could not be parsed into a document.', err);
       }
 
-      const { mhtml, summaryMarkdown, structured } = result;
+      const { mhtml, xml, summaryMarkdown, structured } = result;
 
       // ── write the .mhtml ───────────────────────────────────────────────────
       let outPath = typeof args.output_path === 'string' && args.output_path ? args.output_path : null;
@@ -214,6 +216,20 @@ export function registerTaskRecorderTools(server) {
       }
 
       if (returnInline) structured.document_mhtml = mhtml;
+
+      // ── emit the contract XML (sibling .xml) ───────────────────────────────
+      if (includeXml) {
+        const xmlPath = outPath.replace(/\.mhtml$/i, '') + '.xml';
+        try {
+          writeFileSync(xmlPath, xml, 'utf8');
+          structured.xml_output_path = xmlPath;
+        } catch (err) {
+          structured.notes.push('Could not write the contract XML to disk; it is available via return_inline.');
+          console.error(`[internal] taskrecorder_to_document XML write failed -- ${err.name}: ${err.message}`);
+          structured.xml_output_path = null;
+        }
+        if (returnInline) structured.document_xml = xml;
+      }
 
       const finalSummary = structured.output_path
         ? summaryMarkdown.replace('A self-contained MHTML web-archive was generated.',

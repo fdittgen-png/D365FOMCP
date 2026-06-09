@@ -17,6 +17,7 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { z } from 'zod';
+import { XMLValidator, XMLParser } from 'fast-xml-parser';
 
 import { parseDocxScreenshots } from '../src/azure/docx-screenshots.js';
 import { enrichFormFromKb, enrichRoleFromSec } from '../src/azure/taskrecorder-enrich.js';
@@ -320,6 +321,29 @@ describe('buildTaskRecorderDocument (end-to-end)', () => {
     // The decoded HTML must list the user without an email.
     assert.ok(out.mhtml.includes('Alice Admin') === false || !out.mhtml.includes('@example.invalid'));
   });
+
+  it('produces well-formed contract XML matching the model', () => {
+    assert.equal(XMLValidator.validate(out.xml), true, 'XML is not well-formed');
+    const doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(out.xml);
+    const root = doc.TaskRecordingDocument;
+    assert.ok(root, 'missing TaskRecordingDocument root');
+    assert.equal(root['@_schemaVersion'], '1.0');
+    assert.equal(root.Recording['@_name'], 'test');
+    const steps = Array.isArray(root.Steps.Step) ? root.Steps.Step : [root.Steps.Step];
+    assert.equal(steps.length, 2);
+    assert.equal(steps[0]['@_objectName'], 'SysAADClientTable');
+    // step 1 carries the BPM security grants
+    const grants = steps[0].Security.Grant;
+    assert.ok(Array.isArray(grants) ? grants.length === 9 : !!grants);
+    // KB technical + role-based security sections are present (attrs parse as strings)
+    assert.equal(String(root.Technical['@_available']), 'true');
+    assert.equal(String(root.RoleBasedSecurity['@_available']), 'true');
+  });
+
+  it('never leaks an email address into the contract XML', () => {
+    assert.ok(!out.xml.includes('do-not-leak'), 'sentinel email leaked into the XML');
+    assert.ok(!out.xml.includes('@example.invalid'));
+  });
 });
 
 describe('taskrecorder MCP tools', () => {
@@ -369,6 +393,46 @@ describe('taskrecorder MCP tools', () => {
       assert.equal(result.structuredContent.document_mhtml, written);
       // KB/Sec singletons point at non-existent default paths in tests -> enrichment unavailable, but the tool still succeeds.
       assert.equal(result.structuredContent.step_count, 2);
+    } finally {
+      if (existsSync(outPath)) rmSync(outPath);
+    }
+  });
+
+  it('taskrecorder_to_document emits a sibling .xml contract when include_xml=true', async () => {
+    const tool = server.handlers['taskrecorder_to_document'];
+    const outPath = join(tmpdir(), `taskrec-xml-${process.pid}.mhtml`);
+    const xmlPath = join(tmpdir(), `taskrec-xml-${process.pid}.xml`);
+    try {
+      const result = await tool.handler({
+        file_content: readFileSync(SAMPLE_AXTR).toString('base64'),
+        output_path: outPath,
+        include_xml: true,
+        return_inline: true,
+      });
+      assert.notEqual(result.isError, true);
+      assertSdkOutputContract(tool, result);
+      assert.equal(result.structuredContent.xml_output_path, xmlPath);
+      assert.ok(existsSync(xmlPath), 'the .xml contract file was not written');
+      const xml = readFileSync(xmlPath, 'utf8');
+      assert.equal(XMLValidator.validate(xml), true, 'emitted XML is not well-formed');
+      assert.match(xml, /<TaskRecordingDocument /);
+      assert.equal(result.structuredContent.document_xml, xml);
+    } finally {
+      if (existsSync(outPath)) rmSync(outPath);
+      if (existsSync(xmlPath)) rmSync(xmlPath);
+    }
+  });
+
+  it('taskrecorder_to_document omits XML by default (include_xml=false)', async () => {
+    const tool = server.handlers['taskrecorder_to_document'];
+    const outPath = join(tmpdir(), `taskrec-noxml-${process.pid}.mhtml`);
+    try {
+      const result = await tool.handler({
+        file_content: readFileSync(SAMPLE_AXTR).toString('base64'),
+        output_path: outPath,
+      });
+      assert.equal(result.structuredContent.xml_output_path, null);
+      assert.equal(result.structuredContent.document_xml, null);
     } finally {
       if (existsSync(outPath)) rmSync(outPath);
     }

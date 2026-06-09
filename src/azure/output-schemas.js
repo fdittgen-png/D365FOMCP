@@ -1139,5 +1139,7 @@ export const taskrecorderDocumentOutput = z.object({
   output_path: z.string().nullable().describe('Absolute path the .mhtml was written to — open this file to view the document.'),
   byte_size: z.number().describe('Size of the generated MHTML document in bytes.'),
   document_mhtml: z.string().nullable().describe('The full MHTML text, present only when return_inline=true; otherwise null.'),
+  xml_output_path: z.string().nullable().describe('Absolute path the contract XML was written to (when include_xml=true), else null. Validates against schemas/task-recording-document.xsd.'),
+  document_xml: z.string().nullable().describe('The full contract XML text, present only when include_xml=true AND return_inline=true; otherwise null.'),
   notes: z.array(z.string()).describe('Warnings/observations, e.g. "no screenshots embedded" or "KB database not available".'),
 });

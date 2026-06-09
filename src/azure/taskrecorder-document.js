@@ -25,6 +25,7 @@ import { parseTaskRecordingData } from './taskrecorder-parser.js';
 import { parseDocxScreenshots } from './docx-screenshots.js';
 import { enrichFormFromKb, enrichRoleFromSec } from './taskrecorder-enrich.js';
 import { buildMhtml } from './mhtml.js';
+import { buildTaskRecorderXml } from './taskrecorder-xml.js';
 
 const MAX_FORMS_ENRICH = 10;
 const MAX_ROLES_ENRICH = 60;
@@ -294,6 +295,13 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
   });
   const mhtml = buildMhtml({ title: `Task Recording — ${recording.name}`, html, resources });
 
+  // ── XML contract serialization (validates against schemas/task-recording-document.xsd) ──
+  const xml = buildTaskRecorderXml({
+    recording, forms, steps, bpmObjects, roleTuples,
+    enrichedForms, kbAvailable, enrichedRoles, secAvailable, notes,
+    fileName, generatedAt, actionCount: actions.length, screenshotCount: docx.imageCount,
+  });
+
   // ── bounded structured payload ──────────────────────────────────────────────
   const structured = {
     recording: {
@@ -341,12 +349,14 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
     output_path: null,
     byte_size: Buffer.byteLength(mhtml, 'utf8'),
     document_mhtml: null,
+    xml_output_path: null,
+    document_xml: null,
     notes,
   };
 
   const summaryMarkdown = renderSummaryMarkdown(structured, recording);
 
-  return { mhtml, summaryMarkdown, structured };
+  return { mhtml, xml, summaryMarkdown, structured };
 }
 
 // ── HTML renderer ──────────────────────────────────────────────────────────────
