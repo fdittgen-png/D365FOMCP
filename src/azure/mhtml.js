@@ -33,7 +33,11 @@ function wrap76(b64) {
  */
 export function buildMhtml({ title, html, resources = [], date }) {
   const boundary = '----=_NextPart_D365TaskRecorder';
-  const htmlLocation = 'file:///C:/TaskRecording/document.html';
+  // Absolute http(s) base. MHTML readers (Edge/Chrome/Word) match a subresource
+  // by the EXACT url used in the HTML against the part's Content-Location, so the
+  // HTML page and its image parts must share one absolute base — relative
+  // locations resolve inconsistently and render as broken images.
+  const htmlLocation = 'https://taskrecording.local/document.html';
 
   const lines = [];
   lines.push('From: <Saved by D365FO Task Recorder MCP>');

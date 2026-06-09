@@ -287,12 +287,20 @@ describe('buildTaskRecorderDocument (end-to-end)', () => {
     assert.equal(out.structured.steps[1].has_security, false);
   });
 
-  it('embeds the step-1 screenshot in the MHTML', () => {
+  it('embeds the step-1 screenshot in the MHTML with a matching absolute Content-Location', () => {
     assert.equal(out.structured.screenshot_count, 1);
     assert.equal(out.structured.screenshots_present, true);
     assert.equal(out.structured.steps[0].screenshot_count, 1);
     assert.match(out.mhtml, /Content-Type: image\/png/);
-    assert.match(out.mhtml, /Content-Location: images\/step01_1\.png/);
+    // The part Content-Location must be an absolute URL...
+    const locMatch = out.mhtml.match(/Content-Location: (https:\/\/taskrecording\.local\/images\/[^\s]+\.png)/);
+    assert.ok(locMatch, 'image part must have an absolute Content-Location');
+    // ...and the HTML <img src> must reference that EXACT url (else browsers show a broken image).
+    const html = Buffer.from(
+      out.mhtml.slice(out.mhtml.indexOf('\r\n\r\n', out.mhtml.indexOf('document.html')) + 4,
+        out.mhtml.indexOf('------=_NextPart', out.mhtml.indexOf('document.html'))).replace(/\r\n/g, ''),
+      'base64').toString('utf8');
+    assert.ok(html.includes(`src="${locMatch[1]}"`), 'HTML <img src> must equal the image part Content-Location');
   });
 
   it('includes KB technical enrichment for the used form', () => {

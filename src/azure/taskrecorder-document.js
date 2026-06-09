@@ -58,6 +58,14 @@ function ciKey(s) { return (s || '').toLowerCase(); }
 
 function trimDot(s) { return (s || '').trim().replace(/\.+$/, ''); }
 
+// Absolute base shared by the MHTML HTML part and its image parts so browsers
+// resolve <img src> to the embedded part by exact URL (see mhtml.js).
+const SHOT_BASE = 'https://taskrecording.local/';
+
+function shotLocation(stepIndex, n, mime) {
+  return `${SHOT_BASE}images/step${String(stepIndex).padStart(2, '0')}_${n}.${extFromMime(mime)}`;
+}
+
 function extFromMime(mime) {
   const map = {
     'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
@@ -196,7 +204,7 @@ function buildStepsFromRepro(repro, actions, formIdToName, bpmByObject, resource
 
     const shots = [];
     if (s.screenshot && s.screenshot.bytes) {
-      const loc = `images/step${String(s.index).padStart(2, '0')}_1.${extFromMime(s.screenshot.mime)}`;
+      const loc = shotLocation(s.index, 1, s.screenshot.mime);
       resources.push({ contentLocation: loc, mime: s.screenshot.mime, bytes: s.screenshot.bytes });
       shots.push({ name: s.screenshot.filename || loc.split('/').pop(), mime: s.screenshot.mime, content_location: loc });
     }
@@ -252,7 +260,7 @@ function buildStepsFromAxtr(actions, docx, formIdToName, bpmByObject, localizedS
     if (ds && ds.images.length) {
       let n = 1;
       for (const img of ds.images) {
-        const loc = `images/step${String(i + 1).padStart(2, '0')}_${n}.${extFromMime(img.mime)}`;
+        const loc = shotLocation(i + 1, n, img.mime);
         resources.push({ contentLocation: loc, mime: img.mime, bytes: img.bytes });
         shots.push({ name: img.name, mime: img.mime, content_location: loc });
         n++;
