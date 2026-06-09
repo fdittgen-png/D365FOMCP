@@ -404,14 +404,14 @@ describe('d365_search', () => {
   it('returns empty-result hint for unknown keyword', async () => {
     const result = await callTool('d365_search', { query: 'xyznonexistent' });
     // P1-01 contract: empty results use emptyResult() → italic leaf hint
-    assert.match(result, /_No matches for "xyznonexistent"\. This may be a leaf result\._/);
+    assert.match(result, /No matches for "xyznonexistent" found/);
   });
 
   it('respects limit and emits user-kind truncation note', async () => {
     const result = await callTool('d365_search', { query: 'Table', limit: 1 });
     // P1-02 contract: user-requested limit → user-kind note
-    assert.match(result, /first 1 results you asked for/);
-    assert.match(result, /Increase the `limit` parameter/);
+    assert.match(result, /Showing first 1 results \(caller/);
+    assert.match(result, /Pass a higher `limit`/);
   });
 
   it('P2-05: non-empty response opens with self-identifying search heading', async () => {
@@ -538,8 +538,8 @@ describe('d365_get_class_methods', () => {
 
   it('returns no methods for unknown class', async () => {
     const result = await callTool('d365_get_class_methods', { name: 'NonExistentClass', include_source: false, limit: 100 });
-    // P1-01 contract: empty results use emptyResult() → italic "No methods on … leaf" hint
-    assert.match(result, /_No methods on "[^"]+"\. This may be a leaf result\._/);
+    // P1-01 contract: empty results use emptyResult() → "## No results / No methods on … found."
+    assert.match(result, /No methods on "[^"]+" found/);
   });
 
   it('includes source code when requested', async () => {
@@ -559,7 +559,7 @@ describe('d365_get_class_methods', () => {
   it('respects limit and emits user-kind truncation note when methods exceed the cap', async () => {
     const result = await callTool('d365_get_class_methods', { name: 'SalesFormLetter', include_source: false, limit: 2 });
     // P1-02 contract: user-requested limit → user-kind note
-    assert.match(result, /first 2 results you asked for/);
+    assert.match(result, /Showing first 2 results \(caller/);
   });
 
   it('filters by method name', async () => {
@@ -679,8 +679,8 @@ describe('d365_find_referencing_tables', () => {
 
   it('returns empty for table with no references', async () => {
     const result = await callTool('d365_find_referencing_tables', { table_name: 'SalesTable' });
-    // P1-01 contract: leaf tables emit the italic "This may be a leaf result" hint
-    assert.match(result, /_No tables referencing "[^"]+"\. This may be a leaf result\._/);
+    // P1-01 contract: leaf tables emit the emptyResult sentinel "No tables referencing … found."
+    assert.match(result, /No tables referencing "[^"]+" found/);
   });
 
   it('shows total count', async () => {
@@ -692,7 +692,7 @@ describe('d365_find_referencing_tables', () => {
   it('P2-08: returns not-found with suggestions for a non-existent-but-fuzzy-matched table', async () => {
     // "Cust" is not an exact table name but fuzzy-matches CustTable and CustGroup.
     const result = await callTool('d365_find_referencing_tables', { table_name: 'Cust' });
-    assert.match(result, /\*\*Table "Cust" not found\.\*\*/);
+    assert.match(result, /Table .Cust. was not found/);
     assert.match(result, /Did you mean/);
     assert.match(result, /CustTable/);
   });
@@ -700,10 +700,10 @@ describe('d365_find_referencing_tables', () => {
   it('P2-08: distinguishes existing-leaf from not-found', async () => {
     const leaf = await callTool('d365_find_referencing_tables', { table_name: 'SalesTable' });
     const missing = await callTool('d365_find_referencing_tables', { table_name: 'CompletelyUnknownTbl' });
-    assert.match(leaf, /leaf result/);
+    assert.match(leaf, /No tables referencing/);
     assert.doesNotMatch(leaf, /not found/);
     assert.match(missing, /not found/);
-    assert.doesNotMatch(missing, /leaf result/);
+    assert.doesNotMatch(missing, /No tables referencing/);
   });
 
   it('P2-10: case-insensitive on target table name', async () => {
@@ -745,7 +745,7 @@ describe('d365_get_module_summary', () => {
     const tablesSection = result.split('## Key Classes')[0];
     const bodyRows = tablesSection.split('\n').filter(l => /^\|\s+\S/.test(l) && !/---/.test(l) && !/\bTable\b/.test(l.split('|')[1] || ''));
     assert.equal(bodyRows.length, 2, `expected 2 body rows, got:\n${tablesSection}`);
-    assert.match(tablesSection, /Tool default cap of 2/);
+    assert.match(tablesSection, /Showing first 2 results \(default cap/);
   });
 
   it('P2-07: table_limit=50 returns all ApplicationSuite tables with no truncation note', async () => {
@@ -838,7 +838,7 @@ describe('d365_hallucination_check', () => {
 
   it('returns empty-result hint for table with no traps (P2-02)', async () => {
     const result = await callTool('d365_hallucination_check', { table_name: 'VendTable' });
-    assert.match(result, /_No hallucination traps for "VendTable"\. This may be a leaf result\._/);
+    assert.match(result, /No hallucination traps for "VendTable" found/);
   });
 
   it('is case-insensitive', async () => {
@@ -889,7 +889,7 @@ describe('d365_raw_sql', () => {
   it('P2-09: comments containing LIMIT do not bypass the hard safety cap', async () => {
     const sql = `-- LIMIT 9999\nWITH RECURSIVE nums(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM nums WHERE n < 600) SELECT n FROM nums`;
     const result = await callTool('d365_raw_sql', { sql });
-    assert.match(result, /Hard safety limit of 500/);
+    assert.match(result, /hard safety cap/);
   });
 
   it('P2-09: block comments containing a forbidden keyword are still blocked after strip', async () => {
@@ -914,9 +914,10 @@ describe('d365_raw_sql', () => {
     assert.match(result, /Only SELECT/);
   });
 
-  it('TOON: format="toon" renders the text channel as a TOON block; structuredContent is unchanged', async () => {
+  it('TOON: format="markdown" renders pipe tables; toon renders a TOON block; structuredContent is unchanged', async () => {
     const md = await callToolFull('d365_raw_sql', {
       sql: 'SELECT table_name FROM tables ORDER BY table_name',
+      format: 'markdown',
     });
     const toon = await callToolFull('d365_raw_sql', {
       sql: 'SELECT table_name FROM tables ORDER BY table_name',
@@ -930,11 +931,11 @@ describe('d365_raw_sql', () => {
     assert.deepEqual(md.structuredContent, toon.structuredContent);
   });
 
-  it('TOON: format defaults to markdown when omitted', async () => {
+  it('TOON: text channel defaults to TOON when format is omitted (feat/toon-default-on-raw-sql)', async () => {
     const result = await callToolFull('d365_raw_sql', {
       sql: 'SELECT table_name FROM tables ORDER BY table_name',
     });
-    assert.match(result.content[0].text, /^\| table_name \|/m);
+    assert.match(result.content[0].text, /^rows\[\d+\]\{table_name\}:/m);
   });
 });
 
@@ -1004,7 +1005,7 @@ describe('d365_field_renames', () => {
 
   it('returns empty-result hint for table without renames', async () => {
     const result = await callTool('d365_field_renames', { table_name: 'VendTable' });
-    assert.match(result, /_No known field renames for "VendTable"\. This may be a leaf result\._/);
+    assert.match(result, /No known field renames for "VendTable" found/);
   });
 
   it('is case-insensitive', async () => {
@@ -1073,7 +1074,7 @@ describe('d365_resolve_label', () => {
 
   it('returns empty-result hint when every label is unknown (P2-04)', async () => {
     const result = await callTool('d365_resolve_label', { label_ids: ['@NOPE1', '@NOPE2'] });
-    assert.match(result, /_No labels matching [^.]+\. This may be a leaf result\._/);
+    assert.match(result, /No labels matching .* found/);
   });
 
   it('P2-04: Zod rejects empty array with min(1) error', async () => {
@@ -1488,11 +1489,11 @@ describe('issue #33 — d365_lookup_table on a table with zero fields', () => {
     // Shape: success channel (no isError flag).
     assert.notEqual(result.isError, true);
     const text = result.content[0].text;
-    // Header renders.
-    assert.match(text, /^# IssueEmptyTable$/m);
+    // Header renders (H2 per the response-format contract).
+    assert.match(text, /^## IssueEmptyTable$/m);
     // The Fields section is present, followed by the empty-rows sentinel
     // produced by formatMarkdownTable.
-    assert.match(text, /^## Fields$/m);
+    assert.match(text, /^## Fields \(0\)$/m);
     assert.match(text, /No results found/);
   });
 });
@@ -1533,13 +1534,14 @@ describe('issue #33 — d365_check_field_exists on a table with zero fields', ()
       table_name: 'CompletelyUnknownTable_Issue33',
       field_names: ['x', 'y'],
     });
-    // Shape: success channel (the tool reports "table not found" via text,
-    // it does not throw / set isError in this codebase state).
-    assert.notEqual(result.isError, true);
+    // A missing table is a not-found error per the response-format contract
+    // (notFoundResult sets isError) — the point of this test is that the
+    // message identifies the *table*, not the fields.
+    assert.equal(result.isError, true);
     // The message references the table name and the not-found shape.
     assert.match(
       result.content[0].text,
-      /Table "CompletelyUnknownTable_Issue33" not found/,
+      /Table .CompletelyUnknownTable_Issue33. was not found/,
     );
     // It MUST NOT pretend the fields don't exist — the table itself is missing.
     assert.doesNotMatch(result.content[0].text, /DOES NOT EXIST/);
@@ -1553,7 +1555,7 @@ describe('issue #33 — d365_search no-match scenarios', () => {
     // Shape: success channel.
     assert.notEqual(result.isError, true);
     // Match the shape of the no-results message.
-    assert.match(result.content[0].text, /No results for "absolutelyzeroentries_issue33"\./);
+    assert.match(result.content[0].text, /No matches for "absolutelyzeroentries_issue33" found/);
   });
 
   it('given a real keyword filtered to a wrong object_type, when d365_search runs, then the result is empty (the filter excludes everything)', async () => {
@@ -1562,7 +1564,7 @@ describe('issue #33 — d365_search no-match scenarios', () => {
     const tool = toolHandlers['d365_search'];
     const result = await tool.handler({ query: 'Customer', object_type: 'enum' });
     assert.notEqual(result.isError, true);
-    assert.match(result.content[0].text, /No results for "Customer"\./);
+    assert.match(result.content[0].text, /No matches for "Customer" found/);
   });
 });
 
@@ -1593,7 +1595,7 @@ describe('issue #33 — d365_get_class_methods empty / no-match scenarios', () =
       limit: 100,
     });
     assert.notEqual(result.isError, true);
-    assert.match(result.content[0].text, /No methods found for "NoMethodsClass_Issue33"/);
+    assert.match(result.content[0].text, /No methods on "NoMethodsClass_Issue33" found/);
   });
 
   it('given a class with methods but a filter that matches none, when d365_get_class_methods runs, then the response is empty (not the full method list)', async () => {
@@ -1606,7 +1608,7 @@ describe('issue #33 — d365_get_class_methods empty / no-match scenarios', () =
     });
     assert.notEqual(result.isError, true);
     // The filter excluded the only method, so we get the no-methods text.
-    assert.match(result.content[0].text, /No methods found for "Issue33Class"/);
+    assert.match(result.content[0].text, /No methods on "Issue33Class" found/);
     // The actual method name MUST NOT leak into the empty response.
     assert.doesNotMatch(result.content[0].text, /theOnlyMethod/);
   });
@@ -1630,7 +1632,7 @@ describe('issue #33 — d365_resolve_label structural empty paths', () => {
     const result = await tool.handler({ label_ids: ['@NOTREAL_ISSUE33_A', '@NOTREAL_ISSUE33_B'] });
     assert.notEqual(result.isError, true);
     // Match the structural empty signal.
-    assert.match(result.content[0].text, /No labels found/);
+    assert.match(result.content[0].text, /No labels matching/);
   });
 
   it('given an empty label_ids array, when d365_resolve_label runs, then the response is on the success channel and identifies the missing input', async () => {

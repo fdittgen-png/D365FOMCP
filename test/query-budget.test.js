@@ -87,15 +87,16 @@ describe('runWithBudget (issue #50)', () => {
 });
 
 describe('timeoutErrorResult (issue #50)', () => {
-  it('renders an MCP tool error with the timeout message and structured payload', () => {
+  it('renders an MCP tool error with the timeout message (text channel only)', () => {
     const err = new QueryBudgetExceededError('xref_raw_sql', 30000, 25000);
     const result = timeoutErrorResult(err);
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /Query timeout/);
     assert.match(result.content[0].text, /try a more specific search/);
-    assert.equal(result.structuredContent.error, 'query-timeout');
-    assert.equal(result.structuredContent.label, 'xref_raw_sql');
-    assert.equal(result.structuredContent.elapsedMs, 30000);
-    assert.equal(result.structuredContent.budgetMs, 25000);
+    // Elapsed/budget surface in the text; no structuredContent on error
+    // responses (the client validates any structuredContent against the
+    // tool's outputSchema, even on isError — an {error} payload would fail).
+    assert.match(result.content[0].text, /30000ms > 25000ms/);
+    assert.equal(result.structuredContent, undefined);
   });
 });

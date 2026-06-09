@@ -95,16 +95,18 @@ describe('issue #33 — validateLikePattern + patternErrorResult', () => {
     assert.match(v.error, /max 5/);
   });
 
-  it('given a validation envelope, when patternErrorResult runs, then returns isError:true with the structured payload preserved', () => {
+  it('given a validation envelope, when patternErrorResult runs, then returns isError:true on the text channel only', () => {
     const v = validateLikePattern('x'.repeat(MAX_LIKE_PATTERN_LENGTH + 1));
     const r = patternErrorResult(v);
     // Shape: error channel.
     assert.equal(r.isError, true);
     assert.equal(r.content[0].type, 'text');
-    // The structured payload is preserved (callers can branch on it).
-    assert.deepEqual(r.structuredContent, v);
     // The text body matches the structured error message.
     assert.equal(r.content[0].text, v.error);
+    // No structuredContent on error responses — the MCP client validates any
+    // structuredContent against the tool's outputSchema even on isError, so an
+    // {error} payload would fail validation for every schema'd tool.
+    assert.equal(r.structuredContent, undefined);
   });
 });
 
@@ -135,16 +137,16 @@ describe('issue #33 — runWithBudget enforcement', () => {
     );
   });
 
-  it('given a QueryBudgetExceededError, when timeoutErrorResult renders it, then the response is on the error channel with the structured payload', () => {
+  it('given a QueryBudgetExceededError, when timeoutErrorResult renders it, then the response is on the error channel (text only, no structuredContent)', () => {
     const err = new QueryBudgetExceededError('my-query', 5000, 1000);
     const r = timeoutErrorResult(err);
     assert.equal(r.isError, true);
     assert.equal(r.content[0].type, 'text');
     assert.match(r.content[0].text, /Query timeout/);
-    assert.equal(r.structuredContent.error, 'query-timeout');
-    assert.equal(r.structuredContent.label, 'my-query');
-    assert.equal(r.structuredContent.elapsedMs, 5000);
-    assert.equal(r.structuredContent.budgetMs, 1000);
+    assert.match(r.content[0].text, /5000ms > 1000ms/);
+    // Error responses must not carry structuredContent — the MCP client
+    // validates it against the tool's outputSchema even on isError results.
+    assert.equal(r.structuredContent, undefined);
   });
 
   it('given a budget enforced by the default clock, when runWithBudget runs a fast op, then the result is returned and no error is thrown', () => {

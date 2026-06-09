@@ -203,7 +203,7 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { role_name: z.string().max(500).describe('Role name (case-insensitive)') },
+      inputSchema: { role_name: z.string().min(1).max(500).describe('Role name (case-insensitive)') },
       outputSchema: secLookupRoleOutput.shape,
     },
     async ({ role_name }) => {
@@ -308,7 +308,7 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get duty details: parent roles, privileges granted, and entry points. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { duty_name: z.string().max(500).describe('Duty ID or name (case-insensitive)') },
+      inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name (case-insensitive)') },
       outputSchema: secLookupDutyOutput.shape,
     },
     async ({ duty_name }) => {
@@ -378,7 +378,7 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get privilege details: entry points with CRUD grants, parent duties, and parent roles. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { privilege_name: z.string().max(500).describe('Privilege name (case-insensitive)') },
+      inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name (case-insensitive)') },
       outputSchema: secLookupPrivilegeOutput.shape,
     },
     async ({ privilege_name }) => {
@@ -467,7 +467,7 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get user profile: roles, company scoping, enabled status, and email. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { user_id: z.string().max(500).describe('User ID (case-insensitive)') },
+      inputSchema: { user_id: z.string().min(1).max(500).describe('User ID (case-insensitive)') },
       outputSchema: secLookupUserOutput.shape,
     },
     async ({ user_id }) => {
@@ -649,7 +649,7 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      role_name: z.string().max(500).describe('Role name'),
+      role_name: z.string().min(1).max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
     },
       outputSchema: secRoleHierarchyOutput.shape,
@@ -671,7 +671,12 @@ export function registerSecTools(server, db) {
           WHERE rs.child_role_id = ? ORDER BY parent.role_name`, [r.role_id]);
       }
 
-      if (!rows.length) return emptyResult(`${dir} of role "${r.role_name}"`);
+      if (!rows.length) return emptyResult(`${dir} of role "${r.role_name}"`, {
+        role_name: r.role_name,
+        direction: dir,
+        result_count: 0,
+        entries: [],
+      });
 
       const typed = {
         role_name: r.role_name,
@@ -697,9 +702,9 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all users assigned to a role, optionally filtered to a specific company. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      role_name: z.string().max(500).describe('Role name'),
-      company_id: z.string().max(500).optional().describe('Filter to users scoped to this company'),
-      limit: z.number().optional().default(100).describe('Max results'),
+      role_name: z.string().min(1).max(500).describe('Role name'),
+      company_id: z.string().min(1).max(500).optional().describe('Filter to users scoped to this company'),
+      limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results'),
     },
       outputSchema: secFindUsersByRoleOutput.shape,
     },
@@ -715,7 +720,15 @@ export function registerSecTools(server, db) {
       // grant them). `sec_permission_trace` keeps Deny roles annotated; this
       // tool does not.
       if (r.permission_type === 'Deny') {
-        return emptyResult(`users effectively granted role "${r.role_name}" (this role is a Deny role and does not grant access — use sec_permission_trace to inspect overrides)`);
+        return emptyResult(`users effectively granted role "${r.role_name}" (this role is a Deny role and does not grant access — use sec_permission_trace to inspect overrides)`, {
+          role_name: r.role_name,
+          company_id: company_id ? company_id.trim() : null,
+          limit,
+          result_count: 0,
+          truncated: false,
+          deny_role: true,
+          users: [],
+        });
       }
 
       let sql, params;
@@ -737,7 +750,15 @@ export function registerSecTools(server, db) {
 
       const rows = q(sql, params);
       if (!rows.length) return emptyResult(`users with role "${r.role_name}"` +
-        (company_id ? ` in company ${company_id}` : ''));
+        (company_id ? ` in company ${company_id}` : ''), {
+        role_name: r.role_name,
+        company_id: company_id ? company_id.trim() : null,
+        limit,
+        result_count: 0,
+        truncated: false,
+        deny_role: false,
+        users: [],
+      });
 
       const typed = {
         role_name: r.role_name,
@@ -772,7 +793,7 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all roles that contain a specific duty. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { duty_name: z.string().max(500).describe('Duty ID or name') },
+      inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name') },
       outputSchema: secFindRolesByDutyOutput.shape,
     },
     async ({ duty_name }) => {
@@ -790,7 +811,11 @@ export function registerSecTools(server, db) {
           AND rd.permission_type = 'Grant'
         ORDER BY r.role_name`, [duty[0].duty_id]);
 
-      if (!rows.length) return emptyResult(`roles granting duty "${dn}"`);
+      if (!rows.length) return emptyResult(`roles granting duty "${dn}"`, {
+        duty_id: duty[0].duty_id,
+        result_count: 0,
+        roles: [],
+      });
 
       const typed = {
         duty_id: duty[0].duty_id,
@@ -825,7 +850,7 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all roles that grant a privilege (via the duty chain or directly). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { privilege_name: z.string().max(500).describe('Privilege name') },
+      inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name') },
       outputSchema: secFindRolesByPrivilegeOutput.shape,
     },
     async ({ privilege_name }) => {
@@ -847,7 +872,13 @@ export function registerSecTools(server, db) {
         ORDER BY r.role_name`, [pn]);
 
       if (!viaChain.length && !direct.length) {
-        return emptyResult(`roles granting privilege "${pn}"`);
+        return emptyResult(`roles granting privilege "${pn}"`, {
+          privilege_name: pn,
+          via_chain_count: 0,
+          direct_count: 0,
+          via_chain: [],
+          direct: [],
+        });
       }
 
       const typed = {
@@ -894,8 +925,8 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'List all users and their roles for a specific company (legal entity). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      company_id: z.string().max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
-      limit: z.number().optional().default(200).describe('Max results'),
+      company_id: z.string().min(1).max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
+      limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results'),
     },
       outputSchema: secCompanyUsersOutput.shape,
     },
@@ -911,7 +942,13 @@ export function registerSecTools(server, db) {
         ORDER BY u.user_id, r.role_name
         LIMIT ?`, [cid, limit]);
 
-      if (!rows.length) return emptyResult(`users assigned to company "${cid}"`);
+      if (!rows.length) return emptyResult(`users assigned to company "${cid}"`, {
+        company_id: cid,
+        limit,
+        result_count: 0,
+        truncated: false,
+        assignments: [],
+      });
 
       const typed = {
         company_id: cid,
@@ -950,9 +987,9 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      role_name: z.string().max(500).describe('Role name'),
-      object_name: z.string().max(500).optional().describe('Filter to entry points targeting this object'),
-      limit: z.number().optional().default(500).describe('Max results'),
+      role_name: z.string().min(1).max(500).describe('Role name'),
+      object_name: z.string().min(1).max(500).optional().describe('Filter to entry points targeting this object'),
+      limit: z.number().int().min(1).max(500).optional().default(500).describe('Max results'),
     },
       outputSchema: secPermissionTraceOutput.shape,
     },
@@ -1005,7 +1042,16 @@ export function registerSecTools(server, db) {
 
       if (!trace.length) {
         return emptyResult(`permission chain for "${role[0].role_name}"` +
-          (object_name ? ` targeting "${object_name}"` : ''));
+          (object_name ? ` targeting "${object_name}"` : ''), {
+          role_name: role[0].role_name,
+          object_name: object_name ?? null,
+          limit,
+          result_count: 0,
+          truncated: false,
+          grant_count: 0,
+          deny_count: 0,
+          rows: [],
+        });
       }
 
       const denyCount = trace.filter(t => t.permission_type === 'Deny').length;
@@ -1076,8 +1122,8 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Compare two roles side by side: shared vs unique duties and privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      role1: z.string().max(500).describe('First role name'),
-      role2: z.string().max(500).describe('Second role name'),
+      role1: z.string().min(1).max(500).describe('First role name'),
+      role2: z.string().min(1).max(500).describe('Second role name'),
     },
       outputSchema: secCompareRolesOutput.shape,
     },
@@ -1171,10 +1217,10 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-        user_id: z.string().max(500).optional().describe('User ID (provide this OR role_name)'),
-        role_name: z.string().max(500).optional().describe('Role name (provide this OR user_id)'),
-        object_name: z.string().max(500).optional().describe('Filter to entry points for this object'),
-        limit: z.number().optional().default(200).describe('Max results'),
+        user_id: z.string().min(1).max(500).optional().describe('User ID (provide this OR role_name)'),
+        role_name: z.string().min(1).max(500).optional().describe('Role name (provide this OR user_id)'),
+        object_name: z.string().min(1).max(500).optional().describe('Filter to entry points for this object'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results'),
       },
       outputSchema: secEffectivePermissionsOutput.shape,
     },
@@ -1205,7 +1251,16 @@ export function registerSecTools(server, db) {
         return errorResult('invalid-input', 'Provide either user_id or role_name.');
       }
 
-      if (!roleIds.length) return emptyResult('roles assigned to the target');
+      if (!roleIds.length) return emptyResult('roles assigned to the target', {
+        subject_type: subjectType,
+        subject_id: subjectId,
+        subject_label: subjectLabel,
+        role_count: 0,
+        object_filter: object_name ?? null,
+        entry_point_count: 0,
+        truncated: false,
+        permissions: [],
+      });
 
       const placeholders = roleIds.map(() => '?').join(',');
       const allRoleIds = new Set(roleIds);
@@ -1261,7 +1316,16 @@ export function registerSecTools(server, db) {
 
       if (!perms.length) {
         return emptyResult(`effective permissions for ${subjectLabel}` +
-          (object_name ? ` on "${object_name}"` : ''));
+          (object_name ? ` on "${object_name}"` : ''), {
+          subject_type: subjectType,
+          subject_id: subjectId,
+          subject_label: subjectLabel,
+          role_count: allRoleArr.length,
+          object_filter: object_name ?? null,
+          entry_point_count: 0,
+          truncated: false,
+          permissions: [],
+        });
       }
 
       const typed = {
@@ -1319,9 +1383,9 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Full-text search across roles, duties, privileges, and users. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      query: z.string().max(500).describe('Search keywords'),
+      query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
-      limit: z.number().optional().default(20).describe('Max results'),
+      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
     },
       outputSchema: secSearchOutput.shape,
     },
@@ -1364,7 +1428,14 @@ export function registerSecTools(server, db) {
         likeParams.push(limit);
         results = q(sql, likeParams);
       }
-      if (!results.length) return emptyResult(`matches for "${searchQuery}"`);
+      if (!results.length) return emptyResult(`matches for "${searchQuery}"`, {
+        query: searchQuery,
+        object_type: object_type ?? null,
+        limit,
+        result_count: 0,
+        truncated: false,
+        results: [],
+      });
 
       // P4-09: center the snippet on the first matching term so matches at
       // position > 120 are no longer hidden. Use the first user term as the
@@ -1460,7 +1531,7 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Pass format="toon" to render the text channel as a TOON block (compact, ~25-35% fewer tokens than Markdown for large uniform row sets).',
       inputSchema: {
-        sql: z.string().max(50000).describe('SQL SELECT query'),
+        sql: z.string().min(1).max(50000).describe('SQL SELECT query'),
         format: z.enum(['markdown', 'toon']).optional().default('markdown').describe('Text-channel rendering. "markdown" (default) or "toon" for token-efficient tabular output on large result sets.'),
       },
       outputSchema: rawSqlOutput.shape,
@@ -1489,7 +1560,12 @@ export function registerSecTools(server, db) {
 
       try {
         const rows = q(limited);
-        if (!rows.length) return emptyResult('rows matching your query');
+        if (!rows.length) return emptyResult('rows matching your query', {
+          row_count: 0,
+          truncated: false,
+          columns: [],
+          rows: [],
+        });
         const columns = Object.keys(rows[0]);
         const truncated = rows.length >= SAFETY_CAP;
         const typed = {
@@ -1517,8 +1593,8 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Assess the minimum required D365 licence tier for one or all users based on their assigned security roles. Each role carries a UserLicenseType; the user requires the highest-cost tier across all Grant roles. Returns per-user breakdown and a tier summary.',
       inputSchema: {
-        user_id: z.string().max(500).optional().describe('Assess a single user (omit for all enabled users)'),
-        limit: z.number().optional().default(500).describe('Max users to return'),
+        user_id: z.string().min(1).max(500).optional().describe('Assess a single user (omit for all enabled users)'),
+        limit: z.number().int().min(1).max(500).optional().default(500).describe('Max users to return'),
       },
       outputSchema: secLicenceAssessmentOutput.shape,
     },
@@ -1548,7 +1624,14 @@ export function registerSecTools(server, db) {
       `, [...params, limit]);
 
       if (single && !users.length) return notFoundResult('User', user_id);
-      if (!users.length) return emptyResult('enabled users');
+      if (!users.length) return emptyResult('enabled users', {
+        mode: single ? 'single' : 'all',
+        user_count: 0,
+        limit,
+        truncated: false,
+        tier_summary: [],
+        users: [],
+      });
 
       const userRows = users.map(u => {
         const types = (u.license_types || '').split('||').filter(Boolean);
@@ -1618,9 +1701,9 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Check Segregation of Duties (SoD) violations for one or all users. Uses an external JSON ruleset (SOD_RULES_FILE env var). Each rule defines two duty groups; a violation occurs when a user holds at least one duty from each group.',
       inputSchema: {
-        user_id: z.string().max(500).optional().describe('Check a single user (omit for all enabled users)'),
-        category: z.string().max(200).optional().describe('Filter rules by category (e.g., accounts_payable)'),
-        limit: z.number().optional().default(100).describe('Max users to return'),
+        user_id: z.string().min(1).max(500).optional().describe('Check a single user (omit for all enabled users)'),
+        category: z.string().min(1).max(200).optional().describe('Filter rules by category (e.g., accounts_payable)'),
+        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max users to return'),
       },
       outputSchema: secSodCheckOutput.shape,
     },
@@ -1644,13 +1727,29 @@ export function registerSecTools(server, db) {
       }
       const users = q(userQuery, userParams);
       if (single && !users.length) return notFoundResult('User', user_id);
-      if (!users.length) return emptyResult('enabled users');
+      if (!users.length) return emptyResult('enabled users', {
+        user_id: user_id ?? null,
+        mode: single ? 'single' : 'all',
+        user_count: 0,
+        violation_count: 0,
+        risk_score: 0,
+        users_with_violations: 0,
+        violations: [],
+      });
 
       // Filter rules by category if specified
       let activeRules = _sodRuleset.rules;
       if (category) {
         activeRules = activeRules.filter(r => r.category?.toLowerCase() === category.toLowerCase());
-        if (!activeRules.length) return emptyResult(`SoD rules in category "${category}"`);
+        if (!activeRules.length) return emptyResult(`SoD rules in category "${category}"`, {
+          user_id: user_id ?? null,
+          mode: single ? 'single' : 'all',
+          user_count: 0,
+          violation_count: 0,
+          risk_score: 0,
+          users_with_violations: 0,
+          violations: [],
+        });
       }
       const filteredRuleset = { rules: activeRules };
       // Temporarily swap for detectSodViolations
@@ -1727,9 +1826,9 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Simulate adding or removing roles from a user. Returns the projected licence tier change (with monthly/annual cost delta) and SoD impact (new vs resolved violations). Requires SOD_RULES_FILE for SoD analysis.',
       inputSchema: {
-        user_id: z.string().max(500).describe('User ID to simulate changes for'),
-        add_roles: z.array(z.string().max(500)).optional().default([]).describe('Role names to add'),
-        remove_roles: z.array(z.string().max(500)).optional().default([]).describe('Role names to remove'),
+        user_id: z.string().min(1).max(500).describe('User ID to simulate changes for'),
+        add_roles: z.array(z.string().min(1).max(500)).optional().default([]).describe('Role names to add'),
+        remove_roles: z.array(z.string().min(1).max(500)).optional().default([]).describe('Role names to remove'),
       },
       outputSchema: secWhatIfOutput.shape,
     },
@@ -1887,8 +1986,8 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Reverse permission chain: given an object name (menu item, form, table), find all privileges, duties, roles, and users that grant access to it. Walks entry_points → privileges → duties → roles → users.',
       inputSchema: {
-        object_name: z.string().max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
-        limit: z.number().optional().default(200).describe('Max access paths to return'),
+        object_name: z.string().min(1).max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max access paths to return'),
       },
       outputSchema: secObjectAccessOutput.shape,
     },
@@ -1921,7 +2020,16 @@ export function registerSecTools(server, db) {
         LIMIT ?
       `, [`%${objName}%`, `%${objName}%`, `%${objName}%`, `%${objName}%`, limit]);
 
-      if (!paths.length) return emptyResult(`access paths for "${objName}"`);
+      if (!paths.length) return emptyResult(`access paths for "${objName}"`, {
+        object_name: objName,
+        limit,
+        result_count: 0,
+        truncated: false,
+        user_count: 0,
+        role_count: 0,
+        paths: [],
+        users: [],
+      });
 
       // Step 2: find users who hold these roles
       const roleNames = [...new Set(paths.map(p => p.role_name))];

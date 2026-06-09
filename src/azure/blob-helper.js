@@ -112,7 +112,7 @@ export async function deleteBlob(blobName) {
       .getContainerClient(CONTAINER_NAME)
       .getBlobClient(blobName)
       .deleteIfExists();
-  } catch { /* ignore cleanup errors */ }
+  } catch (e) { console.warn('cleanup-warn (blob-helper deleteIfExists):', e?.message); }
 }
 
 /**

@@ -11,6 +11,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'module';
+import { z } from 'zod';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -55,6 +56,33 @@ async function callToolFull(name, args) {
   const tool = toolHandlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
   return await tool.handler(args);
+}
+
+/**
+ * Mirror of the MCP SDK's `validateToolOutput` (server/mcp.js): a tool that
+ * declares an `outputSchema` must emit `structuredContent` on EVERY non-error
+ * response — validation is skipped only for `isError` results. A success
+ * response that omits `structuredContent` makes the SDK throw
+ * `-32602 "… has an output schema but no structured content was provided"`.
+ * This asserts the same contract against a captured handler result so the
+ * empty-result regression can never resurface.
+ */
+function assertSdkOutputContract(name, result) {
+  const tool = toolHandlers[name];
+  assert.ok(tool, `tool "${name}" not registered`);
+  if (!tool.outputSchema) return;          // tool has no schema → SDK skips validation
+  if (result.isError) return;              // SDK skips validation for error responses
+  assert.notEqual(
+    result.structuredContent, undefined,
+    `${name}: outputSchema is declared but the response carries no structuredContent — ` +
+    `the MCP SDK would reject this with -32602.`,
+  );
+  const parsed = z.object(tool.outputSchema).safeParse(result.structuredContent);
+  assert.ok(
+    parsed.success,
+    `${name}: structuredContent does not satisfy its outputSchema: ` +
+    (parsed.success ? '' : JSON.stringify(parsed.error.issues)),
+  );
 }
 
 before(async () => {
@@ -857,6 +885,53 @@ describe('PM-06 Sec structured output', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  Empty-result structured-output contract (MCP -32602 regression)
+//
+//  A tool with an outputSchema must emit structuredContent on EVERY non-error
+//  response. Before the fix, the empty-result path returned text only, so the
+//  SDK rejected zero-row results with:
+//    "Output validation error: Tool … has an output schema but no structured
+//     content was provided"
+//  — which surfaced to callers as intermittent failures correlated with empty
+//  result sets. This block drives each remaining empty path through the real
+//  handler and asserts the SDK contract (the issue #33 blocks below cover the
+//  rest: role_hierarchy, find_users_by_role, find_roles_by_duty, company_users,
+//  raw_sql).
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('empty-result structured output (MCP -32602 regression)', () => {
+  const EMPTY_CASES = [
+    // role exists, object filter matches nothing → empty perms (post-expansion path)
+    ['sec_effective_permissions', { role_name: 'SystemAdministrator', object_name: 'NoSuchObjectXYZ' }],
+    // existing user with zero role assignments → no-roles path (pre-expansion)
+    ['sec_effective_permissions', { user_id: 'disabled@trelleborg.com' }],
+    ['sec_object_access', { object_name: 'NoSuchObjectXYZ' }],
+    ['sec_search', { query: 'zqxjnevermatchesanythingatall' }],
+    ['sec_find_roles_by_privilege', { privilege_name: 'NoSuchPrivilegeXYZ' }],
+    ['sec_permission_trace', { role_name: 'SystemAdministrator', object_name: 'NoSuchObjectXYZ' }],
+    // Deny role: effectively grants nothing → empty (with deny_role context)
+    ['sec_find_users_by_role', { role_name: 'TBG Deny AP Posting' }],
+  ];
+
+  for (const [name, args] of EMPTY_CASES) {
+    it(`${name}: zero-row result still emits schema-valid structuredContent`, async () => {
+      const result = await callToolFull(name, args);
+      // Must be the empty-success channel, not a not-found error.
+      assert.notEqual(result.isError, true, `${name}: expected empty-success, got isError`);
+      assert.match(result.content[0].text, /No results/);
+      assertSdkOutputContract(name, result);
+    });
+  }
+
+  it('sec_find_users_by_role (Deny role): empty payload flags deny_role=true', async () => {
+    const result = await callToolFull('sec_find_users_by_role', { role_name: 'TBG Deny AP Posting' });
+    assertSdkOutputContract('sec_find_users_by_role', result);
+    assert.equal(result.structuredContent.deny_role, true);
+    assert.deepEqual(result.structuredContent.users, []);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  New tools: sec_licence_assessment, sec_sod_check, sec_what_if, sec_object_access
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1181,7 +1256,7 @@ describe('issue #33 — sec_lookup_role with no duties / no privileges', () => {
   it('given a role with no duties, when sec_lookup_role runs, then it returns the role header without crashing or emitting a Duties section', async () => {
     const result = await callTool('sec_lookup_role', { role_name: 'IssueEmptyRole' });
     // The role header must render — assert structural shape with anchored regex.
-    assert.match(result, /^# IssueEmptyRole$/m);
+    assert.match(result, /^## IssueEmptyRole$/m);
     // The Property table is rendered.
     assert.match(result, /^\| Property \| Value \|$/m);
     // No Duties section appears (because there are zero rows).
@@ -1208,7 +1283,7 @@ describe('issue #33 — sec_lookup_user with no roles', () => {
   it('given a user with zero role assignments, when sec_lookup_user runs, then it renders the profile without a Roles section', async () => {
     const result = await callTool('sec_lookup_user', { user_id: 'lonely.user@trelleborg.com' });
     // Profile header renders — anchored regex.
-    assert.match(result, /^# lonely\.user@trelleborg\.com$/m);
+    assert.match(result, /^## lonely\.user@trelleborg\.com$/m);
     // The user metadata table renders with the expected fields.
     assert.match(result, /^\| Name \| Lonely User \|$/m);
     assert.match(result, /^\| Enabled \| Yes \|$/m);
@@ -1233,7 +1308,12 @@ describe('issue #33 — sec_company_users on empty / unknown company', () => {
     assert.notEqual(result.isError, true);
     // The message identifies the queried company (uppercased per the
     // tool's own normalization). Match the structural shape, not exact phrasing.
-    assert.match(result.content[0].text, /^No users found for company "NOTACOMPANY"\.$/);
+    assert.match(result.content[0].text, /^No users assigned to company "NOTACOMPANY" found\.$/m);
+    // The empty path must still emit schema-valid structuredContent (-32602 guard).
+    assertSdkOutputContract('sec_company_users', result);
+    assert.equal(result.structuredContent.company_id, 'NOTACOMPANY');
+    assert.equal(result.structuredContent.result_count, 0);
+    assert.deepEqual(result.structuredContent.assignments, []);
   });
 
   it('given lowercase input for an empty company, when sec_company_users runs, then the message echoes the upper-cased id', async () => {
@@ -1254,7 +1334,10 @@ describe('issue #33 — sec_role_hierarchy on a leaf role', () => {
     // Shape: success channel.
     assert.notEqual(result.isError, true);
     // Must reference the role and the direction.
-    assert.match(result.content[0].text, /No children found for role "SystemAdministrator"/);
+    assert.match(result.content[0].text, /No children of role "SystemAdministrator" found/);
+    assertSdkOutputContract('sec_role_hierarchy', result);
+    assert.equal(result.structuredContent.direction, 'children');
+    assert.equal(result.structuredContent.result_count, 0);
   });
 
   it('given a role with zero parents, when sec_role_hierarchy(direction=parents) runs, then it returns a clear empty-result message', async () => {
@@ -1262,7 +1345,10 @@ describe('issue #33 — sec_role_hierarchy on a leaf role', () => {
     const tool = toolHandlers['sec_role_hierarchy'];
     const result = await tool.handler({ role_name: 'SystemAdministrator', direction: 'parents' });
     assert.notEqual(result.isError, true);
-    assert.match(result.content[0].text, /No parents found for role "SystemAdministrator"/);
+    assert.match(result.content[0].text, /No parents of role "SystemAdministrator" found/);
+    assertSdkOutputContract('sec_role_hierarchy', result);
+    assert.equal(result.structuredContent.direction, 'parents');
+    assert.equal(result.structuredContent.result_count, 0);
   });
 });
 
@@ -1285,7 +1371,11 @@ describe('issue #33 — sec_find_users_by_role on a role with zero assignments',
     // Shape: success channel — empty is valid, not an error.
     assert.notEqual(result.isError, true);
     // Match the shape of the message: identifies the role.
-    assert.match(result.content[0].text, /No users found with role "NoUsersRole"/);
+    assert.match(result.content[0].text, /No users with role "NoUsersRole" found/);
+    assertSdkOutputContract('sec_find_users_by_role', result);
+    assert.equal(result.structuredContent.role_name, 'NoUsersRole');
+    assert.equal(result.structuredContent.result_count, 0);
+    assert.equal(result.structuredContent.deny_role, false);
   });
 });
 
@@ -1307,16 +1397,25 @@ describe('issue #33 — sec_find_roles_by_duty on a duty with zero roles', () =>
     const result = await tool.handler({ duty_name: 'D_ISSUE33_ORPHAN' });
     // Shape: success channel.
     assert.notEqual(result.isError, true);
-    assert.match(result.content[0].text, /No roles contain duty "D_ISSUE33_ORPHAN"/);
+    assert.match(result.content[0].text, /No roles granting duty "D_ISSUE33_ORPHAN" found/);
+    assertSdkOutputContract('sec_find_roles_by_duty', result);
+    assert.equal(result.structuredContent.duty_id, 'D_ISSUE33_ORPHAN');
+    assert.equal(result.structuredContent.result_count, 0);
   });
 });
 
 describe('issue #33 — sec_raw_sql on a SELECT that returns zero rows', () => {
   it('given a SELECT with no matching rows, when sec_raw_sql runs, then it surfaces a no-results indicator (not a crash)', async () => {
-    const result = await callTool('sec_raw_sql', {
+    const result = await callToolFull('sec_raw_sql', {
       sql: "SELECT role_name FROM roles WHERE role_name = 'definitely-not-a-real-role'",
     });
-    // The shared formatMarkdownTable returns "No results found." for empty rows.
-    assert.match(result, /No results found/);
+    // Empty success path — emptyResult heading, not formatMarkdownTable's text.
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No rows matching your query found/);
+    // rawSqlOutput requires row_count/columns/rows — the empty payload must satisfy it.
+    assertSdkOutputContract('sec_raw_sql', result);
+    assert.equal(result.structuredContent.row_count, 0);
+    assert.deepEqual(result.structuredContent.rows, []);
+    assert.deepEqual(result.structuredContent.columns, []);
   });
 });

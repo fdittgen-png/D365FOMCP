@@ -20,10 +20,17 @@ const Database = require('better-sqlite3');
 let db;
 let toolHandlers;
 
-/** Intercept server.tool() calls to collect handlers */
+/** Intercept registerTool() (and the legacy tool() overload) to collect handlers */
 function createMockServer() {
   const handlers = {};
   return {
+    registerTool: (name, config, handler) => {
+      handlers[name] = {
+        schema: config.inputSchema || {},
+        outputSchema: config.outputSchema,
+        handler,
+      };
+    },
     tool: (name, _desc, schema, handler) => {
       handlers[name] = { schema, handler };
     },
@@ -37,6 +44,13 @@ async function callTool(name, args) {
   if (!tool) throw new Error(`Tool "${name}" not registered`);
   const result = await tool.handler(args);
   return result.content[0].text;
+}
+
+/** Call a tool handler and return the full MCP result (content + structuredContent + isError). */
+async function callToolFull(name, args) {
+  const tool = toolHandlers[name];
+  if (!tool) throw new Error(`Tool "${name}" not registered`);
+  return await tool.handler(args);
 }
 
 before(async () => {
@@ -207,7 +221,7 @@ after(() => {
 describe('xref_find_references', () => {
   it('finds incoming references to an object', async () => {
     const result = await callTool('xref_find_references', { object_name: 'CustTable', kind: 'All', limit: 100 });
-    assert.ok(result.includes('References TO'));
+    assert.ok(result.includes('References to'));
     assert.ok(result.includes('/Tables/CustTable'));
   });
 
@@ -223,7 +237,7 @@ describe('xref_find_references', () => {
 
   it('accepts full path', async () => {
     const result = await callTool('xref_find_references', { object_name: '/Tables/CustTable', kind: 'All', limit: 100 });
-    assert.ok(result.includes('References TO'));
+    assert.ok(result.includes('References to'));
     assert.ok(result.includes('/Tables/CustTable'));
   });
 });
@@ -231,7 +245,7 @@ describe('xref_find_references', () => {
 describe('xref_find_usages', () => {
   it('finds outgoing references from an object', async () => {
     const result = await callTool('xref_find_usages', { object_name: 'SalesFormLetter', kind: 'All', limit: 100 });
-    assert.ok(result.includes('References FROM'));
+    assert.ok(result.includes('Outgoing references from'));
     assert.ok(result.includes('/Classes/SalesFormLetter'));
   });
 
@@ -463,18 +477,18 @@ describe('xref_raw_sql', () => {
 
   it('rejects INSERT statements', async () => {
     const result = await callTool('xref_raw_sql', { sql: "INSERT INTO names VALUES (999, '/test', 'test', 0, 1, 1)", limit: 100 });
-    assert.ok(result.includes('ERROR'));
+    assert.ok(result.includes('Error'));
     assert.ok(result.includes('Only SELECT'));
   });
 
   it('rejects DELETE statements', async () => {
     const result = await callTool('xref_raw_sql', { sql: 'DELETE FROM names', limit: 100 });
-    assert.ok(result.includes('ERROR'));
+    assert.ok(result.includes('Error'));
   });
 
   it('blocks DROP keyword embedded in SELECT', async () => {
     const result = await callTool('xref_raw_sql', { sql: "SELECT * FROM names; DROP TABLE names", limit: 100 });
-    assert.ok(result.includes('ERROR') || result.includes('not allowed'));
+    assert.ok(result.includes('Forbidden') || result.includes('not allowed') || result.includes('Error'));
   });
 
   it('allows WITH (CTE) queries', async () => {
@@ -496,7 +510,7 @@ describe('xref_raw_sql', () => {
   });
 
   it('TOON: format="toon" renders the text channel as a TOON block', async () => {
-    const md = await callTool('xref_raw_sql', { sql: 'SELECT path FROM names WHERE id = 100', limit: 100 });
+    const md = await callTool('xref_raw_sql', { sql: 'SELECT path FROM names WHERE id = 100', limit: 100, format: 'markdown' });
     const toon = await callTool('xref_raw_sql', { sql: 'SELECT path FROM names WHERE id = 100', limit: 100, format: 'toon' });
     assert.match(md, /^\| path \|/m);
     assert.match(toon, /^rows\[\d+\]\{path\}:/m);
@@ -507,7 +521,7 @@ describe('xref_raw_sql', () => {
 describe('xref_impact_analysis', () => {
   it('shows impact of changing an object', async () => {
     const result = await callTool('xref_impact_analysis', { object_name: 'CustTable' });
-    assert.ok(result.includes('Impact Analysis'));
+    assert.ok(result.includes('Impact analysis'));
     assert.ok(result.includes('/Tables/CustTable'));
     assert.ok(result.includes('Total references'));
   });
@@ -552,7 +566,7 @@ describe('xref_list_modules', () => {
 describe('xref_object_summary', () => {
   it('returns summary with ref counts', async () => {
     const result = await callTool('xref_object_summary', { object_name: 'CustTable' });
-    assert.ok(result.includes('Object Summary'));
+    assert.ok(result.includes('Object summary'));
     assert.ok(result.includes('/Tables/CustTable'));
     assert.ok(result.includes('Module'));
     assert.ok(result.includes('ApplicationSuite'));
@@ -574,7 +588,7 @@ describe('xref_object_summary', () => {
     const result = await callTool('xref_object_summary', { object_name: 'CustTable' });
     assert.ok(result.includes('Incoming references'));
     assert.ok(result.includes('Outgoing references'));
-    assert.ok(result.includes('Total:'));
+    assert.ok(result.includes('total'));
   });
 
   it('returns not found for unknown object', async () => {
@@ -603,7 +617,7 @@ describe('xref_find_extensions', () => {
     const result = await callTool('xref_find_extensions', {
       object_name: 'VendTable', object_type: 'All', limit: 100,
     });
-    assert.ok(result.includes('No extensions found'));
+    assert.ok(result.includes('No extensions for'));
   });
 
   it('filters by object type', async () => {

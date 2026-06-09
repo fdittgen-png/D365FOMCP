@@ -230,11 +230,23 @@ export function structuredResult(typed, fallbackText) {
   };
 }
 
-/** Valid query that returned zero rows. Not an error — isError stays undefined. */
-export function emptyResult(context) {
-  return {
+/**
+ * Valid query that returned zero rows. Not an error — isError stays undefined.
+ *
+ * `structured` is the typed payload matching the tool's `outputSchema`, with
+ * empty arrays and zeroed counts. It is MANDATORY for any tool that declares an
+ * `outputSchema`: the MCP SDK validates every non-error response and throws
+ * `-32602 "… has an output schema but no structured content was provided"`
+ * when `structuredContent` is absent (see SDK `validateToolOutput` — it skips
+ * validation for `isError` results but not for empty success results). Omitting
+ * it is only safe on the handful of tools without an output schema.
+ */
+export function emptyResult(context, structured) {
+  const result = {
     content: [{ type: 'text', text: `## No results\n\nNo ${context} found.` }],
   };
+  if (structured !== undefined) result.structuredContent = structured;
+  return result;
 }
 
 /** The named target object does not exist. Sets isError. */
@@ -242,12 +254,15 @@ export function notFoundResult(type, name, suggestions) {
   let text = `## ${type} not found\n\n${type} \`${name}\` was not found.`;
   if (Array.isArray(suggestions) && suggestions.length > 0) {
     const list = suggestions.slice(0, 5).map(s => `- \`${s}\``).join('\n');
-    text += `\n\n**Closest matches:**\n${list}`;
+    text += `\n\n**Did you mean:**\n${list}`;
   }
+  // No structuredContent on error responses: the MCP client validates
+  // structuredContent against the tool's outputSchema whenever it is present —
+  // even on isError results (SDK client/index.js) — so an `{error}`-shaped
+  // payload would fail validation for every schema'd tool. isError + text only.
   return {
     content: [{ type: 'text', text }],
     isError: true,
-    structuredContent: { error: { category: 'not-found', type, name, suggestions: suggestions || [] } },
   };
 }
 
@@ -260,10 +275,10 @@ export function errorResult(category, hint, details) {
     const msg = details instanceof Error ? `${details.name}: ${details.message}` : String(details);
     console.error(`[${cat}] ${hint} -- ${msg}`);
   }
+  // isError + text only — see notFoundResult for why no structuredContent.
   return {
     content: [{ type: 'text', text: `## Error\n\n${hint}` }],
     isError: true,
-    structuredContent: { error: { category: cat, hint } },
   };
 }
 
@@ -348,7 +363,7 @@ export function makeLabelResolver(db) {
     if (!stmtAttempted) {
       stmtAttempted = true;
       try {
-        stmt = db.prepare('SELECT label_text FROM labels WHERE label_id = ? COLLATE NOCASE LIMIT 1');
+        stmt = db.prepare('SELECT text AS label_text FROM labels WHERE label_id = ? COLLATE NOCASE LIMIT 1');
       } catch {
         stmt = null;
       }
@@ -397,10 +412,10 @@ export function validateLikePattern(value, max = MAX_LIKE_PATTERN_LENGTH) {
  * so future structured-output handlers can pass it through unchanged).
  */
 export function patternErrorResult(validationResult) {
+  // isError + text only — see notFoundResult for why no structuredContent.
   return {
     content: [{ type: 'text', text: validationResult.error }],
     isError: true,
-    structuredContent: validationResult,
   };
 }
 
@@ -448,17 +463,12 @@ export function runWithBudget(label, fn, budgetMs = QUERY_TIMEOUT_MS, now = Date
  * the user sees a clean "Query timeout" message rather than an internal trace.
  */
 export function timeoutErrorResult(err) {
+  // isError + text only — see notFoundResult for why no structuredContent.
   return {
     content: [{
       type: 'text',
       text: `Query timeout — try a more specific search. (${err.elapsedMs}ms > ${err.budgetMs}ms budget)`,
     }],
     isError: true,
-    structuredContent: {
-      error: 'query-timeout',
-      label: err.label,
-      elapsedMs: err.elapsedMs,
-      budgetMs: err.budgetMs,
-    },
   };
 }
