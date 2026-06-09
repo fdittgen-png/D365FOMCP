@@ -93,11 +93,13 @@ export function registerTaskRecorderTools(server) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description:
-        'Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown document describing the recorded test case. '
+        'Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown description of the recorded test case. '
+        + 'USE THIS for a quick, in-context textual read of what a recording does (steps, forms, data entry, security roles). '
+        + 'For a shareable, screenshot-rich deliverable also enriched with KB technical detail and role/user data, use taskrecorder_to_document instead. '
         + 'Provide EITHER file_url (preferred for file uploads/attachments) OR file_content (base64). '
         + 'The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), '
         + 'data sources, security roles, navigation flow, and scope tree. '
-        + 'Returns both a typed JSON payload (structuredContent) and the Markdown rendering.',
+        + 'Returns the full Markdown in BOTH the text channel and structuredContent.markdown — read either directly.',
       inputSchema: {
         file_url: z.string().min(1).max(2000).optional().describe(
           'URL to the .axtr file (e.g. from a file upload or attachment). The server downloads and parses it directly.'),
@@ -131,13 +133,19 @@ export function registerTaskRecorderTools(server) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description:
-        'Generate a formatted, self-contained MHTML web-archive document from a D365FO Task Recorder recording. '
-        + 'Provide the recording via file_url OR file_content (.axtr), and optionally the Word export via docx_url OR docx_content '
-        + '(.docx) so its screenshots are embedded next to each step. The document contains: the functional overview and recorded '
-        + 'process, every step with its screenshot and the security from the BPM package, the used form / executed classes & methods / '
-        + 'OData endpoints from the D365FO Knowledge Base, and the role-based security (roles, sub-roles, duties, privileges) with the '
-        + 'assigned users from the Security configuration. Set output_path to write the .mhtml to disk. '
-        + 'Returns a typed summary (structuredContent) and a Markdown summary; the full document is returned inline only when return_inline=true.',
+        'Generate a formatted, self-contained MHTML web-archive ("Web Archive, single file") that fully documents a D365FO Task '
+        + 'Recorder recording — the shareable deliverable, vs taskrecorder_to_markdown for a quick textual read. '
+        + 'Provide the recording via file_url OR file_content (.axtr), and the Word export via docx_url OR docx_content (.docx) so its '
+        + 'screenshots are embedded inline next to each step (omit it and the document still renders, without screenshots). '
+        + 'The document has five sections: (1) functional overview; (2) the recorded process — each step with its screenshot and the '
+        + 'object security from the BPM package; (3) the BPM package security (role/duty/privilege grants); (4) KB technical detail — '
+        + 'the used form, executed/related classes & methods, and OData endpoints; (5) role-based security from the Security DB — each '
+        + 'role with its sub-roles, duties, privileges, and assigned users. Sections 4 and 5 require the KB_DB_PATH / SEC_DB_PATH '
+        + 'databases; when a database is absent that section degrades to a "not available" note and the tool still succeeds. '
+        + 'HOW TO READ THE RESULT: the text channel and structuredContent are a SUMMARY (overview + a step→action mapping table + notes), '
+        + 'NOT the document itself. The document is written to output_path (open the .mhtml in a browser or Word). To also receive the raw '
+        + 'MHTML text in-band, set return_inline=true (it then appears in structuredContent.document_mhtml). '
+        + 'Privacy: assigned-user lists contain user id + name + enabled only — email addresses are never emitted.',
       inputSchema: {
         file_url: z.string().min(1).max(2000).optional().describe('URL to the .axtr recording file.'),
         file_content: z.string().min(1).max(20000000).optional().describe('Base64-encoded .axtr recording contents.'),

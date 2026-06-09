@@ -1076,41 +1076,46 @@ export const wikiSearchOutput = z.object({
 // ── Task Recorder: taskrecorder_to_markdown ──────────────────────────────────
 
 export const taskrecorderMarkdownOutput = z.object({
-  markdown: z.string(),
-  file_name: z.string(),
+  markdown: z.string().describe('The full Markdown rendering of the recording (same as the text channel).'),
+  file_name: z.string().describe('The recording filename used in the document footer.'),
 });
 
 // ── Task Recorder: taskrecorder_to_document ──────────────────────────────────
+//
+// NOTE: this payload is a SUMMARY of the generated document, not the document
+// itself. The MHTML deliverable is at `output_path` (or in `document_mhtml`
+// when return_inline=true). Use these fields to confirm coverage and to decide
+// whether to open the file.
 
 export const taskrecorderDocStepSchema = z.object({
-  step: z.number(),
-  docx_text: z.string().nullable(),
-  description: z.string().nullable(),
-  action_type: z.string().nullable(),
-  target: z.string().nullable(),
-  global_id: z.string().nullable(),
-  object_name: z.string().nullable(),
-  screenshot_count: z.number(),
-  has_security: z.boolean(),
-  texts_agree: z.boolean(),
+  step: z.number().describe('1-based step number in recording order.'),
+  docx_text: z.string().nullable().describe('Step text from the Word document, if a .docx was supplied.'),
+  description: z.string().nullable().describe('Effective step description (custom > localized > recorded).'),
+  action_type: z.string().nullable().describe('Recorded action node type, e.g. CommandUserAction, MenuItemUserAction.'),
+  target: z.string().nullable().describe('Human-readable target, e.g. "Command: RequestClose (form SysAADClientTable)".'),
+  global_id: z.string().nullable().describe('Stable GlobalId of the recorded action.'),
+  object_name: z.string().nullable().describe('AOT object the step touched (form or menu item) — the join key to BPM security.'),
+  screenshot_count: z.number().describe('Number of screenshots embedded for this step in the MHTML.'),
+  has_security: z.boolean().describe('True when the BPM package had a security block for this step\'s object.'),
+  texts_agree: z.boolean().describe('True when the Word step text matches the recorded description (false flags a mismatch).'),
 });
 
 export const taskrecorderDocFormSchema = z.object({
-  form_name: z.string(),
-  kb_available: z.boolean(),
-  kb_found: z.boolean(),
-  class_count: z.number(),
-  endpoint_count: z.number(),
+  form_name: z.string().describe('AOT form name that was enriched from the KB.'),
+  kb_available: z.boolean().describe('False when the KB database was not configured/present.'),
+  kb_found: z.boolean().describe('True when the form exists in the KB snapshot.'),
+  class_count: z.number().describe('Number of related classes documented for the form.'),
+  endpoint_count: z.number().describe('Number of OData/data-entity endpoints documented for the form.'),
 });
 
 export const taskrecorderDocRoleSchema = z.object({
-  queried: z.string(),
-  role_name: z.string().nullable(),
-  found: z.boolean(),
-  sub_role_count: z.number(),
-  duty_count: z.number(),
-  privilege_count: z.number(),
-  user_count: z.number(),
+  queried: z.string().describe('The BPM role identifier looked up (AOT name or DMF GUID).'),
+  role_name: z.string().nullable().describe('Resolved role display name, or null when not found.'),
+  found: z.boolean().describe('True when the role exists in the Security snapshot.'),
+  sub_role_count: z.number().describe('Direct sub-roles of this role.'),
+  duty_count: z.number().describe('Duties granted across the role and its sub-roles (capped).'),
+  privilege_count: z.number().describe('Distinct privileges granted (capped).'),
+  user_count: z.number().describe('Total users assigned to this role (full count, not the truncated list).'),
 });
 
 export const taskrecorderDocumentOutput = z.object({
@@ -1121,18 +1126,18 @@ export const taskrecorderDocumentOutput = z.object({
     version: z.string().nullable(),
     language: z.string().nullable(),
     action_count: z.number(),
-  }),
-  step_count: z.number(),
-  screenshot_count: z.number(),
-  screenshots_present: z.boolean(),
-  steps: z.array(taskrecorderDocStepSchema),
-  forms_enriched: z.array(taskrecorderDocFormSchema),
-  roles_enriched: z.array(taskrecorderDocRoleSchema),
-  bpm_role_count: z.number(),
-  kb_available: z.boolean(),
-  sec_available: z.boolean(),
-  output_path: z.string().nullable(),
-  byte_size: z.number(),
-  document_mhtml: z.string().nullable(),
-  notes: z.array(z.string()),
+  }).describe('Functional metadata about the recording.'),
+  step_count: z.number().describe('Number of documented steps (max of recorded actions and Word steps).'),
+  screenshot_count: z.number().describe('Total screenshots embedded in the document.'),
+  screenshots_present: z.boolean().describe('True when at least one screenshot was embedded.'),
+  steps: z.array(taskrecorderDocStepSchema).describe('Per-step mapping summary (recorded action ↔ Word step ↔ BPM security).'),
+  forms_enriched: z.array(taskrecorderDocFormSchema).describe('KB enrichment summary, one entry per distinct form/object.'),
+  roles_enriched: z.array(taskrecorderDocRoleSchema).describe('Security enrichment summary, one entry per distinct BPM role.'),
+  bpm_role_count: z.number().describe('Distinct role/duty/privilege grants found in the BPM package.'),
+  kb_available: z.boolean().describe('True when KB enrichment ran (KB_DB_PATH present).'),
+  sec_available: z.boolean().describe('True when Security enrichment ran (SEC_DB_PATH present).'),
+  output_path: z.string().nullable().describe('Absolute path the .mhtml was written to — open this file to view the document.'),
+  byte_size: z.number().describe('Size of the generated MHTML document in bytes.'),
+  document_mhtml: z.string().nullable().describe('The full MHTML text, present only when return_inline=true; otherwise null.'),
+  notes: z.array(z.string()).describe('Warnings/observations, e.g. "no screenshots embedded" or "KB database not available".'),
 });

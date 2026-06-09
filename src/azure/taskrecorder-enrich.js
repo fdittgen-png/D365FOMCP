@@ -181,6 +181,7 @@ export function enrichRoleFromSec(secDb, roleNameOrGuid, opts = {}) {
     duties_truncated: false,
     privileges: [],
     privileges_truncated: false,
+    users_included: includeUsers,
     users: [],
     user_count: 0,
     users_truncated: false,

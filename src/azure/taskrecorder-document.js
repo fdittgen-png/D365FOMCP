@@ -505,7 +505,8 @@ function renderHtml(m) {
       if (r.role_id && r.role_id !== r.role_name) rm.push(`<li><strong>Identifier:</strong> <span class="mono">${escapeHtml(r.role_id)}</span></li>`);
       if (r.license_type) rm.push(`<li><strong>License:</strong> ${escapeHtml(r.license_type)}</li>`);
       if (r.permission_type) rm.push(`<li><strong>Permission:</strong> ${escapeHtml(r.permission_type)}</li>`);
-      rm.push(`<li><strong>Sub-roles:</strong> ${r.sub_roles.length} &middot; <strong>Duties:</strong> ${r.duties.length}${r.duties_truncated ? '+' : ''} &middot; <strong>Privileges:</strong> ${r.privileges.length}${r.privileges_truncated ? '+' : ''} &middot; <strong>Assigned users:</strong> ${r.user_count}</li>`);
+      const usersFacet = r.users_included ? `<strong>Assigned users:</strong> ${r.user_count}` : `<strong>Assigned users:</strong> not requested`;
+      rm.push(`<li><strong>Sub-roles:</strong> ${r.sub_roles.length} &middot; <strong>Duties:</strong> ${r.duties.length}${r.duties_truncated ? '+' : ''} &middot; <strong>Privileges:</strong> ${r.privileges.length}${r.privileges_truncated ? '+' : ''} &middot; ${usersFacet}</li>`);
       p(`<ul class="meta-list">${rm.join('')}</ul>`);
 
       if (r.sub_roles.length) {
@@ -529,6 +530,8 @@ function renderHtml(m) {
           { label: 'Name', get: u => u.person_name || '' },
           { label: 'Enabled', get: u => (u.enabled == null ? '' : String(u.enabled)) },
         ]));
+      } else if (!r.users_included) {
+        p('<p class="muted">Assigned users were not requested (include_users=false).</p>');
       } else if (r.user_count === 0) {
         p('<p class="muted">No users assigned.</p>');
       }

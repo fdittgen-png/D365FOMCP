@@ -237,6 +237,15 @@ describe('enrichRoleFromSec', () => {
     const r = enrichRoleFromSec(sec, 'NoSuchRole');
     assert.equal(r.found, false);
   });
+
+  it('does not query users when include_users is false', () => {
+    const r = enrichRoleFromSec(sec, 'SysServerITManager', { includeUsers: false });
+    assert.equal(r.found, true);
+    assert.equal(r.users_included, false);
+    assert.equal(r.users.length, 0);
+    assert.equal(r.user_count, 0);
+    assert.equal(r.duties.length, 1);   // role chain still resolved
+  });
 });
 
 describe('buildMhtml', () => {
