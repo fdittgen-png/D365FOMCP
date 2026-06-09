@@ -15,7 +15,7 @@
 
 export const TASKREC_XML_NAMESPACE = 'urn:trelleborg:d365fo:taskrecording:1.0';
 export const TASKREC_XSD_FILENAME = 'task-recording-document.xsd';
-export const TASKREC_XML_SCHEMA_VERSION = '1.0';
+export const TASKREC_XML_SCHEMA_VERSION = '1.1';
 
 function esc(s) {
   return String(s)
@@ -108,6 +108,7 @@ export function buildTaskRecorderXml(model) {
   for (const s of model.steps) {
     p(I + I + open('Step', {
       number: s.step,
+      source: s.source,
       sequence: s.sequence,
       actionType: s.action_type,
       objectName: s.object_name,
@@ -128,6 +129,25 @@ export function buildTaskRecorderXml(model) {
     p(I + I + I + '<Security>');
     for (const sec of s.security) p(grantXml(sec, I + I + I + I));
     p(I + I + I + '</Security>');
+    // client-recording detail (browser side) — present on client-sourced steps
+    if (s.client) {
+      const c = s.client;
+      p(I + I + I + open('Client', {
+        kind: c.kind, ts: c.ts, formTitle: c.form_title, menuItem: c.menu_item,
+        company: c.company, url: c.url, label: c.label, role: c.role, href: c.href,
+        fieldLabel: c.field_label, fieldName: c.field_name, controlType: c.control_type,
+        oldValue: c.old_value, newValue: c.new_value, message: c.message, text: c.text, note: c.note,
+      }, true));
+    }
+    // correlated server-side .axtr action(s)
+    p(I + I + I + '<ServerActions>');
+    for (const a of (s.matched_actions || [])) {
+      p(I + I + I + I + open('ServerAction', {
+        sequence: a.sequence, actionType: a.action_type,
+        commandName: a.command_name, control: a.control, form: a.form,
+      }, true));
+    }
+    p(I + I + I + '</ServerActions>');
     p(I + I + '</Step>');
   }
   p(I + '</Steps>');
@@ -220,6 +240,18 @@ export function buildTaskRecorderXml(model) {
     p(I + I + '</Role>');
   }
   p(I + '</RoleBasedSecurity>');
+
+  // ── ClientRecording (browser-side repro metadata) ────────────────────────
+  if (model.clientRecording) {
+    const c = model.clientRecording;
+    p(I + open('ClientRecording', {
+      sessionId: c.session_id, title: c.title, severity: c.severity,
+      host: c.host, tenant: c.tenant, company: c.company,
+      startedAt: c.started_at, endedAt: c.ended_at,
+      extensionVersion: c.extension_version, initialUrl: c.initial_url,
+      stepCount: c.step_count, screenshotCount: c.screenshot_count,
+    }, true));
+  }
 
   // ── document-level Notes ─────────────────────────────────────────────────
   p(I + '<Notes>');

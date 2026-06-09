@@ -19,7 +19,7 @@
            targetNamespace="urn:trelleborg:d365fo:taskrecording:1.0"
            elementFormDefault="qualified"
            attributeFormDefault="unqualified"
-           version="1.0">
+           version="1.1">
 
   <!-- ── Root ──────────────────────────────────────────────────────────── -->
   <xs:element name="TaskRecordingDocument">
@@ -31,6 +31,7 @@
         <xs:element name="BpmSecurity" type="BpmSecurityType"/>
         <xs:element name="Technical" type="TechnicalType"/>
         <xs:element name="RoleBasedSecurity" type="RoleBasedSecurityType"/>
+        <xs:element name="ClientRecording" type="ClientRecordingType" minOccurs="0"/>
         <xs:element name="Notes" type="NotesType"/>
       </xs:sequence>
       <xs:attribute name="schemaVersion" type="xs:string" use="required"/>
@@ -116,13 +117,52 @@
         </xs:complexType>
       </xs:element>
       <xs:element name="Security" type="SecurityGrantsType"/>
+      <xs:element name="Client" type="ClientStepType" minOccurs="0"/>
+      <xs:element name="ServerActions" type="ServerActionsType" minOccurs="0"/>
     </xs:sequence>
     <xs:attribute name="number" type="xs:integer" use="required"/>
+    <xs:attribute name="source" type="xs:string" use="optional"/>
     <xs:attribute name="sequence" type="xs:integer" use="optional"/>
     <xs:attribute name="actionType" type="xs:string" use="optional"/>
     <xs:attribute name="objectName" type="xs:string" use="optional"/>
     <xs:attribute name="globalId" type="xs:string" use="optional"/>
     <xs:attribute name="textsAgree" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Client repro step detail (browser side) ───────────────────────── -->
+  <xs:complexType name="ClientStepType">
+    <xs:attribute name="kind" type="xs:string" use="optional"/>
+    <xs:attribute name="ts" type="xs:string" use="optional"/>
+    <xs:attribute name="formTitle" type="xs:string" use="optional"/>
+    <xs:attribute name="menuItem" type="xs:string" use="optional"/>
+    <xs:attribute name="company" type="xs:string" use="optional"/>
+    <xs:attribute name="url" type="xs:string" use="optional"/>
+    <xs:attribute name="label" type="xs:string" use="optional"/>
+    <xs:attribute name="role" type="xs:string" use="optional"/>
+    <xs:attribute name="href" type="xs:string" use="optional"/>
+    <xs:attribute name="fieldLabel" type="xs:string" use="optional"/>
+    <xs:attribute name="fieldName" type="xs:string" use="optional"/>
+    <xs:attribute name="controlType" type="xs:string" use="optional"/>
+    <xs:attribute name="oldValue" type="xs:string" use="optional"/>
+    <xs:attribute name="newValue" type="xs:string" use="optional"/>
+    <xs:attribute name="message" type="xs:string" use="optional"/>
+    <xs:attribute name="text" type="xs:string" use="optional"/>
+    <xs:attribute name="note" type="xs:string" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Correlated server-side .axtr actions for a client step ────────── -->
+  <xs:complexType name="ServerActionsType">
+    <xs:sequence>
+      <xs:element name="ServerAction" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="sequence" type="xs:integer" use="optional"/>
+          <xs:attribute name="actionType" type="xs:string" use="optional"/>
+          <xs:attribute name="commandName" type="xs:string" use="optional"/>
+          <xs:attribute name="control" type="xs:string" use="optional"/>
+          <xs:attribute name="form" type="xs:string" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
   </xs:complexType>
 
   <!-- ── BPM security (consolidated) ───────────────────────────────────── -->
@@ -287,6 +327,22 @@
     <xs:attribute name="dutiesTruncated" type="xs:boolean" use="optional"/>
     <xs:attribute name="privilegesTruncated" type="xs:boolean" use="optional"/>
     <xs:attribute name="usersTruncated" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Client recording metadata (browser-side repro) ────────────────── -->
+  <xs:complexType name="ClientRecordingType">
+    <xs:attribute name="sessionId" type="xs:string" use="optional"/>
+    <xs:attribute name="title" type="xs:string" use="optional"/>
+    <xs:attribute name="severity" type="xs:string" use="optional"/>
+    <xs:attribute name="host" type="xs:string" use="optional"/>
+    <xs:attribute name="tenant" type="xs:string" use="optional"/>
+    <xs:attribute name="company" type="xs:string" use="optional"/>
+    <xs:attribute name="startedAt" type="xs:string" use="optional"/>
+    <xs:attribute name="endedAt" type="xs:string" use="optional"/>
+    <xs:attribute name="extensionVersion" type="xs:string" use="optional"/>
+    <xs:attribute name="initialUrl" type="xs:string" use="optional"/>
+    <xs:attribute name="stepCount" type="xs:integer" use="optional"/>
+    <xs:attribute name="screenshotCount" type="xs:integer" use="optional"/>
   </xs:complexType>
 
   <!-- ── Notes (reused) ────────────────────────────────────────────────── -->

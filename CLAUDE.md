@@ -29,7 +29,7 @@ npm run start:taskrecorder     # Local Task Recorder server (stdio)
   - `kb-tools.js` — 17 KB tools, exports `registerKbTools(server, db)`
   - `xref-tools.js` — 16 XRef tools, exports `registerXrefTools(server, db)`
   - `sec-tools.js` — 19 Security tools, exports `registerSecTools(server, db)`
-  - `taskrecorder-tools.js` — 2 tools (`taskrecorder_to_markdown`, `taskrecorder_to_document`), exports `registerTaskRecorderTools(server)`. The document tool composes `taskrecorder-parser.js` + `docx-screenshots.js` + `taskrecorder-enrich.js` (KB/Sec) + `mhtml.js` into an enriched MHTML web-archive, and (when `include_xml=true`) a contract XML via `taskrecorder-xml.js` that validates against `schemas/task-recording-document.xsd`.
+  - `taskrecorder-tools.js` — 2 tools (`taskrecorder_to_markdown`, `taskrecorder_to_document`), exports `registerTaskRecorderTools(server)`. The document tool composes `taskrecorder-parser.js` (server .axtr) + `repro-xml.js` (client reproReport recording, preferred screenshot source) / `docx-screenshots.js` (legacy) + `taskrecorder-enrich.js` (KB/Sec) + `mhtml.js` into an enriched MHTML web-archive, correlating each client step to the matching server action; and (when `include_xml=true`) a contract XML via `taskrecorder-xml.js` that validates against `schemas/task-recording-document.xsd`.
 - `src/functions/` — Azure Functions HTTP entry points
 - `src/local/` — Local stdio MCP servers (import from `src/azure/`)
 - `build/` — SQLite database builders (KB, XRef, Security)

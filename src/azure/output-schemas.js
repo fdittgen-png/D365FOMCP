@@ -1089,16 +1089,31 @@ export const taskrecorderMarkdownOutput = z.object({
 
 export const taskrecorderDocStepSchema = z.object({
   step: z.number().describe('1-based step number in recording order.'),
+  source: z.string().describe('Origin of the step: "client" (browser repro XML), "word" (.docx), or "recording" (.axtr only).'),
   docx_text: z.string().nullable().describe('Step text from the Word document, if a .docx was supplied.'),
-  description: z.string().nullable().describe('Effective step description (custom > localized > recorded).'),
-  action_type: z.string().nullable().describe('Recorded action node type, e.g. CommandUserAction, MenuItemUserAction.'),
+  description: z.string().nullable().describe('Effective step description (client action / custom > localized > recorded).'),
+  action_type: z.string().nullable().describe('Action type: client kind (navigate/click/edit/error/...) or .axtr node type.'),
   target: z.string().nullable().describe('Human-readable target, e.g. "Command: RequestClose (form SysAADClientTable)".'),
-  global_id: z.string().nullable().describe('Stable GlobalId of the recorded action.'),
+  global_id: z.string().nullable().describe('Stable GlobalId (.axtr) or step id (client recording).'),
   object_name: z.string().nullable().describe('AOT object the step touched (form or menu item) — the join key to BPM security.'),
   screenshot_count: z.number().describe('Number of screenshots embedded for this step in the MHTML.'),
   has_security: z.boolean().describe('True when the BPM package had a security block for this step\'s object.'),
+  matched_action_count: z.number().describe('For client steps: how many server (.axtr) actions correlate to this step.'),
   texts_agree: z.boolean().describe('True when the Word step text matches the recorded description (false flags a mismatch).'),
 });
+
+export const taskrecorderClientRecordingSchema = z.object({
+  session_id: z.string().nullable(),
+  title: z.string().nullable(),
+  host: z.string().nullable(),
+  tenant: z.string().nullable(),
+  company: z.string().nullable(),
+  started_at: z.string().nullable(),
+  ended_at: z.string().nullable(),
+  step_count: z.number(),
+  screenshot_count: z.number(),
+  matched_step_count: z.number(),
+}).describe('Metadata of the browser-side client repro recording, when one was supplied.');
 
 export const taskrecorderDocFormSchema = z.object({
   form_name: z.string().describe('AOT form name that was enriched from the KB.'),
@@ -1127,10 +1142,11 @@ export const taskrecorderDocumentOutput = z.object({
     language: z.string().nullable(),
     action_count: z.number(),
   }).describe('Functional metadata about the recording.'),
-  step_count: z.number().describe('Number of documented steps (max of recorded actions and Word steps).'),
+  step_count: z.number().describe('Number of documented steps (client repro steps, or .axtr actions/Word steps).'),
   screenshot_count: z.number().describe('Total screenshots embedded in the document.'),
   screenshots_present: z.boolean().describe('True when at least one screenshot was embedded.'),
-  steps: z.array(taskrecorderDocStepSchema).describe('Per-step mapping summary (recorded action ↔ Word step ↔ BPM security).'),
+  client_recording: taskrecorderClientRecordingSchema.nullable().describe('Client repro recording metadata, or null when none was supplied.'),
+  steps: z.array(taskrecorderDocStepSchema).describe('Per-step mapping summary (client step ↔ server .axtr action ↔ BPM security).'),
   forms_enriched: z.array(taskrecorderDocFormSchema).describe('KB enrichment summary, one entry per distinct form/object.'),
   roles_enriched: z.array(taskrecorderDocRoleSchema).describe('Security enrichment summary, one entry per distinct BPM role.'),
   bpm_role_count: z.number().describe('Distinct role/duty/privilege grants found in the BPM package.'),

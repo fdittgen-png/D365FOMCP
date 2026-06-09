@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { XMLValidator, XMLParser } from 'fast-xml-parser';
 
 import { parseDocxScreenshots } from '../src/azure/docx-screenshots.js';
+import { parseReproReport } from '../src/azure/repro-xml.js';
 import { enrichFormFromKb, enrichRoleFromSec } from '../src/azure/taskrecorder-enrich.js';
 import { buildMhtml } from '../src/azure/mhtml.js';
 import { buildTaskRecorderDocument } from '../src/azure/taskrecorder-document.js';
@@ -327,7 +328,7 @@ describe('buildTaskRecorderDocument (end-to-end)', () => {
     const doc = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' }).parse(out.xml);
     const root = doc.TaskRecordingDocument;
     assert.ok(root, 'missing TaskRecordingDocument root');
-    assert.equal(root['@_schemaVersion'], '1.0');
+    assert.equal(root['@_schemaVersion'], '1.1');
     assert.equal(root.Recording['@_name'], 'test');
     const steps = Array.isArray(root.Steps.Step) ? root.Steps.Step : [root.Steps.Step];
     assert.equal(steps.length, 2);
@@ -343,6 +344,77 @@ describe('buildTaskRecorderDocument (end-to-end)', () => {
   it('never leaks an email address into the contract XML', () => {
     assert.ok(!out.xml.includes('do-not-leak'), 'sentinel email leaked into the XML');
     assert.ok(!out.xml.includes('@example.invalid'));
+  });
+});
+
+// ── client repro recording (reproReport XML) ──────────────────────────────────
+
+function buildReproXml() {
+  const b64 = PNG_1PX.toString('base64');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<reproReport xmlns="https://d365fo.repro/schema/v1" version="1" sessionId="ses_test">
+  <meta><title>Test repro</title><severity>med</severity><startedAt>2026-06-09T14:42:22.687Z</startedAt><endedAt>2026-06-09T14:43:03.077Z</endedAt><extensionVersion>0.1.0</extensionVersion></meta>
+  <environment><host>tbg365-uat.sandbox.operations.dynamics.com</host><tenant>tbg365-uat</tenant><company>lade</company><language /><userAgent>UA</userAgent><initialUrl>https://x/</initialUrl></environment>
+  <description />
+  <steps>
+    <step index="1" kind="error" ts="2026-06-09T14:42:22.690Z" id="st_1"><message>You have new messages.</message><formTitle>Action center</formTitle></step>
+    <step index="2" kind="navigate" ts="2026-06-09T14:42:22.696Z" id="st_2"><formTitle>Action center</formTitle><menuItem>DefaultDashboard</menuItem><company>lade</company><url>https://x/</url><attachment type="image/png" encoding="base64" filename="step-002.png">${b64}</attachment></step>
+  </steps>
+</reproReport>`;
+}
+
+describe('repro-xml (client recording)', () => {
+  it('parses meta, environment, steps and a base64 screenshot', () => {
+    const r = parseReproReport(buildReproXml());
+    assert.equal(r.sessionId, 'ses_test');
+    assert.equal(r.environment.host, 'tbg365-uat.sandbox.operations.dynamics.com');
+    assert.equal(r.steps.length, 2);
+    assert.equal(r.imageCount, 1);
+    assert.equal(r.steps[1].kind, 'navigate');
+    assert.equal(r.steps[1].menuItem, 'DefaultDashboard');
+    assert.ok(Buffer.isBuffer(r.steps[1].screenshot.bytes));
+  });
+
+  it('throws on a non-reproReport document', () => {
+    assert.throws(() => parseReproReport('<other/>'), /reproReport root/);
+  });
+});
+
+describe('buildTaskRecorderDocument with a client repro recording', () => {
+  let out;
+  before(() => {
+    out = buildTaskRecorderDocument(readFileSync(SAMPLE_AXTR), null, {
+      reproBuf: Buffer.from(buildReproXml(), 'utf8'),
+      generatedAt: '2026-06-09T12:00:00Z', fileName: 'test.axtr',
+    });
+  });
+
+  it('uses the client steps as the timeline and embeds the screenshot', () => {
+    assert.equal(out.structured.step_count, 2);
+    assert.equal(out.structured.screenshot_count, 1);
+    assert.ok(out.structured.client_recording);
+    assert.equal(out.structured.client_recording.session_id, 'ses_test');
+    assert.equal(out.structured.steps[0].source, 'client');
+  });
+
+  it('correlates the navigate step to the matching .axtr menu-item action', () => {
+    // The sample .axtr has a MenuItemUserAction for DefaultDashboard.
+    const nav = out.structured.steps.find(s => s.action_type === 'navigate');
+    assert.ok(nav);
+    assert.ok(nav.matched_action_count >= 1, 'navigate step should correlate to the server menu-item action');
+  });
+
+  it('emits ClientRecording, Client and ServerActions in the XML and validates structurally', () => {
+    assert.equal(XMLValidator.validate(out.xml), true);
+    assert.match(out.xml, /<ClientRecording /);
+    assert.match(out.xml, /<Client /);
+    assert.match(out.xml, /<ServerActions>/);
+    assert.match(out.xml, /source="client"/);
+  });
+
+  it('validates against the TaskRecordingDocument output schema', () => {
+    const parsed = taskrecorderDocumentOutput.safeParse(out.structured);
+    assert.ok(parsed.success, parsed.success ? '' : JSON.stringify(parsed.error.issues));
   });
 });
 

@@ -132,11 +132,16 @@ export function registerTaskRecorderTools(server) {
     'taskrecorder_to_document',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
+      // outputSchema declared up-front (before the long description/inputSchema)
+      // so the response-format static scan finds it within its window.
+      outputSchema: taskrecorderDocumentOutput.shape,
       description:
         'Generate a formatted, self-contained MHTML web-archive ("Web Archive, single file") that fully documents a D365FO Task '
         + 'Recorder recording — the shareable deliverable, vs taskrecorder_to_markdown for a quick textual read. '
-        + 'Provide the recording via file_url OR file_content (.axtr), and the Word export via docx_url OR docx_content (.docx) so its '
-        + 'screenshots are embedded inline next to each step (omit it and the document still renders, without screenshots). '
+        + 'Provide the server recording via file_url OR file_content (.axtr), and the client recording via repro_url OR repro_content '
+        + '(reproReport XML from the D365FO Repro Recorder browser extension) so its screenshots are embedded inline next to each step and '
+        + 'each client step is correlated to the matching server action. A legacy Word export (docx_url/docx_content) is still accepted when '
+        + 'no repro recording is supplied; omit both and the document still renders from the .axtr alone. '
         + 'The document has five sections: (1) functional overview; (2) the recorded process — each step with its screenshot and the '
         + 'object security from the BPM package; (3) the BPM package security (role/duty/privilege grants); (4) KB technical detail — '
         + 'the used form, executed/related classes & methods, and OData endpoints; (5) role-based security from the Security DB — each '
@@ -149,8 +154,10 @@ export function registerTaskRecorderTools(server) {
       inputSchema: {
         file_url: z.string().min(1).max(2000).optional().describe('URL to the .axtr recording file.'),
         file_content: z.string().min(1).max(20000000).optional().describe('Base64-encoded .axtr recording contents.'),
-        docx_url: z.string().min(1).max(2000).optional().describe('URL to the Word (.docx) export containing the screenshots.'),
-        docx_content: z.string().min(1).max(20000000).optional().describe('Base64-encoded .docx contents.'),
+        repro_url: z.string().min(1).max(2000).optional().describe('URL to the client repro recording XML (reproReport, from the D365FO Repro Recorder browser extension) — the preferred screenshot/step source.'),
+        repro_content: z.string().min(1).max(20000000).optional().describe('Base64-encoded client repro recording XML (reproReport).'),
+        docx_url: z.string().min(1).max(2000).optional().describe('URL to the legacy Word (.docx) export containing screenshots (used only when no repro recording is supplied).'),
+        docx_content: z.string().min(1).max(20000000).optional().describe('Base64-encoded .docx contents (legacy; ignored when a repro recording is supplied).'),
         file_name: z.string().min(1).max(255).optional().default('recording.axtr').describe('Original .axtr filename (used in the footer).'),
         output_path: z.string().min(1).max(1000).optional().describe('Absolute path to write the generated .mhtml file. If omitted, the document is written to the OS temp directory.'),
         include_users: z.boolean().optional().default(true).describe('Include the users assigned to each role (no email addresses are ever emitted).'),
@@ -159,7 +166,6 @@ export function registerTaskRecorderTools(server) {
         return_inline: z.boolean().optional().default(false).describe('Also return the full MHTML document text inside structuredContent.document_mhtml (and the XML in document_xml when include_xml is set).'),
         include_xml: z.boolean().optional().default(false).describe('Also emit a machine-consumable contract XML (writes a sibling .xml next to output_path; validates against schemas/task-recording-document.xsd).'),
       },
-      outputSchema: taskrecorderDocumentOutput.shape,
     },
     async (args) => {
       const fileNameIn = typeof args.file_name === 'string' && args.file_name ? args.file_name : 'recording.axtr';
@@ -175,9 +181,15 @@ export function registerTaskRecorderTools(server) {
       if (!axtr.buffer) return errorResult('invalid-input', 'Provide the recording via either file_url or file_content (.axtr).');
       const fileName = axtr.fileName || fileNameIn;
 
-      // ── load the .docx (optional) ──────────────────────────────────────────
+      // ── load the client repro XML (preferred) / .docx (legacy) ────────────
+      let reproBuf = null;
+      if (args.repro_url || args.repro_content) {
+        const rep = await loadBuffer({ url: args.repro_url, content: args.repro_content, kind: 'repro recording', deriveExt: '.xml' });
+        if (rep.error) return rep.error;
+        reproBuf = rep.buffer;
+      }
       let docxBuf = null;
-      if (args.docx_url || args.docx_content) {
+      if (!reproBuf && (args.docx_url || args.docx_content)) {
         const docx = await loadBuffer({ url: args.docx_url, content: args.docx_content, kind: '.docx file', deriveExt: '.docx' });
         if (docx.error) return docx.error;
         docxBuf = docx.buffer;
@@ -190,7 +202,7 @@ export function registerTaskRecorderTools(server) {
       let result;
       try {
         result = buildTaskRecorderDocument(axtr.buffer, docxBuf, {
-          kbDb, secDb, includeUsers, company, maxUsers, fileName,
+          kbDb, secDb, reproBuf, includeUsers, company, maxUsers, fileName,
         });
       } catch (err) {
         return errorResult('parse-error', 'The recording could not be parsed into a document.', err);

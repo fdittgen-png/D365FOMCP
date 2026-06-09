@@ -23,6 +23,7 @@
 
 import { parseTaskRecordingData } from './taskrecorder-parser.js';
 import { parseDocxScreenshots } from './docx-screenshots.js';
+import { parseReproReport } from './repro-xml.js';
 import { enrichFormFromKb, enrichRoleFromSec } from './taskrecorder-enrich.js';
 import { buildMhtml } from './mhtml.js';
 import { buildTaskRecorderXml } from './taskrecorder-xml.js';
@@ -124,24 +125,187 @@ function actionObject(a, formIdToName) {
   return null;
 }
 
+/**
+ * Correlate a client repro step to the server-side .axtr actions recorded in
+ * the same session. The two recordings are different granularities, so the join
+ * is semantic (control/field label and menu item), not positional:
+ *   - click  → axtr action whose control label matches the clicked label
+ *   - edit   → axtr action whose control label matches the edited field label
+ *   - navigate → axtr MenuItemUserAction with the same menu item name
+ * Returns { matched: axtrAction[], object: (AOT object name for BPM security) }.
+ */
+function correlateReproStep(step, axtrActions, formIdToName) {
+  const matched = [];
+  const reproLabel = ciKey(step.label || step.fieldLabel || '');
+  if (reproLabel) {
+    // Exact (case-insensitive) control-label matches take precedence; only when
+    // there are none do we fall back to a contains-match (the client UI label
+    // often decorates the control name, e.g. "(Alt+S) Save" → "Save"). The
+    // fallback is one-directional and length-guarded to avoid a generic token
+    // like "Purchase" matching many controls.
+    const exact = axtrActions.filter(a => ciKey(a.controlLabel || '') === reproLabel);
+    if (exact.length) {
+      matched.push(...exact);
+    } else {
+      for (const a of axtrActions) {
+        const ctrl = ciKey(a.controlLabel || '');
+        if (ctrl && ctrl.length >= 4 && reproLabel.includes(ctrl)) matched.push(a);
+      }
+    }
+  }
+  if (step.menuItem) {
+    const mi = ciKey(step.menuItem);
+    for (const a of axtrActions) {
+      if (a.menuItemName && ciKey(a.menuItemName) === mi && !matched.includes(a)) matched.push(a);
+    }
+  }
+  // Object for BPM-security lookup: prefer the explicit menu item, else the
+  // form of the first matched server action.
+  let object = step.menuItem || null;
+  if (!object && matched.length) object = actionObject(matched[0], formIdToName);
+  return { matched, object };
+}
+
+/** A concise human description for a client repro step. */
+function reproStepDescription(s) {
+  switch (s.kind) {
+    case 'navigate': return `Go to ${s.menuItem || s.formTitle || '(page)'}`;
+    case 'click': return `Click ${s.label || '(control)'}`;
+    case 'edit': return `Set ${s.fieldLabel || '(field)'}${s.newValue ? ` = ${s.newValue}` : ''}`;
+    case 'error': return s.message || 'Error';
+    case 'note': return s.text || 'Note';
+    case 'manual-snap': return `Snapshot${s.formTitle ? ` — ${s.formTitle}` : ''}`;
+    case 'pasted-img': return 'Pasted image';
+    default: return s.formTitle || s.kind;
+  }
+}
+
+function reproStepTarget(s) {
+  if (s.kind === 'navigate') return `Menu item: ${s.menuItem || ''}`.trim();
+  if (s.kind === 'click') return `Control: ${s.label || ''}${s.role ? ` (${s.role})` : ''}`.trim();
+  if (s.kind === 'edit') return `Field: ${s.fieldLabel || s.fieldName || ''}`.trim();
+  return s.formTitle || null;
+}
+
+/** Build the mapped step timeline from the client repro recording. */
+function buildStepsFromRepro(repro, actions, formIdToName, bpmByObject, resources) {
+  const steps = [];
+  for (const s of repro.steps) {
+    const { matched, object } = correlateReproStep(s, actions, formIdToName);
+    const ps = object ? bpmByObject.get(ciKey(object)) : null;
+
+    const shots = [];
+    if (s.screenshot && s.screenshot.bytes) {
+      const loc = `images/step${String(s.index).padStart(2, '0')}_1.${extFromMime(s.screenshot.mime)}`;
+      resources.push({ contentLocation: loc, mime: s.screenshot.mime, bytes: s.screenshot.bytes });
+      shots.push({ name: s.screenshot.filename || loc.split('/').pop(), mime: s.screenshot.mime, content_location: loc });
+    }
+
+    steps.push({
+      step: s.index,
+      source: 'client',
+      docx_text: null,
+      description: reproStepDescription(s),
+      sequence: matched.length ? matched[0].sequence : null,
+      action_type: s.kind,
+      target: reproStepTarget(s),
+      global_id: s.id || null,
+      control_label: s.label || s.fieldLabel || null,
+      control_name: s.fieldName || null,
+      control_type: s.controlType || null,
+      command_name: null,
+      menu_item_name: s.menuItem || null,
+      object_name: object || null,
+      texts_agree: true,
+      screenshots: shots,
+      security: ps ? ps.security : [],
+      client: {
+        kind: s.kind, ts: s.ts, form_title: s.formTitle, menu_item: s.menuItem,
+        company: s.company, url: s.url, label: s.label, role: s.role, href: s.href,
+        field_label: s.fieldLabel, field_name: s.fieldName, control_type: s.controlType,
+        old_value: s.oldValue, new_value: s.newValue, message: s.message, text: s.text, note: s.note,
+      },
+      matched_actions: matched.map(a => ({
+        sequence: a.sequence,
+        action_type: a.nodeType,
+        command_name: a.commandName || null,
+        control: a.controlLabel || a.controlName || null,
+        form: a.formId ? (formIdToName[a.formId] || null) : (a.menuItemName || null),
+      })),
+    });
+  }
+  return steps;
+}
+
+/** Build the step timeline from the .axtr alone (optionally aligned to a .docx). */
+function buildStepsFromAxtr(actions, docx, formIdToName, bpmByObject, localizedSteps, resources) {
+  const steps = [];
+  const max = Math.max(actions.length, docx.steps.length);
+  for (let i = 0; i < max; i++) {
+    const a = i < actions.length ? actions[i] : null;
+    const ds = i < docx.steps.length ? docx.steps[i] : null;
+    const desc = a ? actionDescription(a, localizedSteps) : (ds ? ds.text : '');
+    const obj = a ? actionObject(a, formIdToName) : null;
+    const ps = obj ? bpmByObject.get(ciKey(obj)) : null;
+
+    const shots = [];
+    if (ds && ds.images.length) {
+      let n = 1;
+      for (const img of ds.images) {
+        const loc = `images/step${String(i + 1).padStart(2, '0')}_${n}.${extFromMime(img.mime)}`;
+        resources.push({ contentLocation: loc, mime: img.mime, bytes: img.bytes });
+        shots.push({ name: img.name, mime: img.mime, content_location: loc });
+        n++;
+      }
+    }
+
+    const textsAgree = !(a && ds) ? true
+      : trimDot(ds.text).toLowerCase() === trimDot(desc).toLowerCase();
+
+    steps.push({
+      step: i + 1,
+      source: ds ? 'word' : 'recording',
+      docx_text: ds ? ds.text : null,
+      description: desc || null,
+      sequence: a ? a.sequence : null,
+      action_type: a ? a.nodeType : null,
+      target: a ? actionTarget(a, formIdToName) : null,
+      global_id: a ? (a.globalId || null) : null,
+      control_label: a ? (a.controlLabel || null) : null,
+      control_name: a ? (a.controlName || null) : null,
+      control_type: a ? (a.controlType || null) : null,
+      command_name: a ? (a.commandName || null) : null,
+      menu_item_name: a ? (a.menuItemName || null) : null,
+      object_name: obj || null,
+      texts_agree: textsAgree,
+      screenshots: shots,
+      security: ps ? ps.security : [],
+      client: null,
+      matched_actions: [],
+    });
+  }
+  return steps;
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 /**
  * @param {Buffer} axtrBuf
- * @param {Buffer|null} docxBuf
+ * @param {Buffer|null} docxBuf - legacy Word screenshot source (used only when no reproBuf)
  * @param {object} [opts]
  * @param {object|null} [opts.kbDb]
  * @param {object|null} [opts.secDb]
+ * @param {Buffer|null} [opts.reproBuf] - client-side reproReport XML (preferred screenshot/step source)
  * @param {boolean} [opts.includeUsers=true]
  * @param {string|null} [opts.company=null]
  * @param {number} [opts.maxUsers=50]
  * @param {string} [opts.fileName='recording.axtr']
  * @param {string} [opts.generatedAt] - ISO timestamp for the footer (injectable for tests)
- * @returns {{ mhtml: string, summaryMarkdown: string, structured: object }}
+ * @returns {{ mhtml: string, xml: string, summaryMarkdown: string, structured: object }}
  */
 export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
   const {
-    kbDb = null, secDb = null, includeUsers = true, company = null,
+    kbDb = null, secDb = null, reproBuf = null, includeUsers = true, company = null,
     maxUsers = 50, fileName = 'recording.axtr',
   } = opts;
   const generatedAt = opts.generatedAt || new Date().toISOString();
@@ -157,10 +321,16 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
     language: language || null,
   };
 
-  // ── docx ─────────────────────────────────────────────────────────────────
+  // ── client repro recording (preferred) / docx (legacy) screenshot source ──
+  let repro = null;
+  let reproError = null;
+  if (reproBuf) {
+    try { repro = parseReproReport(reproBuf); }
+    catch (e) { reproError = e.message; }
+  }
   let docx = { title: null, steps: [], imageCount: 0 };
   let docxError = null;
-  if (docxBuf) {
+  if (!repro && docxBuf) {
     try { docx = parseDocxScreenshots(docxBuf); }
     catch (e) { docxError = e.message; }
   }
@@ -184,51 +354,27 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
     if (ps.aotName) bpmByObject.set(ciKey(ps.aotName), ps);
   }
 
-  // ── align steps ↔ actions, attach screenshots ──────────────────────────────
+  // ── build the mapped step timeline ─────────────────────────────────────────
   const resources = [];   // MHTML embedded parts
-  const max = Math.max(actions.length, docx.steps.length);
-  const steps = [];
-  for (let i = 0; i < max; i++) {
-    const a = i < actions.length ? actions[i] : null;
-    const ds = i < docx.steps.length ? docx.steps[i] : null;
-    const desc = a ? actionDescription(a, localizedSteps) : (ds ? ds.text : '');
-    const obj = a ? actionObject(a, formIdToName) : null;
-    const ps = obj ? bpmByObject.get(ciKey(obj)) : null;
+  const steps = repro
+    ? buildStepsFromRepro(repro, actions, formIdToName, bpmByObject, resources)
+    : buildStepsFromAxtr(actions, docx, formIdToName, bpmByObject, localizedSteps, resources);
 
-    // screenshots from the Word step
-    const shots = [];
-    if (ds && ds.images.length) {
-      let n = 1;
-      for (const img of ds.images) {
-        const loc = `images/step${String(i + 1).padStart(2, '0')}_${n}.${extFromMime(img.mime)}`;
-        resources.push({ contentLocation: loc, mime: img.mime, bytes: img.bytes });
-        shots.push({ name: img.name, mime: img.mime, content_location: loc });
-        n++;
-      }
-    }
-
-    const textsAgree = !(a && ds) ? true
-      : trimDot(ds.text).toLowerCase() === trimDot(desc).toLowerCase();
-
-    steps.push({
-      step: i + 1,
-      docx_text: ds ? ds.text : null,
-      description: desc || null,
-      sequence: a ? a.sequence : null,
-      action_type: a ? a.nodeType : null,
-      target: a ? actionTarget(a, formIdToName) : null,
-      global_id: a ? (a.globalId || null) : null,
-      control_label: a ? (a.controlLabel || null) : null,
-      control_name: a ? (a.controlName || null) : null,
-      control_type: a ? (a.controlType || null) : null,
-      command_name: a ? (a.commandName || null) : null,
-      menu_item_name: a ? (a.menuItemName || null) : null,
-      object_name: obj || null,
-      texts_agree: textsAgree,
-      screenshots: shots,
-      security: ps ? ps.security : [],
-    });
-  }
+  // client recording metadata (present only when a repro XML was supplied)
+  const clientRecording = repro ? {
+    session_id: repro.sessionId,
+    title: repro.meta.title,
+    severity: repro.meta.severity,
+    started_at: repro.meta.startedAt,
+    ended_at: repro.meta.endedAt,
+    extension_version: repro.meta.extensionVersion,
+    host: repro.environment.host,
+    tenant: repro.environment.tenant,
+    company: repro.environment.company,
+    initial_url: repro.environment.initialUrl,
+    step_count: repro.steps.length,
+    screenshot_count: repro.imageCount,
+  } : null;
 
   // ── consolidated BPM security ──────────────────────────────────────────────
   const bpmObjects = bpm.processSteps.map(ps => ({
@@ -277,29 +423,36 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
   const secAvailable = enrichedRoles.some(r => r.available);
 
   // ── notes ───────────────────────────────────────────────────────────────────
+  const screenshotCount = repro ? repro.imageCount : docx.imageCount;
+  const matchedStepCount = repro ? steps.filter(s => s.matched_actions.length > 0).length : 0;
   const notes = [];
-  if (docxBuf && docxError) notes.push(`Word document could not be parsed: ${docxError}`);
-  if (docxBuf && !docxError && docx.imageCount === 0) notes.push('No screenshots are embedded in the Word document (text-only export).');
-  if (!docxBuf) notes.push('No Word (.docx) document supplied — screenshots and step text come from the .axtr only.');
-  const axtrHasShots = actions.some(a => a.screenshotUri);
-  if (!axtrHasShots && docx.imageCount === 0) notes.push('The recording captured no screenshots (Recording.xml ScreenshotUri values are empty).');
-  if (docxBuf && !docxError && actions.length !== docx.steps.length) {
-    notes.push(`Step-count mismatch: recording has ${actions.length} action(s), Word has ${docx.steps.length} step(s) — alignment is by document order.`);
+  if (reproBuf && reproError) notes.push(`Client repro recording could not be parsed: ${reproError}`);
+  if (repro) {
+    notes.push(`Client repro recording mapped: ${repro.steps.length} client step(s), ${repro.imageCount} screenshot(s); ${matchedStepCount} correlated to a server (.axtr) action.`);
+  } else {
+    if (docxBuf && docxError) notes.push(`Word document could not be parsed: ${docxError}`);
+    if (docxBuf && !docxError && docx.imageCount === 0) notes.push('No screenshots are embedded in the Word document (text-only export).');
+    if (!docxBuf) notes.push('No client repro (.xml) or Word (.docx) supplied — screenshots and step text come from the .axtr only.');
+    const axtrHasShots = actions.some(a => a.screenshotUri);
+    if (!axtrHasShots && docx.imageCount === 0) notes.push('The recording captured no screenshots (Recording.xml ScreenshotUri values are empty).');
+    if (docxBuf && !docxError && actions.length !== docx.steps.length) {
+      notes.push(`Step-count mismatch: recording has ${actions.length} action(s), Word has ${docx.steps.length} step(s) — alignment is by document order.`);
+    }
   }
 
   // ── render HTML + MHTML ─────────────────────────────────────────────────────
   const html = renderHtml({
-    recording, forms, breakdown, flow, steps, bpmObjects, roleTuples,
+    recording, clientRecording, forms, breakdown, flow, steps, bpmObjects, roleTuples,
     enrichedForms, kbAvailable, enrichedRoles, secAvailable, notes,
-    fileName, generatedAt, actionCount: actions.length, screenshotCount: docx.imageCount,
+    fileName, generatedAt, actionCount: actions.length, screenshotCount,
   });
   const mhtml = buildMhtml({ title: `Task Recording — ${recording.name}`, html, resources });
 
   // ── XML contract serialization (validates against schemas/task-recording-document.xsd) ──
   const xml = buildTaskRecorderXml({
-    recording, forms, steps, bpmObjects, roleTuples,
+    recording, clientRecording, forms, steps, bpmObjects, roleTuples,
     enrichedForms, kbAvailable, enrichedRoles, secAvailable, notes,
-    fileName, generatedAt, actionCount: actions.length, screenshotCount: docx.imageCount,
+    fileName, generatedAt, actionCount: actions.length, screenshotCount,
   });
 
   // ── bounded structured payload ──────────────────────────────────────────────
@@ -313,10 +466,23 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
       action_count: actions.length,
     },
     step_count: steps.length,
-    screenshot_count: docx.imageCount,
-    screenshots_present: docx.imageCount > 0,
+    screenshot_count: screenshotCount,
+    screenshots_present: screenshotCount > 0,
+    client_recording: clientRecording ? {
+      session_id: clientRecording.session_id,
+      title: clientRecording.title,
+      host: clientRecording.host,
+      tenant: clientRecording.tenant,
+      company: clientRecording.company,
+      started_at: clientRecording.started_at,
+      ended_at: clientRecording.ended_at,
+      step_count: clientRecording.step_count,
+      screenshot_count: clientRecording.screenshot_count,
+      matched_step_count: matchedStepCount,
+    } : null,
     steps: steps.map(s => ({
       step: s.step,
+      source: s.source || 'recording',
       docx_text: s.docx_text,
       description: s.description,
       action_type: s.action_type,
@@ -325,6 +491,7 @@ export function buildTaskRecorderDocument(axtrBuf, docxBuf, opts = {}) {
       object_name: s.object_name,
       screenshot_count: s.screenshots.length,
       has_security: s.security.length > 0,
+      matched_action_count: s.matched_actions ? s.matched_actions.length : 0,
       texts_agree: s.texts_agree,
     })),
     forms_enriched: enrichedForms.map(f => ({
@@ -405,8 +572,24 @@ function renderHtml(m) {
   p('<table><tbody>' + ov.map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join('') + '</tbody></table>');
 
   const bd = Object.entries(m.breakdown).map(([k, v]) => `${escapeHtml(k)}: ${v}`).join(' &middot; ');
-  if (bd) p(`<p><strong>Action breakdown:</strong> ${bd}</p>`);
+  if (bd) p(`<p><strong>Server action breakdown (.axtr):</strong> ${bd}</p>`);
   if (m.flow.length > 1) p(`<p><strong>Navigation flow:</strong> ${m.flow.map(f => `<span class="pill">${escapeHtml(f)}</span>`).join(' → ')}</p>`);
+
+  // client repro recording (browser-side)
+  if (m.clientRecording) {
+    const c = m.clientRecording;
+    p('<h3>Client repro recording (browser)</h3>');
+    const cv = [
+      ['Session', c.session_id || ''],
+      ['Title', c.title || ''],
+      ['Severity', c.severity || ''],
+      ['Environment', [c.host, c.tenant ? `tenant ${c.tenant}` : '', c.company ? `company ${c.company}` : ''].filter(Boolean).join(' · ')],
+      ['Captured', [c.started_at, c.ended_at].filter(Boolean).join(' → ')],
+      ['Client steps / screenshots', `${c.step_count} / ${c.screenshot_count}`],
+      ['Extension version', c.extension_version || ''],
+    ];
+    p('<table><tbody>' + cv.map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(v)}</td></tr>`).join('') + '</tbody></table>');
+  }
 
   // forms visited
   if (m.forms.length) {
@@ -426,18 +609,43 @@ function renderHtml(m) {
   } else {
     for (const s of m.steps) {
       p('<div class="step">');
-      p(`<h3>Step ${s.step}: ${escapeHtml(s.description || s.docx_text || '(no description)')}</h3>`);
+      const srcTag = s.source === 'client' ? ' <span class="pill">client</span>' : '';
+      p(`<h3>Step ${s.step}: ${escapeHtml(s.description || s.docx_text || '(no description)')}${srcTag}</h3>`);
       const meta = [];
-      if (s.action_type) meta.push(`<li><strong>Action type:</strong> ${escapeHtml(s.action_type)}</li>`);
+      if (s.action_type) meta.push(`<li><strong>${s.source === 'client' ? 'Client action' : 'Action type'}:</strong> ${escapeHtml(s.action_type)}</li>`);
       if (s.target) meta.push(`<li><strong>Target:</strong> ${escapeHtml(s.target)}</li>`);
-      if (s.control_label || s.control_name) meta.push(`<li><strong>Control:</strong> ${escapeHtml(s.control_label || '')} <span class="mono">${escapeHtml(s.control_name || '')}</span>${s.control_type ? ` (${escapeHtml(s.control_type)})` : ''}</li>`);
+      const cl = s.client;
+      if (cl) {
+        if (cl.form_title) meta.push(`<li><strong>Form:</strong> ${escapeHtml(cl.form_title)}</li>`);
+        if (cl.url) meta.push(`<li><strong>URL:</strong> <span class="mono">${escapeHtml(cl.url)}</span></li>`);
+        if (cl.kind === 'edit') meta.push(`<li><strong>Value:</strong> ${escapeHtml(cl.old_value || '(empty)')} → ${escapeHtml(cl.new_value || '(empty)')}</li>`);
+        if (cl.message) meta.push(`<li><strong>Message:</strong> ${escapeHtml(cl.message)}</li>`);
+        if (cl.note) meta.push(`<li><strong>Note:</strong> ${escapeHtml(cl.note)}</li>`);
+        if (cl.ts) meta.push(`<li><strong>Timestamp:</strong> ${escapeHtml(cl.ts)}</li>`);
+      } else {
+        if (s.control_label || s.control_name) meta.push(`<li><strong>Control:</strong> ${escapeHtml(s.control_label || '')} <span class="mono">${escapeHtml(s.control_name || '')}</span>${s.control_type ? ` (${escapeHtml(s.control_type)})` : ''}</li>`);
+        if (s.global_id) meta.push(`<li><strong>GlobalId:</strong> <span class="mono">${escapeHtml(s.global_id)}</span></li>`);
+        if (s.docx_text && !s.texts_agree) meta.push(`<li class="muted">Word text differs: "${escapeHtml(s.docx_text)}"</li>`);
+      }
       if (s.object_name) meta.push(`<li><strong>Object:</strong> <span class="mono">${escapeHtml(s.object_name)}</span></li>`);
-      if (s.global_id) meta.push(`<li><strong>GlobalId:</strong> <span class="mono">${escapeHtml(s.global_id)}</span></li>`);
-      if (s.docx_text && !s.texts_agree) meta.push(`<li class="muted">Word text differs: "${escapeHtml(s.docx_text)}"</li>`);
       if (meta.length) p(`<ul class="meta-list">${meta.join('')}</ul>`);
 
       for (const shot of s.screenshots) {
         p(`<div class="shot"><img src="${escapeHtml(shot.content_location)}" alt="Screenshot for step ${s.step}"></div>`);
+      }
+
+      // correlated server-side .axtr action(s)
+      if (s.matched_actions && s.matched_actions.length) {
+        p('<p><strong>Correlated server action(s) (.axtr):</strong></p>');
+        p(htmlTable(s.matched_actions, [
+          { label: 'Seq', key: 'sequence' },
+          { label: 'Action', key: 'action_type' },
+          { label: 'Command', get: a => a.command_name || '' },
+          { label: 'Control', get: a => a.control || '' },
+          { label: 'Form', get: a => a.form || '' },
+        ]));
+      } else if (s.source === 'client') {
+        p('<p class="muted">No matching server action found in the .axtr for this client step.</p>');
       }
 
       if (s.security.length) {
