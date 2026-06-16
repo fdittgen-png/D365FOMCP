@@ -52,7 +52,7 @@ done
 npm test 2>&1 | tail -10
 ```
 
-Must show **554 pass, 0 fail** (or the current count — never lower than the previous deploy). If tests fail, stop and fix before deploying.
+Must show **948 pass, 0 fail** (or the current count — never lower than the previous deploy). If tests fail, stop and fix before deploying.
 
 ### 1d. Response contract validation
 
@@ -258,6 +258,44 @@ curl -X PUT "https://tis-d-mcpd365fo-func.scm.azurewebsites.net/api/vfs/data/d36
 | HTTP 502 | Worker OOM during build/merge | Restart function app. Reduce concurrent operations. |
 | `/upload/sas` returns 500 | `AzureWebJobsStorage` misconfigured | Check env var in Azure Portal → Function App → Configuration |
 | `prebuild-install` fails in deploy script | Network issue or Node version mismatch | Verify `--target 20.20.0` matches Azure Function runtime. Check proxy settings. |
+
+---
+
+## Session learnings (2026-06 — `local-deploy/Deploy.ps1` path)
+
+The one-shot orchestrator is `local-deploy/Deploy.ps1` (auto-discovers the Function App in the RG; phases: auth → optional Bicep → code zip-deploy → DB upload → roles → parallel health checks). Hard-won notes:
+
+- **Probe ARM-write capability before packaging.** The Trelleborg tenant *can* require an interactive Conditional-Access step-up (`acrs=p1`) for ARM writes, which a non-interactive subprocess can't satisfy — **but the step-up is often already active in the current `az` session**, so don't assume it'll fail. Probe cheaply first (it's the same ARM call the deploy makes for Kudu creds):
+  ```bash
+  az functionapp deployment list-publishing-credentials -g tis-d-mcpd365fo-rg -n tis-d-mcpd365fo-func --query publishingUserName -o tsv
+  ```
+  Returns a value → the deploy's ARM writes will work non-interactively, run it directly. Fails with a claims challenge → hand the exact `Deploy.ps1` command to the operator to run interactively (`! …`). Memory that "subprocess deploys always fail" is point-in-time — verify the live session.
+- **Confirm the app already exists** (`az functionapp list -g <rg>`) → it's a code refresh, not a first-time provision, so **don't** pass `-DeployInfra`. `-SkipRoles` is safe on an existing app (the Key Vault role is already assigned — another ARM write to skip).
+- **Default to code-only:** `.\local-deploy\Deploy.ps1 -SkipDb -SkipRoles`. `Deploy.ps1`'s zip-deploy runs with `--clean true` (wipes wwwroot before extract), so stale-wwwroot 404s aren't a risk on this path.
+- **NEVER blind-upload the `sec` DB.** Prod `sec` is maintained via the upload UI and is large (≈9.2 GB / ~19.5k records); a local `d365fo_sec.sqlite` is often a smaller/older snapshot — uploading it **regresses prod**. Before any `-Databases sec`, GET `/api/health` and compare `size_bytes`/`last_modified` to the local file. The usual *legitimate* DB upload is xref (prod often shows `xref healthy:false, size_bytes:0` — the known outage); fix it with `-SkipCode -SkipRoles -Databases xref`.
+
+---
+
+## Session learnings (2026-06-16 — KB rebuild + backoffice)
+
+- **`admin` is a reserved route segment on this host.** Every `/api/admin*` route 404s even when the function registers fine (verified: identical handler on route `backoffice` → 200, on `admin` → 404). The unified back-office page is served at **`/api/backoffice`** (`d365admin-pages.js`); the Sec/KB upload GET pages 302-redirect to `/api/backoffice#sec` / `#kb`. Don't resurrect `/api/admin`.
+- **Never rebuild the KB onto the live `d365fo_kb.sqlite` path.** The local stdio MCP server (`mcp-server-kb.js`) holds an open handle and the MCP host **respawns it the instant `releaseOutputLock` kills it**, so the final `writeFileSync` fails with `UNKNOWN` (errno -4094). Build to a **fresh path** and upload from there:
+  ```bash
+  KB_PACKAGES_PATHS="<MS PackagesLocalDirectory>;C:\Workspace\DEV\Metadata" \
+    node --max-old-space-size=8192 build/build-kb.js \
+    "<MS>;C:\Workspace\DEV\Metadata" "C:\Users\<u>\.claude\d365fo_kb_full.sqlite"
+  # ~4–5 min, ~1.1 GB. Then upload only the KB DB from the fresh path:
+  .\local-deploy\Deploy.ps1 -SkipCode -SkipRoles -Databases kb -KbDbPath "...\d365fo_kb_full.sqlite"
+  ```
+  KB upload via Kudu VFS is fast (~30 s for 1.1 GB) — the build is the slow part.
+- **`build/` must be in the Deploy.ps1 staged folders** (`src\azure, src\functions, www, config, build`). The KB custom-delta `/rebuild` endpoint imports `build/build-kb.js` + `build/merge-kb-custom.js` at runtime; without `build/` it 404s/throws on Azure. `sql.js` must be a **prod** dependency for the same reason.
+- **KB refresh paths:** (1) full pre-built `.sqlite` upload via `/api/backoffice` (KB tab, "Full" mode) or `Deploy.ps1 -Databases kb`; (2) **customizations delta** — upload a ZIP of just `C:\Workspace\DEV\Metadata` via the KB tab "delta" mode → server builds + ATTACH-merges. The delta path **requires the live KB at `schema_version` 1.1** (it fails closed otherwise) — so the first refresh after a schema bump must be a full upload.
+- **Verify the live MCP service directly** with a `tools/call` (no SDK needed); headers must include `Accept: application/json, text/event-stream`:
+  ```bash
+  curl -s -X POST "$BASE_URL/api/d365kb" \
+    -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"d365_raw_sql","arguments":{"sql":"SELECT value FROM kb_metadata WHERE key='\''schema_version'\''","format":"markdown"}}}'
+  ```
 
 ---
 

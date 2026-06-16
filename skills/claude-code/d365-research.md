@@ -29,6 +29,13 @@ If the initial search reveals specific relevant docs:
 
 If specific tables/classes mentioned:
 - `d365_lookup_table` or `d365_get_class_methods` for metadata detail
+- For **data entities**, `d365_get_entity_sources` returns the data sources, fields, AND entity-level X++ methods (`method_count` + list); `d365_get_class_methods` / `d365_get_method_source` also work on entities (`owner_type='entity'`).
+
+### KB coverage & efficiency notes
+- The KB indexes **Microsoft + customization models** (e.g. `iExtension`, `HISOL`, `LACCE`) together. Scope to custom code with `module_id` (e.g. `WHERE module_id='iExtension'`).
+- **Customizations are flagged:** `d365_lookup_table` reports `is_customized`, `custom_field_count`, `customization_modules`, and per-field `is_extension`/`source_module`. To list all custom fields/objects use `d365_raw_sql`, e.g. `SELECT table_name, field_name, source_module FROM fields WHERE is_extension=1`.
+- **Prefer `d365_raw_sql` for prefix/aggregate/bulk questions** ("all entities with prefix X", counts by module) — pass `format='markdown'` for readable tables or `format='toon'` for large uniform row sets. Reserve `d365_search` for fuzzy keyword discovery.
+- Entity methods are fully indexed (`methods` table, `owner_type='entity'`) — including methods added to standard MS entities via `AxDataEntityViewExtension`.
 
 ### Step 4: Code samples (if technical)
 If the topic involves development:

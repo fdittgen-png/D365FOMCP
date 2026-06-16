@@ -7,6 +7,8 @@ Analyze a D365 class: hierarchy, methods, extensions, callers, and extensibility
 
 ## Workflow
 
+> Note: `d365_get_class_methods` / `d365_get_method_source` resolve by object name across **classes, tables, and data entities** (`owner_type` is returned). For a data entity, `d365_get_entity_sources` is the richer entry point (data sources + fields + methods).
+
 ### Step 1: Gather all class data (parallel)
 Run ALL in parallel:
 - `d365_get_class_methods` with className = `$ARGUMENTS` — all method signatures

@@ -156,6 +156,19 @@ ANALYZE;
 sh -c "ls -lh /home/data/ && df -h /home"
 ```
 
+## Knowledge Base database (`/home/data/d365fo_kb.sqlite`, ~1.1 GB)
+
+The KB is **built locally and uploaded** (it can't be rebuilt on Azure — the raw
+MS metadata is tens of GB). Two refresh paths, both via the unified back-office
+page at **`/api/backoffice`** (KB tab) or programmatically:
+
+- **Full replace** — upload a pre-built `.sqlite`. `POST /api/d365kb/upload/sas` → PUT to the SAS blob URL → `POST /api/d365kb/upload/apply {job_id}` → poll `/api/d365kb/upload/status`. The server validates (`kb_metadata.build_date` + non-empty `tables`) before an atomic swap, so a bad file never replaces the live KB. Or just `Deploy.ps1 -SkipCode -SkipRoles -Databases kb -KbDbPath <file>`.
+- **Customizations delta** — upload a ZIP of `C:\Workspace\DEV\Metadata` only → `/api/d365kb/upload/rebuild` builds a custom-only KB and **ATTACH-merges** it additively (MS rows preserved, enum values unioned). Requires the live KB at `schema_version` 1.1.
+
+Building the full KB: **write to a fresh path, not the live `d365fo_kb.sqlite`** — the local `mcp-server-kb.js` respawns and re-locks it, failing the write (see the deploy skill). Set `KB_PACKAGES_PATHS` = MS `PackagesLocalDirectory` + `C:\Workspace\DEV\Metadata`.
+
+KB schema v1.1 captures customizations and entity methods: `fields.is_extension`/`source_module`, `tables.is_customized`, `data_entities.method_count`, and `methods` rows with `owner_type='entity'`. Query custom objects with `d365_raw_sql`, e.g. `SELECT * FROM fields WHERE is_extension=1`, or list entity methods via `d365_get_entity_sources` / `d365_get_class_methods`.
+
 ## Files in this project for DB admin
 
 | File | Purpose |
