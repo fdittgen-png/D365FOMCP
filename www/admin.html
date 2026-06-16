@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D365FO MCP — Backoffice</title>
+<style>
+  :root {
+    --accent:#1f3a5f; --accent-strong:#16294a; --bg:#fff; --shell:#f4f6f9;
+    --border:#dbe1e8; --text:#1c2733; --muted:#5b6b7c;
+    --ok:#1e7d45; --ok-bg:#e6f4ec; --warn:#8a5a00; --warn-bg:#fdf3df;
+    --bad:#a4262c; --bad-bg:#fde7e9;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+         background:var(--shell); color:var(--text); font-size:15px; line-height:1.5; }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  header { background:var(--bg); border-bottom:1px solid var(--border); padding:14px 28px;
+           display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:16px; font-weight:600; color:var(--accent); }
+  header .meta { font-size:12px; color:var(--muted); }
+  nav { background:var(--bg); border-bottom:1px solid var(--border); padding:0 28px; display:flex; gap:4px; flex-wrap:wrap; }
+  nav button { background:none; border:none; border-bottom:2px solid transparent; padding:12px 14px;
+               font:inherit; font-size:13px; color:var(--muted); cursor:pointer; }
+  nav button:hover { color:var(--text); }
+  nav button.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
+  main { max-width:1100px; margin:0 auto; padding:24px; }
+  section.tab { display:none; } section.tab.active { display:block; }
+  h2 { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:12px; }
+  .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); }
+  .card { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:18px 20px; }
+  .card-name { font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin-bottom:6px; font-weight:600; }
+  .card-value { font-size:22px; font-weight:600; line-height:1.15; margin-bottom:4px; word-break:break-word; }
+  .card-sub { font-size:12px; color:var(--muted); }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+  .pill.ok { background:var(--ok-bg); color:var(--ok); } .pill.bad { background:var(--bad-bg); color:var(--bad); }
+  .status-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px; font-size:13px; color:var(--muted); }
+  .status-row .dot { width:8px; height:8px; border-radius:50%; background:#b3b9c2; display:inline-block; }
+  .status-row.ok .dot { background:var(--ok); } .status-row.bad .dot { background:var(--bad); }
+  .status-row .live { color:var(--text); font-weight:500; }
+  table.health { width:100%; border-collapse:collapse; background:var(--bg); border:1px solid var(--border); border-radius:6px; overflow:hidden; font-size:13px; }
+  table.health th, table.health td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--border); }
+  table.health th { background:var(--shell); color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.05em; }
+  .placeholder { background:var(--bg); border:1px dashed var(--border); border-radius:6px; padding:28px; text-align:center; color:var(--muted); font-size:14px; }
+  .cardbox { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:22px 24px; margin-bottom:16px; }
+  .cardbox h3 { font-size:14px; margin-bottom:12px; font-weight:600; }
+  .help-list { font-size:13px; color:var(--muted); padding-left:20px; } .help-list li { margin-bottom:4px; }
+  .help-list code { background:var(--shell); padding:2px 6px; border-radius:3px; font-size:12px; font-family:'Cascadia Code','Consolas',monospace; }
+  .db-info { display:flex; gap:20px; flex-wrap:wrap; font-size:13px; color:var(--muted); background:var(--shell); border:1px solid var(--border); border-radius:6px; padding:12px 16px; margin-bottom:16px; }
+  .db-info .label { font-weight:600; color:var(--text); }
+  .upload-area { border:2px dashed var(--border); border-radius:6px; padding:32px 20px; text-align:center; cursor:pointer; transition:all .15s; background:var(--shell); }
+  .upload-area:hover, .upload-area.dragover { border-color:var(--accent); background:#eef2f7; }
+  .upload-area .filename { font-weight:600; color:var(--accent); margin-top:8px; }
+  input[type="file"] { display:none; }
+  .btn { display:inline-block; background:var(--accent); color:#fff; border:none; padding:9px 22px; border-radius:4px; font-size:14px; font-weight:600; cursor:pointer; font-family:inherit; }
+  .btn:hover { background:var(--accent-strong); } .btn:disabled { background:#9aa6b6; cursor:not-allowed; }
+  .btn-row { margin-top:14px; }
+  .status { margin-top:14px; padding:14px 16px; border-radius:4px; display:none; font-size:13px; border:1px solid var(--border); }
+  .status.info { display:block; background:#e8eef6; border-color:#b9c9e0; color:#16294a; }
+  .status.success { display:block; background:var(--ok-bg); border-color:#b9dec7; color:#0f5b30; }
+  .status.error { display:block; background:var(--bad-bg); border-color:#f0b0b3; color:#82071e; }
+  .status h4 { font-size:13px; margin-bottom:6px; font-weight:600; }
+  pre { background:var(--shell); padding:10px 12px; border-radius:4px; overflow-x:auto; font-family:'Cascadia Code','Consolas',monospace; font-size:12px; line-height:1.5; margin-top:8px; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid #fff; border-top-color:transparent; border-radius:50%; animation:spin .6s linear infinite; vertical-align:-2px; margin-right:4px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .modes label { display:block; font-size:13px; margin-bottom:6px; }
+  .signin { background:var(--warn-bg); border:1px solid #e7c781; color:#6a5300; border-radius:6px; padding:12px 16px; margin-bottom:16px; font-size:13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>D365FO MCP — Backoffice</h1>
+  <span class="meta" id="serverMeta"></span>
+</header>
+
+<nav id="nav">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="health">Database health</button>
+  <button data-tab="sec">Security upload</button>
+  <button data-tab="kb">Knowledge Base upload</button>
+</nav>
+
+<main>
+
+  <!-- ── Overview ── -->
+  <section class="tab active" id="tab-overview">
+    <h2>Database status</h2>
+    <div class="status-row" id="statusRow"><span class="dot"></span><span class="live" id="statusText">Loading…</span><span id="statusUpdated"></span></div>
+    <div id="cards" class="grid"><div class="placeholder">Fetching health data…</div></div>
+  </section>
+
+  <!-- ── DB health ── -->
+  <section class="tab" id="tab-health">
+    <h2>Per-database detail</h2>
+    <div id="healthDetail"><div class="placeholder">Fetching health data…</div></div>
+  </section>
+
+  <!-- ── Security upload ── -->
+  <section class="tab" id="tab-sec">
+    <h2>Security database update</h2>
+    <div id="secSignin"></div>
+    <div class="db-info" id="secDbInfo"><span style="color:#8b949e">Loading current database info…</span></div>
+    <div class="cardbox">
+      <h3>Expected ZIP contents</h3>
+      <ul class="help-list">
+        <li><strong>Required (DMF):</strong> <code>System Security Role.xml</code>, <code>System Security Sub Role V2.xml</code>, <code>System Security Role Duty.xml</code></li>
+        <li><strong>Optional (AOT):</strong> security XMLs in an <code>aot/</code> subdirectory — may include <em>both</em> Microsoft-standard and customization-model (<code>iExtension</code>, <code>HISOL</code>, …) security objects; all are merged.</li>
+      </ul>
+    </div>
+    <div class="cardbox">
+      <div class="upload-area" id="secDrop"><p>Drag &amp; drop a <strong>.zip</strong> here, or click to browse</p><div id="secFileName" class="filename"></div></div>
+      <input type="file" id="secFile" accept=".zip">
+      <div class="btn-row"><button class="btn" id="secBtn" disabled>Upload &amp; Rebuild Security DB</button></div>
+      <div id="secStatus" class="status"></div>
+    </div>
+  </section>
+
+  <!-- ── KB upload ── -->
+  <section class="tab" id="tab-kb">
+    <h2>Knowledge Base update</h2>
+    <div id="kbSignin"></div>
+    <div class="db-info" id="kbDbInfo"><span style="color:#8b949e">Loading current database info…</span></div>
+    <div class="cardbox modes">
+      <h3>Update mode</h3>
+      <label><input type="radio" name="kbmode" value="full" checked> <strong>Full KB database</strong> — upload a complete pre-built <code>.sqlite</code>; validated then swapped in.</label>
+      <label><input type="radio" name="kbmode" value="delta"> <strong>Customizations delta</strong> — upload a <code>.zip</code> of customization metadata (e.g. <code>C:\Workspace\DEV\Metadata</code>); built and <em>additively merged</em> into the live KB (Microsoft objects preserved).</label>
+    </div>
+    <div class="cardbox">
+      <div class="upload-area" id="kbDrop"><p id="kbHint">Drag &amp; drop the <strong>.sqlite</strong> file here, or click to browse</p><p style="font-size:12px;color:#8b949e">(streamed to storage — large files supported)</p><div id="kbFileName" class="filename"></div></div>
+      <input type="file" id="kbFile" accept=".sqlite">
+      <div class="btn-row"><button class="btn" id="kbBtn" disabled>Upload &amp; Update KB</button></div>
+      <div id="kbStatus" class="status"></div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+"use strict";
+
+// ── Tab routing ──
+const tabs = document.querySelectorAll('section.tab');
+const navBtns = document.querySelectorAll('#nav button');
+function showTab(name) {
+  tabs.forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+  navBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
+}
+navBtns.forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+const initial = (location.hash || '#overview').slice(1);
+showTab(['overview','health','sec','kb'].includes(initial) ? initial : 'overview');
+
+// ── Formatters ──
+function fmtBytes(b){ if(b==null||!isFinite(b))return '—'; const u=['B','KB','MB','GB','TB']; let i=0,v=b; while(v>=1024&&i<u.length-1){v/=1024;i++;} return v.toFixed(v>=100||i===0?0:1)+' '+u[i]; }
+function fmtNum(n){ return (n==null||!isFinite(n))?'—':n.toLocaleString('en-GB'); }
+function fmtDate(iso){ if(!iso)return '—'; const d=new Date(iso); return isNaN(d)?'—':d.toLocaleString('en-GB',{dateStyle:'medium',timeStyle:'short'}); }
+function dbName(n){ return ({kb:'Knowledge Base',xref:'Cross-Reference',sec:'Security'})[n]||n; }
+
+// ── Health (shared by Overview + DB health + upload info panels) ──
+let lastReport = null;
+function renderOverview(report) {
+  const cards = document.getElementById('cards');
+  const row = document.getElementById('statusRow');
+  const txt = document.getElementById('statusText');
+  const upd = document.getElementById('statusUpdated');
+  if (!report || !Array.isArray(report.databases)) { cards.innerHTML = '<div class="placeholder">No data.</div>'; return; }
+  cards.innerHTML = report.databases.map(db => {
+    const cls = db.healthy ? 'ok' : 'bad';
+    return `<div class="card"><div class="card-name">${dbName(db.name)} <span class="pill ${cls}">${db.healthy?'Healthy':'Unavailable'}</span></div>
+      <div class="card-value">${fmtBytes(db.size_bytes)}</div>
+      <div class="card-sub">Records: ${fmtNum(db.record_count)}</div>
+      <div class="card-sub">Built: ${fmtDate(db.last_modified)}</div></div>`;
+  }).join('');
+  const ok = report.databases.every(d => d.healthy);
+  row.className = 'status-row ' + (ok ? 'ok' : 'bad');
+  txt.textContent = ok ? 'All databases healthy' : 'One or more databases unavailable';
+  upd.textContent = '· refreshed ' + fmtDate(report.server_time);
+}
+function renderHealthDetail(report) {
+  const el = document.getElementById('healthDetail');
+  if (!report || !Array.isArray(report.databases)) { el.innerHTML = '<div class="placeholder">No data.</div>'; return; }
+  el.innerHTML = '<table class="health"><thead><tr><th>Database</th><th>Status</th><th>Size</th><th>Records</th><th>Built</th></tr></thead><tbody>'
+    + report.databases.map(db => `<tr><td>${dbName(db.name)} <span style="color:#8b949e">(${db.name})</span></td>
+        <td><span class="pill ${db.healthy?'ok':'bad'}">${db.healthy?'Healthy':'Unavailable'}</span></td>
+        <td>${fmtBytes(db.size_bytes)}</td><td>${fmtNum(db.record_count)}</td><td>${fmtDate(db.last_modified)}</td></tr>`).join('')
+    + '</tbody></table>';
+}
+function renderDbInfoPanels(report) {
+  const find = n => (report.databases || []).find(d => d.name === n);
+  const panel = (el, db) => {
+    if (!db) { el.innerHTML = '<span style="color:#8b949e">No database loaded.</span>'; return; }
+    el.innerHTML = `<span class="item"><span class="label">Status:</span> ${db.healthy?'healthy':'unavailable'}</span>`
+      + `<span class="item"><span class="label">Built:</span> ${fmtDate(db.last_modified)}</span>`
+      + `<span class="item"><span class="label">Records:</span> ${fmtNum(db.record_count)}</span>`
+      + `<span class="item"><span class="label">Size:</span> ${fmtBytes(db.size_bytes)}</span>`;
+  };
+  panel(document.getElementById('secDbInfo'), find('sec'));
+  panel(document.getElementById('kbDbInfo'), find('kb'));
+}
+async function refreshHealth() {
+  try {
+    const resp = await fetch('/api/health', { credentials:'same-origin', cache:'no-store' });
+    if (resp.status === 401) {
+      const msg = '<div class="placeholder">Sign-in required. <a href="/.auth/login/aad?post_login_redirect_uri=/api/backoffice">Sign in</a> to load data.</div>';
+      document.getElementById('cards').innerHTML = msg;
+      document.getElementById('healthDetail').innerHTML = msg;
+      document.getElementById('statusText').textContent = 'Not signed in';
+      return;
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    lastReport = await resp.json();
+    renderOverview(lastReport); renderHealthDetail(lastReport); renderDbInfoPanels(lastReport);
+  } catch (e) {
+    document.getElementById('cards').innerHTML = '<div class="placeholder">Failed to load: ' + (e.message||e) + '</div>';
+  }
+}
+refreshHealth(); setInterval(refreshHealth, 30000);
+
+// ── Generic drop-zone wiring ──
+function wireDrop(dropId, inputId, nameId, btnId, ext, onReady) {
+  const drop = document.getElementById(dropId), input = document.getElementById(inputId),
+        nameEl = document.getElementById(nameId), btn = document.getElementById(btnId);
+  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragover'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
+  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('dragover');
+    if (e.dataTransfer.files.length && e.dataTransfer.files[0].name.endsWith(currentExt())) { input.files = e.dataTransfer.files; sel(); } });
+  input.addEventListener('change', sel);
+  function currentExt(){ return typeof ext === 'function' ? ext() : ext; }
+  function sel(){ const f = input.files[0]; if (f){ nameEl.textContent = f.name + ' (' + (f.size/(1024*1024)).toFixed(1) + ' MB)'; btn.disabled = false; } }
+  return { drop, input, nameEl, btn, currentExt };
+}
+function setStatus(id, cls, html){ const el = document.getElementById(id); el.className = 'status ' + cls; el.innerHTML = html; }
+
+// ── Security upload (simple multipart POST) ──
+const sec = wireDrop('secDrop','secFile','secFileName','secBtn','.zip');
+sec.btn.addEventListener('click', async () => {
+  const f = sec.input.files[0]; if (!f) return;
+  sec.btn.disabled = true; sec.btn.innerHTML = '<span class="spinner"></span> Building…';
+  setStatus('secStatus','info','<h4>Processing</h4>Uploading ZIP and rebuilding the security database…');
+  try {
+    const fd = new FormData(); fd.append('zipfile', f);
+    const r = await fetch('/api/d365sec/upload', { method:'POST', body:fd });
+    const data = await r.json();
+    if (r.ok) { setStatus('secStatus','success','<h4>Security database rebuilt</h4><pre>'+JSON.stringify(data,null,2)+'</pre>'); refreshHealth(); }
+    else setStatus('secStatus','error','<h4>'+(r.status===403?'Access denied':'Build failed')+'</h4><pre>'+JSON.stringify(data,null,2)+'</pre>');
+  } catch (e) { setStatus('secStatus','error','<h4>Error</h4><p>'+e.message+'</p>'); }
+  finally { sec.btn.disabled = false; sec.btn.textContent = 'Upload & Rebuild Security DB'; }
+});
+
+// ── KB upload (SAS async; full swap or customizations delta) ──
+function kbMode(){ const r = document.querySelector('input[name="kbmode"]:checked'); return r?r.value:'full'; }
+const kb = wireDrop('kbDrop','kbFile','kbFileName','kbBtn', () => kbMode()==='delta'?'.zip':'.sqlite');
+document.querySelectorAll('input[name="kbmode"]').forEach(r => r.addEventListener('change', () => {
+  const delta = kbMode()==='delta';
+  kb.input.accept = delta ? '.zip' : '.sqlite';
+  document.getElementById('kbHint').innerHTML = 'Drag &amp; drop the <strong>'+(delta?'.zip':'.sqlite')+'</strong> file here, or click to browse';
+  kb.input.value = ''; document.getElementById('kbFileName').textContent = ''; kb.btn.disabled = true;
+}));
+async function kbAsyncUpload(file) {
+  setStatus('kbStatus','info','<h4>Step 1/4: Requesting upload URL…</h4>');
+  const sasResp = await fetch('/api/d365kb/upload/sas?filename=' + encodeURIComponent(file.name));
+  const sas = await sasResp.json(); if (!sasResp.ok) throw new Error(sas.error || 'Failed to get upload URL');
+  setStatus('kbStatus','info','<h4>Step 2/4: Uploading to Azure Storage…</h4><p>'+(file.size/(1024*1024)).toFixed(0)+' MB — may take several minutes. Do not close this page.</p>');
+  const put = await fetch(sas.upload_url, { method:'PUT', headers:{'x-ms-blob-type':'BlockBlob','Content-Type':'application/octet-stream'}, body:file });
+  if (!put.ok) throw new Error('Blob upload failed: HTTP ' + put.status);
+  const delta = kbMode()==='delta';
+  const applyPath = delta ? '/api/d365kb/upload/rebuild' : '/api/d365kb/upload/apply';
+  setStatus('kbStatus','info','<h4>Step 3/4: '+(delta?'Building &amp; merging customizations':'Validating &amp; swapping database')+'…</h4>');
+  const ap = await fetch(applyPath, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ job_id: sas.job_id }) });
+  const apData = await ap.json(); if (!ap.ok) throw new Error(apData.error || 'Apply failed');
+  for (let i=0;i<120;i++) {
+    await new Promise(r=>setTimeout(r,5000));
+    const pr = await fetch('/api/d365kb/upload/status?job_id=' + sas.job_id);
+    const poll = await pr.json();
+    if (poll.status==='completed') return poll;
+    if (poll.status==='failed') throw new Error(poll.error || 'Update failed');
+    setStatus('kbStatus','info','<h4>Step 3/4: '+(poll.progress||poll.status)+'</h4>');
+  }
+  throw new Error('Update timed out after 10 minutes');
+}
+kb.btn.addEventListener('click', async () => {
+  const f = kb.input.files[0]; if (!f) return;
+  kb.btn.disabled = true; kb.btn.innerHTML = '<span class="spinner"></span> Working…';
+  try {
+    const poll = await kbAsyncUpload(f);
+    setStatus('kbStatus','success','<h4>Step 4/4: KB updated successfully</h4><pre>'+JSON.stringify(poll.result,null,2)+'</pre>'); refreshHealth();
+  } catch (e) { setStatus('kbStatus','error','<h4>Error</h4><p>'+e.message+'</p>'); }
+  finally { kb.btn.disabled = false; kb.btn.textContent = 'Upload & Update KB'; }
+});
+</script>
+
+</body>
+</html>

@@ -1,17 +1,22 @@
 /**
- * Azure Function: admin HTML pages (index, db-health, upload).
+ * Azure Function: unified back-office page.
  *
- * Serves the static back-office pages from `www/` behind an Easy Auth gate.
- * Mirrors the load-at-startup pattern used by `d365taskrecorder.js`.
+ * Serves a single consolidated HTML page (`www/admin.html`) that contains every
+ * back-office surface as in-page tabs: Overview, Database health, Security
+ * upload, and Knowledge Base upload. The page is fully client-side — it reads
+ * /api/health for status and posts to the existing upload endpoints — so one
+ * static document replaces the previous four separate pages.
  *
- * Routes:
- *   /api/admin                — dashboard (www/index.html)
- *   /api/admin/db-health      — DB health detail (www/db-health.html)
- *   /api/admin/upload         — Sec database upload (www/upload.html)
+ * Route:
+ *   /api/backoffice            — the single back-office page (deep links select a
+ *                                tab via the URL hash, e.g. /api/backoffice#kb)
  *
- * The Sec upload POST endpoint (`/api/d365sec/upload`) is unchanged; this
- * module only owns the GET-form for the upload page now that the inline
- * HTML has been extracted.
+ * NB: `/api/admin` is intentionally NOT used — the Functions host reserves the
+ * `admin` path segment, so routes under it return 404 regardless of
+ * registration (verified live). `backoffice` is the working canonical route.
+ *
+ * The upload POST endpoints live in d365sec-upload.js / d365kb-upload.js and are
+ * unchanged; this module only owns the GET page.
  */
 
 import { app } from '@azure/functions';
@@ -23,7 +28,6 @@ import { decideAdminAccess, getAuthUser, isEasyAuthEnabled } from '../azure/admi
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const wwwDir = join(__dirname, '..', '..', 'www');
 
-/** Load an HTML file at startup. Falls back to an inline error page if missing. */
 function loadHtml(name) {
   try {
     return readFileSync(join(wwwDir, name), 'utf8');
@@ -34,93 +38,30 @@ function loadHtml(name) {
   }
 }
 
-const PAGES = {
-  index: loadHtml('index.html'),
-  dbHealth: loadHtml('db-health.html'),
-};
+const ADMIN_HTML = loadHtml('admin.html');
 
-function htmlResponse(body) {
-  return {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'no-referrer',
-    },
-    body,
-  };
-}
-
-function makePageHandler(html, redirectTarget) {
+function pageHandler(redirectTarget) {
   return async (request) => {
     const user = getAuthUser(request);
     const easyAuth = isEasyAuthEnabled();
     const rejection = decideAdminAccess({ user, easyAuth, wantsHtml: true, redirectTarget });
     if (rejection) return rejection;
-    return htmlResponse(html);
+    return {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Referrer-Policy': 'no-referrer',
+      },
+      body: ADMIN_HTML,
+    };
   };
 }
 
-app.http('d365admin-index', {
+app.http('d365backoffice', {
   methods: ['GET'],
-  route: 'admin',
+  route: 'backoffice',
   authLevel: 'anonymous',
-  handler: makePageHandler(PAGES.index, '/api/admin'),
-});
-
-app.http('d365admin-db-health', {
-  methods: ['GET'],
-  route: 'admin/db-health',
-  authLevel: 'anonymous',
-  handler: makePageHandler(PAGES.dbHealth, '/api/admin/db-health'),
-});
-
-// /api/admin/upload — redirect to the existing sec upload endpoint.
-// The Sec upload page uses dynamic placeholders for the RBAC auth bar and
-// live DB info, so we don't duplicate the rendering pipeline here. The
-// existing endpoint at /api/d365sec/upload already serves the static
-// `www/upload.html` template with the placeholders substituted per-request.
-app.http('d365admin-upload', {
-  methods: ['GET'],
-  route: 'admin/upload',
-  authLevel: 'anonymous',
-  handler: async (request) => {
-    const user = getAuthUser(request);
-    const easyAuth = isEasyAuthEnabled();
-    const rejection = decideAdminAccess({
-      user,
-      easyAuth,
-      wantsHtml: true,
-      redirectTarget: '/api/admin/upload',
-    });
-    if (rejection) return rejection;
-    return {
-      status: 302,
-      headers: { Location: '/api/d365sec/upload' },
-    };
-  },
-});
-
-// /api/admin/kb-upload — redirect to the KB database upload endpoint, which
-// (like the Sec upload) serves www/kb-upload.html with per-request placeholders.
-app.http('d365admin-kb-upload', {
-  methods: ['GET'],
-  route: 'admin/kb-upload',
-  authLevel: 'anonymous',
-  handler: async (request) => {
-    const user = getAuthUser(request);
-    const easyAuth = isEasyAuthEnabled();
-    const rejection = decideAdminAccess({
-      user,
-      easyAuth,
-      wantsHtml: true,
-      redirectTarget: '/api/admin/kb-upload',
-    });
-    if (rejection) return rejection;
-    return {
-      status: 302,
-      headers: { Location: '/api/d365kb/upload' },
-    };
-  },
+  handler: pageHandler('/api/backoffice'),
 });

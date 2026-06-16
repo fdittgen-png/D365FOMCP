@@ -621,9 +621,9 @@ export function registerKbTools(server, db) {
     'd365_get_class_methods',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get method signatures (and optionally full X++ source code) for a D365FO class or table. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get method signatures (and optionally full X++ source code) for a D365FO class, table, or data entity. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-        name: z.string().min(1).max(500).describe('Class or table name'),
+        name: z.string().min(1).max(500).describe('Class, table, or data entity name'),
         filter: z.string().min(1).max(500).optional().describe('Optional filter on method name (LIKE pattern)'),
         include_source: z.boolean().optional().default(false).describe('If true, include full X++ source code for each method'),
         limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results (default 100)'),
@@ -736,9 +736,9 @@ export function registerKbTools(server, db) {
     'd365_get_method_source',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get the full X++ source code for a specific method on a class or table. Use this for targeted code analysis when you know the exact method name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get the full X++ source code for a specific method on a class, table, or data entity. Use this for targeted code analysis when you know the exact method name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      owner_name: z.string().min(1).max(500).describe('Class or table name'),
+      owner_name: z.string().min(1).max(500).describe('Class, table, or data entity name'),
       method_name: z.string().min(1).max(500).describe('Method name'),
     },
       outputSchema: d365GetMethodSourceOutput.shape,
@@ -965,7 +965,7 @@ export function registerKbTools(server, db) {
     'd365_get_entity_sources',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get data source chain and fields for a D365FO data entity. Shows the primary table and OData name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get data source chain, fields, and entity-level X++ methods for a D365FO data entity. Shows the primary table, OData name, and the methods defined on the entity (postLoad, mapEntityToDataSource, validate*, OData actions, …). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: { entity_name: z.string().min(1).max(500).describe('Data entity name') },
       outputSchema: d365GetEntitySourcesOutput.shape,
     },
@@ -994,6 +994,20 @@ export function registerKbTools(server, db) {
         console.error('[kb-tools:d365_get_entity_sources fields]', err);
       }
 
+      // Entity-level methods. Derived from the methods table (owner_type='entity')
+      // so the count is correct without depending on the data_entities.method_count
+      // column, which is absent on KB databases built before this feature.
+      let methodRows = [];
+      try {
+        methodRows = q(
+          `SELECT method_name, signature, is_static FROM methods
+           WHERE owner_type = 'entity' AND owner_name = ? COLLATE NOCASE ORDER BY is_static DESC, method_name`,
+          [r.entity_name]
+        );
+      } catch (err) {
+        console.error('[kb-tools:d365_get_entity_sources methods]', err);
+      }
+
       const typed = {
         entity_name: r.entity_name,
         module_id: r.module_id ?? null,
@@ -1010,6 +1024,12 @@ export function registerKbTools(server, db) {
           data_field: f.data_field ?? null,
           data_source: f.data_source ?? null,
           is_mandatory: toNum(f.is_mandatory),
+        })),
+        method_count: methodRows.length,
+        methods: methodRows.map(m => ({
+          method_name: m.method_name,
+          signature: m.signature ?? null,
+          is_static: Boolean(m.is_static),
         })),
       };
 
@@ -1032,6 +1052,21 @@ export function registerKbTools(server, db) {
         })),
         ['Field', 'DataField', 'DataSource', 'Mand'],
       );
+
+      out += `\n\n## Methods (${typed.method_count})\n`;
+      if (typed.methods.length > 0) {
+        out += formatMarkdownTable(
+          typed.methods.map(m => ({
+            Method: m.method_name,
+            Static: m.is_static ? 'Y' : 'N',
+            Signature: m.signature ? m.signature.substring(0, 200) : '',
+          })),
+          ['Method', 'Static', 'Signature'],
+        );
+        out += `\n\n_Use \`d365_get_class_methods\` (or \`d365_get_method_source\`) with \`include_source\` for the full X++ body._`;
+      } else {
+        out += '_No entity methods._';
+      }
 
       return structuredResult(typed, out);
     }

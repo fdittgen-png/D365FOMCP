@@ -378,6 +378,15 @@ export const d365GetEntitySourcesOutput = z.object({
   config_key: z.string().nullable(),
   field_count: z.number(),
   entity_fields: z.array(d365EntityFieldSchema),
+  // Entity-level X++ methods (empty on KB databases built before entity-method
+  // extraction was added). Use d365_get_class_methods with include_source for
+  // the full X++ body of any method.
+  method_count: z.number(),
+  methods: z.array(z.object({
+    method_name: z.string(),
+    signature: z.string().nullable(),
+    is_static: z.boolean(),
+  })),
 });
 
 // d365_sql_template — SQL templates

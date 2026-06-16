@@ -285,56 +285,15 @@ async function runRebuildAsync(jobId, context) {
   }
 }
 
-// ── GET /api/d365kb/upload — form ────────────────────────────────────────────
+// ── GET /api/d365kb/upload — now a tab on the unified back-office page ────────
+// Redirect for back-compat; the SAS/apply/rebuild/status POST endpoints below
+// are unchanged and are what the unified page (and PowerAutomate) call.
 
 app.http('d365kb-upload', {
   methods: ['GET'],
   route: 'd365kb/upload',
   authLevel: 'anonymous',
-  handler: async (request) => {
-    const user = getAuthUser(request);
-    const easyAuth = isEasyAuthEnabled();
-
-    let authBarHtml;
-    let formAllowed = false;
-    if (!easyAuth && !user) {
-      formAllowed = true;
-      authBarHtml = `<div class="auth-bar signed-in"><span style="opacity:0.7">Authentication not configured — uploads allowed without sign-in. Enable Easy Auth for production use.</span></div>`;
-    } else if (!user) {
-      authBarHtml = `<div class="auth-bar signed-out">Sign in required. <a href="/.auth/login/aad?post_login_redirect_uri=/api/d365kb/upload">Sign in with Azure AD</a> (Owner or Contributor role needed to upload).</div>`;
-    } else {
-      const authorized = await isOwnerOrContributor(user.principalId);
-      if (authorized === true) {
-        formAllowed = true;
-        authBarHtml = `<div class="auth-bar signed-in">Signed in as <strong>${user.principalName}</strong></div>`;
-      } else if (authorized === false) {
-        authBarHtml = `<div class="auth-bar denied">Access denied for <strong>${user.principalName}</strong>. Owner or Contributor role on the resource group is required.</div>`;
-      } else {
-        formAllowed = true;
-        authBarHtml = `<div class="auth-bar signed-in">Signed in as <strong>${user.principalName}</strong> <span style="opacity:0.7">(RBAC check unavailable — managed identity not configured)</span></div>`;
-      }
-    }
-
-    const info = readKbInfo(getKbDb());
-    let dbInfoHtml;
-    if (info.build_date) {
-      const fmt = (() => { try { return new Date(info.build_date).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC'; } catch { return info.build_date; } })();
-      dbInfoHtml = `<span class="item"><span class="label">Last updated:</span> ${fmt}</span>`
-        + `<span class="item"><span class="label">Version:</span> ${info.d365fo_version || '?'}</span>`
-        + `<span class="item"><span class="label">Tables:</span> ${info.tables ?? '?'}</span>`
-        + `<span class="item"><span class="label">Customizations:</span> ${info.has_customizations === '1' ? 'yes' : 'no'}</span>`;
-    } else {
-      dbInfoHtml = '<span style="color:#8b949e">No KB database loaded yet.</span>';
-    }
-
-    const html = KB_UPLOAD_HTML
-      .replace('{{AUTH_BAR}}', authBarHtml)
-      .replace('{{DB_INFO}}', dbInfoHtml)
-      .replace('{{UPLOAD_DISABLED}}', formAllowed ? '' : 'disabled')
-      .replace(/\{\{INPUT_DISABLED\}\}/g, formAllowed ? '' : 'disabled');
-
-    return { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }, body: html };
-  },
+  handler: async () => ({ status: 302, headers: { Location: '/api/backoffice#kb' } }),
 });
 
 // ── GET /api/d365kb/upload/sas ───────────────────────────────────────────────

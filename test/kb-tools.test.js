@@ -1709,3 +1709,61 @@ describe('d365_lookup_table — customization provenance', () => {
     assert.match(res.content[0].text, /Customized: 1 custom field/);
   });
 });
+
+// -- Entity methods (queryable via entity-sources + get_class_methods) --------
+
+describe('entity methods', () => {
+  let edb, tools;
+
+  before(async () => {
+    edb = new Database(':memory:');
+    edb.exec(`
+      CREATE TABLE data_entities (entity_name TEXT PRIMARY KEY, module_id TEXT, label TEXT,
+        public_name TEXT, public_collection TEXT, is_public INTEGER, primary_table TEXT,
+        staging_table TEXT, config_key TEXT, file_path TEXT, method_count INTEGER DEFAULT 0);
+      CREATE TABLE entity_fields (entity_name TEXT, field_name TEXT, data_field TEXT, data_source TEXT, is_mandatory INTEGER, PRIMARY KEY(entity_name, field_name));
+      CREATE TABLE methods (owner_type TEXT, owner_name TEXT, method_name TEXT, signature TEXT, is_static INTEGER, source_code TEXT, PRIMARY KEY(owner_type, owner_name, method_name));
+      CREATE TABLE classes (class_name TEXT PRIMARY KEY, module_id TEXT, extends_class TEXT, implements_list TEXT, is_abstract INTEGER, method_count INTEGER, file_path TEXT);
+
+      INSERT INTO data_entities (entity_name, module_id, is_public, primary_table, method_count)
+        VALUES ('TOC_Basware_PurchaseConfirmationHeaderEntity','iExtension',1,'PurchTable',4);
+      INSERT INTO entity_fields VALUES ('TOC_Basware_PurchaseConfirmationHeaderEntity','PurchId','PurchId','PurchTable',1);
+      INSERT INTO methods VALUES
+        ('entity','TOC_Basware_PurchaseConfirmationHeaderEntity','insertEntityDataSource','public boolean insertEntityDataSource(DataEntityRuntimeContext _ctx)',0,'public boolean insertEntityDataSource(...){ return true; }'),
+        ('entity','TOC_Basware_PurchaseConfirmationHeaderEntity','updateEntityDataSource','public boolean updateEntityDataSource(...)',0,'...'),
+        ('entity','TOC_Basware_PurchaseConfirmationHeaderEntity','deleteEntityDataSource','public boolean deleteEntityDataSource(...)',0,'...'),
+        ('entity','TOC_Basware_PurchaseConfirmationHeaderEntity','defaultCTQuery','public static Query defaultCTQuery()',1,'public static Query defaultCTQuery(){ }');
+    `);
+    const { registerKbTools } = await import('../src/azure/kb-tools.js');
+    const mock = createMockServer();
+    registerKbTools(mock, edb);
+    tools = mock.handlers;
+  });
+
+  after(() => { if (edb) edb.close(); });
+
+  it('d365_get_entity_sources reports the 4 entity methods', async () => {
+    const v = z.object(tools['d365_get_entity_sources'].schema).parse({ entity_name: 'TOC_Basware_PurchaseConfirmationHeaderEntity' });
+    const res = await tools['d365_get_entity_sources'].handler(v);
+    const t = res.structuredContent;
+    assert.equal(t.method_count, 4);
+    assert.deepEqual(t.methods.map(m => m.method_name).sort(),
+      ['defaultCTQuery','deleteEntityDataSource','insertEntityDataSource','updateEntityDataSource']);
+    assert.ok(t.methods.find(m => m.method_name === 'defaultCTQuery').is_static);
+    assert.match(res.content[0].text, /## Methods \(4\)/);
+  });
+
+  it('d365_get_class_methods returns entity methods with owner_type=entity', async () => {
+    const v = z.object(tools['d365_get_class_methods'].schema).parse({ name: 'TOC_Basware_PurchaseConfirmationHeaderEntity' });
+    const res = await tools['d365_get_class_methods'].handler(v);
+    assert.equal(res.structuredContent.owner_type, 'entity');
+    assert.equal(res.structuredContent.method_count, 4);
+  });
+
+  it('d365_get_method_source returns the X++ body of an entity method', async () => {
+    const v = z.object(tools['d365_get_method_source'].schema).parse({ owner_name: 'TOC_Basware_PurchaseConfirmationHeaderEntity', method_name: 'insertEntityDataSource' });
+    const res = await tools['d365_get_method_source'].handler(v);
+    assert.equal(res.structuredContent.owner_type, 'entity');
+    assert.match(res.structuredContent.source_code, /insertEntityDataSource/);
+  });
+});

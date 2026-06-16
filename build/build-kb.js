@@ -82,13 +82,14 @@ const xmlParser = new XMLParser({
 // In-memory maps for FTS index enrichment (avoid slow GROUP_CONCAT in sql.js)
 const classMethodNames = new Map();  // className → 'method1, method2, ...'
 const entityFieldNamesMap = new Map(); // entityName → 'field1, field2, ...'
+const entityMethodNamesMap = new Map(); // entityName → 'method1, method2, ...'
 
 const stats = {
   modules: 0, tables: 0, fields: 0, indexes: 0, relations: 0,
   enums: 0, enumValues: 0, edts: 0, classes: 0, methods: 0,
   entities: 0, forms: 0, securityRoles: 0, securityDuties: 0,
   securityPrivileges: 0, menuItems: 0, views: 0, errors: 0,
-  tableExtensions: 0, enumExtensions: 0, formExtensions: 0,
+  tableExtensions: 0, enumExtensions: 0, formExtensions: 0, dataEntityExtensions: 0,
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -471,7 +472,8 @@ CREATE TABLE IF NOT EXISTS data_entities (
   primary_table TEXT,
   staging_table TEXT,
   config_key TEXT,
-  file_path TEXT
+  file_path TEXT,
+  method_count INTEGER DEFAULT 0
 );
 
 -- Data Entity Fields
@@ -836,13 +838,35 @@ function extractDataEntity(parsed, filePath) {
     if (first) primaryTable = first.Table || first.Name || null;
   }
 
+  // Entity-level X++ methods (postLoad, mapEntityToDataSource, OData actions,
+  // validate*, defaultCTQuery, …). Parsed up-front so method_count is accurate
+  // on the entity row, then stored in the shared `methods` table as owner_type
+  // 'entity' — making them queryable via d365_get_class_methods /
+  // d365_get_method_source exactly like table/class methods.
+  const methods = ensureArray(e.SourceCode?.Methods?.Method);
+
   stmts.insertEntity.run(
     e.Name, moduleId, resolveLabel(e.Label) || null,
     e.PublicEntityName || null, e.PublicCollectionName || null,
     e.IsPublic === 'Yes' ? 1 : 0, primaryTable,
-    e.StagingTable || null, e.ConfigurationKey || null, filePath
+    e.StagingTable || null, e.ConfigurationKey || null, filePath,
+    methods.length
   );
   stats.entities++;
+
+  if (methods.length > 0) {
+    entityMethodNamesMap.set(e.Name, methods.map(m => m.Name).filter(Boolean).join(', '));
+  }
+  for (const m of methods) {
+    if (!m.Name) continue;
+    const sig = extractMethodSignature(m.Source);
+    const isStatic = sig && sig.includes('static ') ? 1 : 0;
+    const sourceCode = extractText(m.Source) || null;
+    try {
+      stmts.insertMethod.run('entity', e.Name, m.Name, sig || null, isStatic, sourceCode);
+      stats.methods++;
+    } catch (err) { console.warn('Warning:', err.message); }
+  }
 
   // Entity fields
   const fieldList = ensureArray(e.Fields?.AxDataEntityViewField);
@@ -1123,6 +1147,58 @@ function extractFormExtension(parsed, filePath) {
   stats.formExtensions++;
 }
 
+function extractDataEntityExtension(parsed, filePath) {
+  const e = parsed.AxDataEntityViewExtension;
+  if (!e || !e.Name) return;
+
+  const baseEntity = baseObjectName(e.Name);
+  const moduleId = getModuleFromPath(filePath);
+
+  // Added fields → entity_fields, keyed by the base entity.
+  const fieldList = ensureArray(e.Fields?.AxDataEntityViewField);
+  let added = 0;
+  for (const f of fieldList) {
+    if (!f.Name) continue;
+    try {
+      stmts.insertEntityField.run(
+        baseEntity, f.Name, f.DataField || null, f.DataSource || null, f.Mandatory === 'Yes' ? 1 : 0
+      );
+      added++;
+    } catch (err) { console.warn('Warning:', err.message); }
+  }
+
+  // Added methods → methods (owner_type='entity'), keyed by the base entity.
+  // An extension can add methods to a standard Microsoft entity, so this is
+  // required for "all entity methods" to be complete.
+  const methods = ensureArray(e.SourceCode?.Methods?.Method);
+  for (const m of methods) {
+    if (!m.Name) continue;
+    const sig = extractMethodSignature(m.Source);
+    const isStatic = sig && sig.includes('static ') ? 1 : 0;
+    const sourceCode = extractText(m.Source) || null;
+    try {
+      stmts.insertMethod.run('entity', baseEntity, m.Name, sig || null, isStatic, sourceCode);
+      stats.methods++;
+      added++;
+    } catch (err) { console.warn('Warning:', err.message); }
+  }
+
+  if (added > 0) {
+    stats.dataEntityExtensions++;
+    // Refresh the base entity's method_count when it exists in this build.
+    try {
+      db.run(
+        `UPDATE data_entities SET method_count = (SELECT COUNT(*) FROM methods WHERE owner_type='entity' AND owner_name = ?) WHERE entity_name = ?`,
+        [baseEntity, baseEntity]
+      );
+    } catch (err) { console.warn('Warning:', err.message); }
+  }
+
+  try {
+    stmts.insertObjectPath.run('dataentityviewextension', e.Name, filePath, statSync(filePath).size);
+  } catch (err) { console.warn('Warning:', err.message); }
+}
+
 // ─── Prepared Statements (set up after db init) ─────────────────────────────
 
 let db;
@@ -1137,7 +1213,7 @@ function prepareStatements() {
   stmts.insertEdt = db.prepare(`INSERT OR REPLACE INTO edts VALUES (?,?,?,?,?,?,?)`);
   stmts.insertClass = db.prepare(`INSERT OR REPLACE INTO classes VALUES (?,?,?,?,?,?,?)`);
   stmts.insertMethod = db.prepare(`INSERT OR REPLACE INTO methods VALUES (?,?,?,?,?,?)`);
-  stmts.insertEntity = db.prepare(`INSERT OR REPLACE INTO data_entities VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  stmts.insertEntity = db.prepare(`INSERT OR REPLACE INTO data_entities VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   stmts.insertEntityField = db.prepare(`INSERT OR REPLACE INTO entity_fields VALUES (?,?,?,?,?)`);
   stmts.insertForm = db.prepare(`INSERT OR REPLACE INTO forms VALUES (?,?,?,?,?)`);
   stmts.insertView = db.prepare(`INSERT OR REPLACE INTO views VALUES (?,?,?,?,?,?)`);
@@ -1176,7 +1252,7 @@ function prepareStatementsForSqlJs() {
   stmts.insertEdt = wrap(`INSERT OR REPLACE INTO edts VALUES (?,?,?,?,?,?,?)`);
   stmts.insertClass = wrap(`INSERT OR REPLACE INTO classes VALUES (?,?,?,?,?,?,?)`);
   stmts.insertMethod = wrap(`INSERT OR REPLACE INTO methods VALUES (?,?,?,?,?,?)`);
-  stmts.insertEntity = wrap(`INSERT OR REPLACE INTO data_entities VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  stmts.insertEntity = wrap(`INSERT OR REPLACE INTO data_entities VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   stmts.insertEntityField = wrap(`INSERT OR REPLACE INTO entity_fields VALUES (?,?,?,?,?)`);
   stmts.insertForm = wrap(`INSERT OR REPLACE INTO forms VALUES (?,?,?,?,?)`);
   stmts.insertView = wrap(`INSERT OR REPLACE INTO views VALUES (?,?,?,?,?,?)`);
@@ -1295,7 +1371,8 @@ function buildFtsIndex() {
   if (entities.length > 0) {
     for (const row of entities[0].values) {
       const entityFieldNames = entityFieldNamesMap.get(row[0]) || '';
-      stmts.insertFts.run('entity', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''} ${entityFieldNames}`);
+      const entityMethodNames = entityMethodNamesMap.get(row[0]) || '';
+      stmts.insertFts.run('entity', row[0], row[1] || '', `${row[2] || ''} ${row[3] || ''} ${entityFieldNames} ${entityMethodNames}`);
     }
   }
 
@@ -1561,6 +1638,7 @@ async function main() {
   processAxType('AxTableExtension', extractTableExtension);
   processAxType('AxEnumExtension', extractEnumExtension);
   processAxType('AxFormExtension', extractFormExtension);
+  processAxType('AxDataEntityViewExtension', extractDataEntityExtension);
 
   db.run('COMMIT');
 
@@ -1638,6 +1716,7 @@ async function main() {
   console.log(`      Table ext:  ${stats.tableExtensions} (custom fields merged into base tables)`);
   console.log(`      Enum ext:   ${stats.enumExtensions} (custom values merged into base enums)`);
   console.log(`      Form ext:   ${stats.formExtensions}`);
+  console.log(`      Entity ext: ${stats.dataEntityExtensions} (custom fields/methods merged into base entities)`);
   console.log(`      Sources:    ${customPackagesPaths.length ? customPackagesPaths.join(', ') : '(none — MS only)'}`);
   console.log(`    Errors:       ${stats.errors}`);
   console.log('═══════════════════════════════════════════════════════════');
@@ -1653,6 +1732,7 @@ function resetState() {
   labelMap.clear();
   classMethodNames.clear();
   entityFieldNamesMap.clear();
+  entityMethodNamesMap.clear();
   for (const k of Object.keys(stats)) stats[k] = 0;
   db = undefined;
   stmts = {};

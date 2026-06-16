@@ -588,51 +588,10 @@ app.http('d365sec-upload', {
   authLevel: 'anonymous',
   handler: async (request, context) => {
 
-    // ── GET: serve the upload form ───────────────────────────────────────────
+    // ── GET: the upload form is now a tab on the unified back-office page.
+    // Redirect for back-compat; the POST endpoints below are unchanged.
     if (request.method === 'GET') {
-      const user = getAuthUser(request);
-      let authBarHtml;
-      let formAllowed = false;
-
-      if (!isEasyAuthEnabled() && !user) {
-        // Easy Auth not configured — allow access with warning (typical in dev)
-        formAllowed = true;
-        authBarHtml = `<div class="auth-bar signed-in">`
-          + `<span style="opacity:0.7">Authentication not configured — uploads allowed without sign-in. `
-          + `Enable Easy Auth in Azure Portal for production use.</span></div>`;
-      } else if (!user) {
-        // Easy Auth enabled but not signed in — show login prompt
-        authBarHtml = `<div class="auth-bar signed-out">`
-          + `Sign in required. <a href="/.auth/login/aad?post_login_redirect_uri=/api/d365sec/upload">Sign in with Azure AD</a>`
-          + ` (Owner or Contributor role needed to upload).</div>`;
-      } else {
-        // Signed in — check RBAC
-        const authorized = await isOwnerOrContributor(user.principalId);
-        if (authorized === true) {
-          formAllowed = true;
-          authBarHtml = `<div class="auth-bar signed-in">`
-            + `Signed in as <strong>${user.principalName}</strong></div>`;
-        } else if (authorized === false) {
-          authBarHtml = `<div class="auth-bar denied">`
-            + `Access denied for <strong>${user.principalName}</strong>. `
-            + `Owner or Contributor role on the resource group is required.</div>`;
-        } else {
-          // RBAC check unavailable (no managed identity) — allow with warning
-          formAllowed = true;
-          authBarHtml = `<div class="auth-bar signed-in">`
-            + `Signed in as <strong>${user.principalName}</strong> `
-            + `<span style="opacity:0.7">(RBAC check unavailable — managed identity not configured)</span></div>`;
-        }
-      }
-
-      const html = UPLOAD_HTML
-        .replace('{{AUTH_BAR}}', authBarHtml)
-        .replace('{{DB_INFO}}', buildDbInfoHtml())
-        .replace('{{UPLOAD_DISABLED}}', formAllowed ? '' : 'disabled')
-        .replace(/\{\{INPUT_DISABLED\}\}/g, formAllowed ? '' : 'disabled')
-        .replace('{{MAX_UPLOAD_MB}}', String(MAX_UPLOAD_BYTES / (1024 * 1024)));
-
-      return { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: html };
+      return { status: 302, headers: { Location: '/api/backoffice#sec' } };
     }
 
     // ── POST: process ZIP upload ─────────────────────────────────────────────
