@@ -5,9 +5,9 @@
   "type": "module",
   "main": "src/functions/index.js",
   "scripts": {
-    "build:kb": "node build/build-kb.js",
-    "build:xref": "node --max-old-space-size=8192 build/build-xref-db.js",
-    "build:sec": "node build/build-sec.js",
+    "build:kb": "node --env-file-if-exists=.env build/build-kb.js",
+    "build:xref": "node --env-file-if-exists=.env --max-old-space-size=8192 build/build-xref-db.js",
+    "build:sec": "node --env-file-if-exists=.env build/build-sec.js",
     "start:kb": "node src/local/mcp-server-kb.js",
     "start:xref": "node src/local/mcp-server-xref.js",
     "start:sec": "node src/local/mcp-server-sec.js",
@@ -35,11 +35,11 @@
     "html-to-text": "^9.0.5",
     "mammoth": "^1.8.0",
     "pdfkit": "^0.15.0",
+    "sql.js": "1.12.0",
     "xlsx": "^0.18.5",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "mssql": "^11.0.0",
-    "sql.js": "1.12.0"
+    "mssql": "^11.0.0"
   }
 }

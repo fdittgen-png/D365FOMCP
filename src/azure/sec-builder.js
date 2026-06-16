@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS role_direct_privileges (
 CREATE TABLE IF NOT EXISTS role_direct_entity_permissions (
   role_id          TEXT NOT NULL,
   entity_name      TEXT NOT NULL,
+  resource_type    TEXT,
   grant_read       TEXT,
   grant_create     TEXT,
   grant_update     TEXT,
@@ -237,7 +238,9 @@ function findAxDirs(basePath, dirName) {
       const entries = readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        if (entry.name === 'bin' || entry.name === 'node_modules') continue;
+        // XppMetadata is a compiled mirror present in customization models;
+        // skipping it avoids double-counting their security objects.
+        if (entry.name === 'bin' || entry.name === 'node_modules' || entry.name === 'XppMetadata') continue;
         const fullPath = join(dir, entry.name);
         if (entry.name.toLowerCase() === target) {
           results.push(fullPath);
@@ -513,7 +516,22 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     insertUserRole: db.prepare('INSERT OR REPLACE INTO user_roles VALUES (?,?)'),
     insertUserRoleCompany: db.prepare('INSERT OR REPLACE INTO user_role_companies VALUES (?,?,?)'),
     insertDirectPriv: db.prepare('INSERT OR REPLACE INTO role_direct_privileges VALUES (?,?)'),
-    insertDirectEntityPerm: db.prepare('INSERT OR REPLACE INTO role_direct_entity_permissions VALUES (?,?,?,?,?,?,?,?)'),
+    // The System Security Permissions matrix emits MULTIPLE rows per
+    // (role, resource) — one per privilege path — so a plain INSERT OR REPLACE
+    // would be last-write-wins and could silently overwrite a Deny with a Grant.
+    // Merge with Deny-wins per operation instead: Deny if either side denies,
+    // else Allow if either grants, else keep whatever is set.
+    insertDirectEntityPerm: db.prepare(`INSERT INTO role_direct_entity_permissions
+      (role_id, entity_name, resource_type, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)
+      VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(role_id, entity_name) DO UPDATE SET
+        resource_type = COALESCE(role_direct_entity_permissions.resource_type, excluded.resource_type),
+        grant_read   = CASE WHEN role_direct_entity_permissions.grant_read='Deny'   OR excluded.grant_read='Deny'   THEN 'Deny' WHEN role_direct_entity_permissions.grant_read='Allow'   OR excluded.grant_read='Allow'   THEN 'Allow' ELSE COALESCE(excluded.grant_read,   role_direct_entity_permissions.grant_read)   END,
+        grant_create = CASE WHEN role_direct_entity_permissions.grant_create='Deny' OR excluded.grant_create='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_create='Allow' OR excluded.grant_create='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_create, role_direct_entity_permissions.grant_create) END,
+        grant_update = CASE WHEN role_direct_entity_permissions.grant_update='Deny' OR excluded.grant_update='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_update='Allow' OR excluded.grant_update='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_update, role_direct_entity_permissions.grant_update) END,
+        grant_delete = CASE WHEN role_direct_entity_permissions.grant_delete='Deny' OR excluded.grant_delete='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_delete='Allow' OR excluded.grant_delete='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_delete, role_direct_entity_permissions.grant_delete) END,
+        grant_correct= CASE WHEN role_direct_entity_permissions.grant_correct='Deny' OR excluded.grant_correct='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_correct='Allow' OR excluded.grant_correct='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_correct, role_direct_entity_permissions.grant_correct) END,
+        grant_invoke = CASE WHEN role_direct_entity_permissions.grant_invoke='Deny' OR excluded.grant_invoke='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_invoke='Allow' OR excluded.grant_invoke='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_invoke, role_direct_entity_permissions.grant_invoke) END`),
     insertSearch: db.prepare('INSERT INTO sec_search VALUES (?,?,?,?)'),
     insertMeta: db.prepare('INSERT OR REPLACE INTO sec_metadata VALUES (?,?)'),
   };
@@ -1092,6 +1110,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         'System Security Permissions.xml', 'SystemSecurityPermissions.xml');
       stats.dmfDirectEntityPerms = 0;
       stats.dmfDirectEntityPermsSkipped = 0;
+      stats.dmfDirectEntityPermsAllZero = 0;
       if (permsFile) {
         const fileSize = statSync(permsFile).size;
         const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
@@ -1103,13 +1122,18 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
           return null;
         };
 
-        const onPermEntity = (roleId, resourceName, read, create, update, del, correct, invoke) => {
+        const onPermEntity = (roleId, resourceName, resourceType, read, create, update, del, correct, invoke) => {
           if (!roleId || !resourceName) { stats.dmfDirectEntityPermsSkipped++; return; }
+          const gr = mapAccess(read), gc = mapAccess(create), gu = mapAccess(update),
+                gd = mapAccess(del), gco = mapAccess(correct), gi = mapAccess(invoke);
+          // Skip all-zero rows (every access Unset): the resource is referenced
+          // but no operation is granted or denied → no information value. The
+          // DMF entity normally excludes these, but guard regardless of how the
+          // export was filtered.
+          if (!gr && !gc && !gu && !gd && !gco && !gi) { stats.dmfDirectEntityPermsAllZero++; return; }
           stmts.insertDirectEntityPerm.run(
-            roleId, resourceName,
-            mapAccess(read), mapAccess(create),
-            mapAccess(update), mapAccess(del),
-            mapAccess(correct), mapAccess(invoke),
+            roleId, resourceName, resourceType || null,
+            gr, gc, gu, gd, gco, gi,
           );
           stats.dmfDirectEntityPerms++;
         };
@@ -1121,6 +1145,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
             (inner) => onPermEntity(
               extractField(inner, 'SECURITYROLEIDENTIFIER'),
               extractField(inner, 'RESOURCENAME'),
+              extractField(inner, 'RESOURCETYPE'),
               extractField(inner, 'READACCESS'),
               extractField(inner, 'CREATEACCESS'),
               extractField(inner, 'UPDATEACCESS'),
@@ -1134,7 +1159,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
           const entities = parseDmfXml(xmlParser, permsFile, 'SYSTEMSECURITYPERMISSIONENTITY', log);
           for (const e of entities) {
             onPermEntity(
-              e.SECURITYROLEIDENTIFIER, e.RESOURCENAME,
+              e.SECURITYROLEIDENTIFIER, e.RESOURCENAME, e.RESOURCETYPE,
               e.READACCESS, e.CREATEACCESS, e.UPDATEACCESS,
               e.DELETEACCESS, e.CORRECTACCESS, e.INVOKEACCESS,
             );
@@ -1183,7 +1208,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
             if (!dap.Name) continue;
             const grant = dap.Grant || {};
             stmts.insertDirectEntityPerm.run(
-              roleId, dap.Name,
+              roleId, dap.Name, dap.Type || null,
               grant.Read || null, grant.Create || null,
               grant.Update || null, grant.Delete || null,
               grant.Correct || null, grant.Invoke || null,
@@ -1247,17 +1272,64 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     subRoles: db.prepare('SELECT COUNT(*) as n FROM role_subroles').get().n,
     roleDuties: db.prepare('SELECT COUNT(*) as n FROM role_duties').get().n,
     dutyPrivileges: db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get().n,
+    directEntityPerms: db.prepare('SELECT COUNT(*) as n FROM role_direct_entity_permissions').get().n,
   };
+
+  // ── Data-quality checks ──────────────────────────────────────────────────────
+  // Loud PASS/WARN gate so a degraded export can't slip through unnoticed (this
+  // is how role_direct_entity_permissions silently sat at 0 on prod).
+  const dutiesNoPriv = db.prepare(
+    'SELECT COUNT(*) as n FROM duties d WHERE NOT EXISTS (SELECT 1 FROM duty_privileges dp WHERE dp.duty_id = d.duty_id)'
+  ).get().n;
+  const epWithInvoke = db.prepare(
+    "SELECT COUNT(*) as n FROM privilege_entry_points WHERE grant_invoke IS NOT NULL AND grant_invoke <> ''"
+  ).get().n;
+  const dep = {
+    rows: counts.directEntityPerms,
+    withType: db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE resource_type IS NOT NULL AND resource_type <> ''").get().n,
+    withDeny: db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE 'Deny' IN (grant_read,grant_create,grant_update,grant_delete,grant_correct,grant_invoke)").get().n,
+    distinctRoles: db.prepare('SELECT COUNT(DISTINCT role_id) as n FROM role_direct_entity_permissions').get().n,
+  };
+  const hadPermsExport = (stats.dmfDirectEntityPerms || 0) > 0 || dep.rows > 0;
+  const checks = [
+    { name: 'duties have privileges', pass: counts.duties === 0 || dutiesNoPriv < counts.duties, detail: `${dutiesNoPriv}/${counts.duties} duties have NO privileges` },
+    { name: 'entry points carry Invoke', pass: counts.entryPoints === 0 || epWithInvoke > 0, detail: `${epWithInvoke} entry points with Invoke` },
+    { name: 'direct entity permissions present', pass: !dmfInputDir || dmfInputDir.toLowerCase() === 'skip' || dep.rows > 0, detail: `${dep.rows} rows, ${dep.distinctRoles} roles, ${dep.withDeny} with a Deny` },
+    { name: 'resource_type captured', pass: dep.rows === 0 || dep.withType > 0, detail: `${dep.withType}/${dep.rows} rows have resource_type` },
+  ];
+
+  // Source-module breakdown: which models contributed security objects. This
+  // makes it verifiable that both Microsoft-standard and customization-model
+  // security objects were considered — a custom model (e.g. iExtension, HISOL)
+  // appearing here proves its AOT security objects were merged in.
+  let securityModules = [];
+  try {
+    securityModules = db.prepare(`
+      SELECT module_id, COUNT(*) AS n FROM (
+        SELECT module_id FROM roles
+        UNION ALL SELECT module_id FROM duties
+        UNION ALL SELECT module_id FROM privileges
+      ) WHERE module_id IS NOT NULL AND module_id <> ''
+      GROUP BY module_id ORDER BY n DESC
+    `).all();
+  } catch (e) { log(`  (security module breakdown unavailable: ${e.message})`); }
 
   const metaTransaction = db.transaction(() => {
     stmts.insertMeta.run('build_date', new Date().toISOString());
     stmts.insertMeta.run('aot_source', packagesPathArg || 'none');
     stmts.insertMeta.run('dmf_source', dmfInputDir || 'none');
+    stmts.insertMeta.run('security_module_count', String(securityModules.length));
+    // Persist the full module→count map (small; dozens of modules) so the
+    // admin UI can show the MS-vs-custom split without re-querying.
+    stmts.insertMeta.run('security_modules', JSON.stringify(
+      securityModules.map(m => ({ module: m.module_id, objects: m.n }))
+    ));
     for (const [k, v] of Object.entries(counts)) {
       stmts.insertMeta.run(k, String(v));
     }
   });
   metaTransaction();
+  log(`  Security source modules: ${securityModules.length} (${securityModules.slice(0, 8).map(m => m.module_id).join(', ')}${securityModules.length > 8 ? ', …' : ''})`);
 
   db.pragma('journal_mode = DELETE');
   db.exec('VACUUM');
@@ -1299,9 +1371,19 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   log(`  Users:           ${counts.users}`);
   log(`  User-Roles:      ${counts.userRoles}`);
   log(`  Companies:       ${counts.companies}`);
+  log(`  Direct Entity Perms: ${counts.directEntityPerms}`);
   log('===================================================');
 
-  return { stats, counts, elapsed, fileSize };
+  log('  DATA QUALITY CHECKS');
+  let anyWarn = false;
+  for (const c of checks) {
+    if (!c.pass) anyWarn = true;
+    log(`   [${c.pass ? 'PASS' : 'WARN'}] ${c.name} — ${c.detail}`);
+  }
+  if (anyWarn) log('   ⚠ One or more checks WARNed — review the export before uploading this DB.');
+  log('===================================================');
+
+  return { stats, counts, elapsed, fileSize, checks };
 }
 
 // Exported for testing

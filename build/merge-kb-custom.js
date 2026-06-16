@@ -1,0 +1,156 @@
+/**
+ * merge-kb-custom.js
+ *
+ * Additively merge a customizations-only KB database (built by build-kb.js from
+ * a customization metadata root such as C:\Workspace\DEV\Metadata) INTO an
+ * existing full KB database that already holds the Microsoft standard objects.
+ *
+ * This backs the Azure "custom-delta rebuild": the multi-GB Microsoft base is
+ * built once locally, and customizations can be refreshed server-side from a
+ * small ZIP without re-shipping the whole KB.
+ *
+ * The merge is ADDITIVE — it never deletes Microsoft rows:
+ *   - net-new custom tables → added (existing base rows untouched)
+ *   - extension fields      → upserted onto their base table; the base table is
+ *                             flagged is_customized and its field_count refreshed
+ *   - enum extensions       → values UNIONED into the base enum (not replaced),
+ *                             because a custom-only build has no MS base values
+ *                             to append to and would otherwise overwrite them
+ *   - classes/edts/entities/forms/views/menu items/methods/relations/indexes,
+ *     labels, object paths, graph edges → upserted
+ *
+ * Requires the live DB to be schema v1.1 (has the customization columns). On an
+ * older DB it throws, directing the operator to do a full KB upload instead.
+ */
+
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const Database = require('better-sqlite3');
+
+function hasColumn(db, table, col) {
+  try {
+    return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+  } catch { return false; }
+}
+
+/**
+ * @param {string} liveDbPath   Path to the full KB DB to merge into (modified in place).
+ * @param {string} customDbPath Path to the customizations-only KB DB.
+ * @param {(msg:string)=>void} [log]
+ * @returns {{added:object, customizedTables:number}} merge summary
+ */
+export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
+  const db = new Database(liveDbPath);
+  db.pragma('journal_mode = DELETE');   // CIFS/SMB-safe on Azure /home
+  db.pragma('synchronous = NORMAL');
+
+  // Schema guard: refuse to merge into a pre-customization KB.
+  if (!hasColumn(db, 'fields', 'is_extension') || !hasColumn(db, 'tables', 'is_customized')) {
+    db.close();
+    throw new Error(
+      'Live KB database predates customization support (missing is_extension/is_customized columns). '
+      + 'Upload a full pre-built KB database instead of a custom delta.'
+    );
+  }
+
+  db.exec(`ATTACH DATABASE '${customDbPath.replace(/'/g, "''")}' AS cust`);
+  const summary = { added: {}, customizedTables: 0 };
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+
+    // ── Net-new object tables (additive upsert) ──────────────────────────────
+    // tables: INSERT OR IGNORE so existing Microsoft base rows are preserved;
+    // only genuinely new custom tables are added.
+    const before = (t) => db.prepare(`SELECT COUNT(*) n FROM main.${t}`).get().n;
+
+    const tBefore = before('tables');
+    db.exec('INSERT OR IGNORE INTO main.tables SELECT * FROM cust.tables');
+    summary.added.tables = before('tables') - tBefore;
+
+    // These are keyed by object name; custom names don't collide with MS, and a
+    // deliberate re-customization of an MS object should win → OR REPLACE.
+    for (const t of ['classes', 'edts', 'data_entities', 'entity_fields', 'forms', 'views', 'menu_items', 'methods', 'indexes_tbl', 'relations']) {
+      const b = before(t);
+      db.exec(`INSERT OR REPLACE INTO main.${t} SELECT * FROM cust.${t}`);
+      summary.added[t] = before(t) - b;
+    }
+
+    // ── Fields (additive upsert: custom-table fields + extension fields) ──────
+    const fBefore = before('fields');
+    db.exec('INSERT OR REPLACE INTO main.fields SELECT * FROM cust.fields');
+    summary.added.fields = before('fields') - fBefore;
+
+    // ── Enums: UNION values rather than replace (preserve MS enum values) ─────
+    const liveEnumStmt = db.prepare('SELECT module_id, label, values_json FROM main.enums WHERE enum_name = ?');
+    const upsertEnum = db.prepare('INSERT OR REPLACE INTO main.enums VALUES (?,?,?,?)');
+    let enumsTouched = 0;
+    for (const ce of db.prepare('SELECT enum_name, module_id, label, values_json FROM cust.enums').all()) {
+      const live = liveEnumStmt.get(ce.enum_name);
+      if (!live) {
+        upsertEnum.run(ce.enum_name, ce.module_id, ce.label, ce.values_json);
+        enumsTouched++;
+        continue;
+      }
+      let liveVals = [];
+      let custVals = [];
+      try { liveVals = JSON.parse(live.values_json || '[]'); } catch { liveVals = []; }
+      try { custVals = JSON.parse(ce.values_json || '[]'); } catch { custVals = []; }
+      const seen = new Set(liveVals.map(v => v.name));
+      let merged = liveVals;
+      let changed = false;
+      for (const v of custVals) {
+        if (!seen.has(v.name)) { merged.push(v); seen.add(v.name); changed = true; }
+      }
+      if (changed) {
+        upsertEnum.run(ce.enum_name, live.module_id || ce.module_id, live.label, JSON.stringify(merged));
+        enumsTouched++;
+      }
+    }
+    summary.added.enums = enumsTouched;
+
+    // ── Flag base tables that received extension fields + refresh field_count ─
+    const customizedInfo = db.prepare(`
+      UPDATE main.tables
+         SET is_customized = 1,
+             field_count = (SELECT COUNT(*) FROM main.fields WHERE main.fields.table_name = main.tables.table_name)
+       WHERE table_name IN (SELECT DISTINCT table_name FROM cust.fields WHERE is_extension = 1)
+    `).run();
+    summary.customizedTables = customizedInfo.changes;
+
+    // ── Labels / object paths / graph edges ──────────────────────────────────
+    db.exec('INSERT OR IGNORE INTO main.labels SELECT * FROM cust.labels');
+    db.exec('INSERT OR REPLACE INTO main.object_paths SELECT * FROM cust.object_paths');
+    db.exec('INSERT OR IGNORE INTO main.graph_edges SELECT * FROM cust.graph_edges');
+
+    // ── Search index: refresh rows for the objects we just merged ─────────────
+    db.exec('DELETE FROM main.kb_search WHERE object_name IN (SELECT object_name FROM cust.kb_search)');
+    db.exec('INSERT INTO main.kb_search SELECT * FROM cust.kb_search');
+    try {
+      db.exec(`INSERT INTO main.kb_search_fts(kb_search_fts) VALUES('rebuild')`);
+    } catch { /* FTS5 not present — d365_search falls back to LIKE */ }
+
+    // ── Metadata ──────────────────────────────────────────────────────────────
+    const getMeta = (k) => { try { return db.prepare('SELECT value FROM main.kb_metadata WHERE key = ?').get(k)?.value || ''; } catch { return ''; } };
+    const custRoots = getMeta('custom_packages_paths');
+    const setMeta = db.prepare('INSERT OR REPLACE INTO main.kb_metadata VALUES (?,?)');
+    const custFromDelta = (() => { try { return db.prepare("SELECT value FROM cust.kb_metadata WHERE key='custom_packages_paths'").get()?.value || ''; } catch { return ''; } })();
+    const mergedRoots = [...new Set([...custRoots.split(';'), ...custFromDelta.split(';')].map(s => s.trim()).filter(Boolean))].join(';');
+    setMeta.run('custom_packages_paths', mergedRoots);
+    setMeta.run('has_customizations', '1');
+    setMeta.run('build_date', new Date().toISOString());
+    setMeta.run('last_custom_merge', new Date().toISOString());
+
+    db.exec('COMMIT');
+    log(`  KB custom merge: +${summary.added.tables} tables, +${summary.added.fields} fields, ${enumsTouched} enums, ${summary.customizedTables} base tables flagged customized`);
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    db.exec('DETACH DATABASE cust');
+    db.close();
+    throw err;
+  }
+
+  db.exec('DETACH DATABASE cust');
+  db.close();
+  return summary;
+}

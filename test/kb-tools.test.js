@@ -1652,3 +1652,60 @@ describe('issue #33 — d365_raw_sql on a SELECT that returns zero rows', () => 
     assert.match(result, /No results found/);
   });
 });
+
+// -- Customization columns (Phase 3) -----------------------------------------
+// A self-contained suite using a DB built WITH the customization columns
+// (is_customized / is_extension / source_module), to exercise the happy path
+// the shared fixture (older schema) only covers via the defensive fallback.
+
+describe('d365_lookup_table — customization provenance', () => {
+  let customDb;
+  let customTools;
+
+  before(async () => {
+    customDb = new Database(':memory:');
+    customDb.exec(`
+      CREATE TABLE tables (
+        table_name TEXT PRIMARY KEY, module_id TEXT, label TEXT,
+        table_group TEXT, save_per_company INTEGER DEFAULT 1,
+        cache_lookup TEXT, clustered_index TEXT, replacement_key TEXT,
+        field_count INTEGER DEFAULT 0, is_customized INTEGER DEFAULT 0
+      );
+      CREATE TABLE fields (
+        table_name TEXT, field_name TEXT, field_type TEXT, edt TEXT,
+        enum_type TEXT, mandatory INTEGER DEFAULT 0, label TEXT,
+        source_module TEXT, is_extension INTEGER DEFAULT 0,
+        PRIMARY KEY (table_name, field_name)
+      );
+      CREATE TABLE indexes_tbl (table_name TEXT, index_name TEXT, is_unique INTEGER, is_clustered INTEGER, fields_json TEXT, PRIMARY KEY (table_name, index_name));
+      CREATE TABLE relations (source_table TEXT, related_table TEXT, relation_name TEXT, constraints_json TEXT, relationship_type TEXT, on_delete TEXT);
+      CREATE TABLE labels (label_id TEXT PRIMARY KEY, text TEXT NOT NULL);
+
+      INSERT INTO tables VALUES ('CustTable','ApplicationSuite','Customer master','Main',1,'Found','AccountIdx','AccountNum',2,1);
+      INSERT INTO fields VALUES ('CustTable','AccountNum','String','CustAccount',NULL,1,NULL,'ApplicationSuite',0);
+      INSERT INTO fields VALUES ('CustTable','TBG_CrmRef','String','TIS_CRMExternalRef',NULL,0,NULL,'iExtension',1);
+    `);
+    const { registerKbTools } = await import('../src/azure/kb-tools.js');
+    const mock = createMockServer();
+    registerKbTools(mock, customDb);
+    customTools = mock.handlers;
+  });
+
+  after(() => { if (customDb) customDb.close(); });
+
+  it('flags the table as customized and lists the contributing module', async () => {
+    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ table_name: 'CustTable' });
+    const res = await customTools['d365_lookup_table'].handler(validated);
+    const t = res.structuredContent;
+    assert.equal(t.is_customized, true);
+    assert.equal(t.custom_field_count, 1);
+    assert.deepEqual(t.customization_modules, ['iExtension']);
+    const custom = t.fields.find(f => f.name === 'TBG_CrmRef');
+    assert.equal(custom.is_extension, true);
+    assert.equal(custom.source_module, 'iExtension');
+    const base = t.fields.find(f => f.name === 'AccountNum');
+    assert.equal(base.is_extension, false);
+    // Markdown surfaces the customization too.
+    assert.match(res.content[0].text, /Customized: 1 custom field/);
+  });
+});

@@ -11,8 +11,10 @@
 
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, basename, resolve } from 'path';
+import { pathToFileURL } from 'url';
 import { XMLParser } from 'fast-xml-parser';
 import initSqlJs from 'sql.js';
+import { releaseOutputLock } from './release-output-lock.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -31,10 +33,30 @@ const DEFAULT_OUTPUT_PATH = userHome
   ? join(userHome, '.claude', 'd365fo_kb.sqlite')
   : './output/d365fo_kb.sqlite';
 
-const packagesPaths = process.argv[2]
-  ? process.argv[2].split(',').map(p => p.trim())
-  : DEFAULT_PACKAGES_PATHS;
-const outputPath = process.argv[3] || DEFAULT_OUTPUT_PATH;
+// Source resolution precedence:
+//   1. CLI arg (comma-separated)
+//   2. KB_PACKAGES_PATHS env var (comma- or semicolon-separated) — the
+//      configurable way to include customization models alongside the
+//      Microsoft PackagesLocalDirectory, e.g.
+//        KB_PACKAGES_PATHS=...\PackagesLocalDirectory,C:\Workspace\DEV\Metadata
+//   3. DEFAULT_PACKAGES_PATHS (standard PackagesLocalDirectory only)
+function parsePathList(raw) {
+  return raw.split(/[,;]/).map(p => p.trim()).filter(Boolean);
+}
+
+// Reassignable so buildKnowledgeBase() can drive the builder programmatically
+// (e.g. the Azure custom-delta rebuild) instead of only via CLI argv.
+let packagesPaths = process.argv[2]
+  ? parsePathList(process.argv[2])
+  : (process.env.KB_PACKAGES_PATHS
+      ? parsePathList(process.env.KB_PACKAGES_PATHS)
+      : DEFAULT_PACKAGES_PATHS);
+let outputPath = process.argv[3] || DEFAULT_OUTPUT_PATH;
+
+// A "customization root" is any source path that is not a Microsoft
+// PackagesLocalDirectory. Used to flag the build as customization-aware and
+// to attribute custom objects in kb_metadata.
+let customPackagesPaths = packagesPaths.filter(p => !/PackagesLocalDirectory[\\/]?$/i.test(p));
 
 // XML parser options
 const xmlParser = new XMLParser({
@@ -66,6 +88,7 @@ const stats = {
   enums: 0, enumValues: 0, edts: 0, classes: 0, methods: 0,
   entities: 0, forms: 0, securityRoles: 0, securityDuties: 0,
   securityPrivileges: 0, menuItems: 0, views: 0, errors: 0,
+  tableExtensions: 0, enumExtensions: 0, formExtensions: 0,
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -167,7 +190,10 @@ function findAxDirs(basePath, dirName) {
       const entries = readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        if (entry.name === 'bin' || entry.name === 'node_modules' || entry.name.startsWith('tmpclaude')) continue;
+        // XppMetadata is a compiled mirror of the model's Ax* dirs — skipping
+        // it avoids double-processing every object in customization models.
+        if (entry.name === 'bin' || entry.name === 'node_modules' ||
+            entry.name === 'XppMetadata' || entry.name.startsWith('tmpclaude')) continue;
         const fullPath = join(dir, entry.name);
         if (entry.name === dirName) {
           results.push(fullPath);
@@ -251,7 +277,7 @@ function loadLabels() {
             }
             continue;
           }
-          if (entry.name === 'bin' || entry.name === 'node_modules') continue;
+          if (entry.name === 'bin' || entry.name === 'node_modules' || entry.name === 'XppMetadata') continue;
           // Only descend into paths that lead to label files
           if (entry.name === 'AxLabelFile' || entry.name === 'LabelResources' ||
               entry.name === 'en-US' || entry.name === 'en-us' ||
@@ -351,7 +377,8 @@ CREATE TABLE IF NOT EXISTS tables (
   field_count INTEGER DEFAULT 0,
   has_methods INTEGER DEFAULT 0,
   developer_doc TEXT,
-  file_path TEXT
+  file_path TEXT,
+  is_customized INTEGER DEFAULT 0   -- 1 when an AxTableExtension adds fields/relations
 );
 
 -- Fields
@@ -364,6 +391,8 @@ CREATE TABLE IF NOT EXISTS fields (
   mandatory TEXT DEFAULT 'No',
   allow_edit TEXT DEFAULT 'Yes',
   label TEXT,
+  source_module TEXT,                -- model that defined the field (base or extension)
+  is_extension INTEGER DEFAULT 0,    -- 1 when added by an AxTableExtension (customization)
   PRIMARY KEY (table_name, field_name)
 );
 
@@ -577,6 +606,8 @@ CREATE INDEX IF NOT EXISTS idx_classes_extends ON classes(extends_class);
 CREATE INDEX IF NOT EXISTS idx_graph_source ON graph_edges(source_node);
 CREATE INDEX IF NOT EXISTS idx_graph_target ON graph_edges(target_node);
 CREATE INDEX IF NOT EXISTS idx_entity_fields ON entity_fields(entity_name);
+CREATE INDEX IF NOT EXISTS idx_fields_extension ON fields(is_extension);
+CREATE INDEX IF NOT EXISTS idx_tables_customized ON tables(is_customized);
 `;
 
 const FTS_SCHEMA = `
@@ -627,17 +658,17 @@ function extractTable(parsed, filePath) {
     t.ClusteredIndex || null, t.ReplacementKey || null,
     t.ConfigurationKey || null, fieldList.length,
     (t.SourceCode?.Methods?.Method) ? 1 : 0,
-    resolveLabel(t.DeveloperDocumentation) || null, filePath
+    resolveLabel(t.DeveloperDocumentation) || null, filePath, 0
   );
   stats.tables++;
 
-  // Insert fields
+  // Insert fields (base fields: source_module = owning model, is_extension = 0)
   for (const f of fieldList) {
     const fieldType = (f['@_i:type'] || f['@_xmlns:i'] || '').replace('AxTableField', '');
     stmts.insertField.run(
       tableName, f.Name, fieldType || null, f.ExtendedDataType || null,
       f.EnumType || null, f.Mandatory || 'No', f.AllowEdit || 'Yes',
-      resolveLabel(f.Label) || null
+      resolveLabel(f.Label) || null, moduleId, 0
     );
     stats.fields++;
   }
@@ -958,14 +989,148 @@ function extractMenuItem(parsed, filePath, menuType) {
   stats.menuItems++;
 }
 
+// ─── Customization extractors (extension objects) ───────────────────────────
+//
+// Extension objects (AxTableExtension / AxEnumExtension / AxFormExtension) modify
+// a base Microsoft (or other) object rather than defining a new one. Their
+// <Name> is "<BaseObject>.<suffix>" (e.g. "CustTable.iExtension"); the base
+// object is the text before the first dot. These passes run AFTER the base
+// passes so the base rows already exist, then MERGE the customization into the
+// base object: added fields land in `fields` (keyed by the base table, flagged
+// is_extension=1), added enum values are appended to the base enum's values_json.
+
+/** Derive the base object name from an extension's <Name> ("Base.suffix" → "Base"). */
+function baseObjectName(extName) {
+  return String(extName).split('.')[0];
+}
+
+function extractTableExtension(parsed, filePath) {
+  const t = parsed.AxTableExtension;
+  if (!t || !t.Name) return;
+
+  const baseTable = baseObjectName(t.Name);
+  const moduleId = getModuleFromPath(filePath);
+
+  // Added fields — same shape as base AxTableField; merge into the base table.
+  const fieldList = ensureArray(t.Fields?.AxTableField);
+  let added = 0;
+  for (const f of fieldList) {
+    if (!f.Name) continue;
+    const fieldType = (f['@_i:type'] || f['@_xmlns:i'] || '').replace('AxTableField', '');
+    stmts.insertField.run(
+      baseTable, f.Name, fieldType || null, f.ExtendedDataType || null,
+      f.EnumType || null, f.Mandatory || 'No', f.AllowEdit || 'Yes',
+      resolveLabel(f.Label) || null, moduleId, 1
+    );
+    stats.fields++;
+    added++;
+  }
+
+  // Added relations → graph edges (so impact/traversal sees customization FKs).
+  const relList = ensureArray(t.Relations?.AxTableRelation);
+  for (const rel of relList) {
+    if (rel.RelatedTable) {
+      try {
+        stmts.insertGraphEdge.run(baseTable, 'table', rel.RelatedTable, 'table', 'FK', `ext:${moduleId}`);
+      } catch (e) { console.warn('Warning:', e.message); }
+    }
+  }
+
+  if (added > 0) {
+    stats.tableExtensions++;
+    // Flag the base table and refresh its field_count to include custom fields.
+    try {
+      db.run(
+        `UPDATE tables SET is_customized = 1,
+           field_count = (SELECT COUNT(*) FROM fields WHERE table_name = ?)
+         WHERE table_name = ?`,
+        [baseTable, baseTable]
+      );
+    } catch (e) { console.warn('Warning:', e.message); }
+  }
+
+  try {
+    stmts.insertObjectPath.run('tableextension', t.Name, filePath, statSync(filePath).size);
+  } catch (e) { console.warn('Warning:', e.message); }
+}
+
+function extractEnumExtension(parsed, filePath) {
+  const e = parsed.AxEnumExtension;
+  if (!e || !e.Name) return;
+
+  const baseEnum = baseObjectName(e.Name);
+  const moduleId = getModuleFromPath(filePath);
+  const rawValues = ensureArray(e.EnumValues?.AxEnumValue || e.Values?.AxEnumValue);
+  if (!rawValues.length) return;
+
+  // Read the existing (base) enum so we can append rather than overwrite.
+  let existing = [];
+  let mod = moduleId;
+  let label = null;
+  try {
+    const res = db.exec(`SELECT module_id, label, values_json FROM enums WHERE enum_name = ?`, [baseEnum]);
+    if (res.length && res[0].values.length) {
+      mod = res[0].values[0][0] || moduleId;
+      label = res[0].values[0][1];
+      try { existing = JSON.parse(res[0].values[0][2] || '[]'); } catch { existing = []; }
+    }
+  } catch (e2) { console.warn('Warning:', e2.message); }
+
+  const seen = new Set(existing.map(v => v.name));
+  let added = 0;
+  for (const v of rawValues) {
+    if (!v.Name || seen.has(v.Name)) continue;
+    existing.push({
+      name: v.Name,
+      value: v.Value !== undefined ? Number(v.Value) : null,
+      label: resolveLabel(v.Label) || null,
+      custom: true,
+      source_module: moduleId,
+    });
+    seen.add(v.Name);
+    added++;
+  }
+
+  if (added > 0) {
+    stmts.insertEnum.run(baseEnum, mod, label, JSON.stringify(existing));
+    stats.enumValues += added;
+    stats.enumExtensions++;
+  }
+
+  try {
+    stmts.insertObjectPath.run('enumextension', e.Name, filePath, statSync(filePath).size);
+  } catch (e2) { console.warn('Warning:', e2.message); }
+}
+
+function extractFormExtension(parsed, filePath) {
+  const f = parsed.AxFormExtension;
+  if (!f || !f.Name) return;
+
+  // Forms are stored with minimal metadata; we record the extension's existence
+  // (object path + a graph edge to the base form) so customized forms are
+  // discoverable, without deep-parsing the control/datasource modifications.
+  const baseForm = baseObjectName(f.Name);
+  const moduleId = getModuleFromPath(filePath);
+
+  try {
+    stmts.insertGraphEdge.run(f.Name, 'formextension', baseForm, 'form', 'extends', `ext:${moduleId}`);
+  } catch (e) { console.warn('Warning:', e.message); }
+
+  try {
+    stmts.insertObjectPath.run('formextension', f.Name, filePath, statSync(filePath).size);
+  } catch (e) { console.warn('Warning:', e.message); }
+
+  stats.formExtensions++;
+}
+
 // ─── Prepared Statements (set up after db init) ─────────────────────────────
 
 let db;
 let stmts = {};
 
 function prepareStatements() {
-  stmts.insertTable = db.prepare(`INSERT OR REPLACE INTO tables VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  stmts.insertField = db.prepare(`INSERT OR REPLACE INTO fields VALUES (?,?,?,?,?,?,?,?)`);
+  stmts.insertTable = db.prepare(`INSERT OR REPLACE INTO tables VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  stmts.insertField = db.prepare(`INSERT OR REPLACE INTO fields VALUES (?,?,?,?,?,?,?,?,?,?)`);
   stmts.insertIndex = db.prepare(`INSERT OR REPLACE INTO indexes_tbl VALUES (?,?,?,?,?)`);
   stmts.insertRelation = db.prepare(`INSERT OR REPLACE INTO relations VALUES (?,?,?,?,?,?,?,?)`);
   stmts.insertEnum = db.prepare(`INSERT OR REPLACE INTO enums VALUES (?,?,?,?)`);
@@ -1003,8 +1168,8 @@ class StmtWrapper {
 
 function prepareStatementsForSqlJs() {
   const wrap = (sql) => new StmtWrapper(db, sql);
-  stmts.insertTable = wrap(`INSERT OR REPLACE INTO tables VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  stmts.insertField = wrap(`INSERT OR REPLACE INTO fields VALUES (?,?,?,?,?,?,?,?)`);
+  stmts.insertTable = wrap(`INSERT OR REPLACE INTO tables VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  stmts.insertField = wrap(`INSERT OR REPLACE INTO fields VALUES (?,?,?,?,?,?,?,?,?,?)`);
   stmts.insertIndex = wrap(`INSERT OR REPLACE INTO indexes_tbl VALUES (?,?,?,?,?)`);
   stmts.insertRelation = wrap(`INSERT OR REPLACE INTO relations VALUES (?,?,?,?,?,?,?,?)`);
   stmts.insertEnum = wrap(`INSERT OR REPLACE INTO enums VALUES (?,?,?,?)`);
@@ -1293,8 +1458,9 @@ async function main() {
 
   const validPaths = packagesPaths.filter(p => existsSync(p));
   if (validPaths.length === 0) {
-    console.error(`ERROR: No valid package paths found: ${packagesPaths.join(', ')}`);
-    process.exit(1);
+    // Throw (not process.exit) so library callers can handle it; the CLI
+    // auto-run below maps the rejection back to exit code 1.
+    throw new Error(`No valid package paths found: ${packagesPaths.join(', ')}`);
   }
   const missingPaths = packagesPaths.filter(p => !existsSync(p));
   if (missingPaths.length > 0) {
@@ -1388,6 +1554,14 @@ async function main() {
   processAxType('AxMenuItemAction', extractMenuItem, 'Action');
   processAxType('AxMenuItemOutput', extractMenuItem, 'Output');
 
+  // Extensions (customizations) — must run AFTER base objects exist so they
+  // merge into the right base table/enum, and BEFORE the FTS index is built
+  // (Phase 2) so custom fields are searchable.
+  console.log('[Ext] Customizations: AxTableExtension / AxEnumExtension / AxFormExtension...');
+  processAxType('AxTableExtension', extractTableExtension);
+  processAxType('AxEnumExtension', extractEnumExtension);
+  processAxType('AxFormExtension', extractFormExtension);
+
   db.run('COMMIT');
 
   const t1 = Date.now();
@@ -1406,7 +1580,12 @@ async function main() {
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('d365fo_version', ?)`, [D365FO_VERSION]);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('build_date', ?)`, [new Date().toISOString()]);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('packages_path', ?)`, [packagesPaths.join(';')]);
-  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.0')`);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('custom_packages_paths', ?)`, [customPackagesPaths.join(';')]);
+  db.run(
+    `INSERT OR REPLACE INTO kb_metadata VALUES ('has_customizations', ?)`,
+    [(customPackagesPaths.length > 0 || stats.tableExtensions > 0 || stats.enumExtensions > 0) ? '1' : '0']
+  );
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.1')`);
 
   db.run('COMMIT');
 
@@ -1425,6 +1604,7 @@ async function main() {
     mkdirSync(outDir, { recursive: true });
   }
 
+  releaseOutputLock(outputPath);
   writeFileSync(outputPath, buffer);
 
   const dbSizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
@@ -1454,13 +1634,53 @@ async function main() {
   console.log(`    Sec Duties:   ${stats.securityDuties}`);
   console.log(`    Sec Privs:    ${stats.securityPrivileges}`);
   console.log(`    Menu Items:   ${stats.menuItems}`);
+  console.log(`    Customizations:`);
+  console.log(`      Table ext:  ${stats.tableExtensions} (custom fields merged into base tables)`);
+  console.log(`      Enum ext:   ${stats.enumExtensions} (custom values merged into base enums)`);
+  console.log(`      Form ext:   ${stats.formExtensions}`);
+  console.log(`      Sources:    ${customPackagesPaths.length ? customPackagesPaths.join(', ') : '(none — MS only)'}`);
   console.log(`    Errors:       ${stats.errors}`);
   console.log('═══════════════════════════════════════════════════════════');
 
   db.close();
 }
 
-main().catch(err => {
-  console.error('FATAL ERROR:', err);
-  process.exit(1);
-});
+// ─── Reusable entry point ────────────────────────────────────────────────────
+
+/** Clear accumulating module state so buildKnowledgeBase() can be called more
+ *  than once in a single process (e.g. a reused Azure Functions worker). */
+function resetState() {
+  labelMap.clear();
+  classMethodNames.clear();
+  entityFieldNamesMap.clear();
+  for (const k of Object.keys(stats)) stats[k] = 0;
+  db = undefined;
+  stmts = {};
+}
+
+/**
+ * Build a KB SQLite database programmatically.
+ * @param {object}   opts
+ * @param {string[]|string} opts.packagesPaths  Source metadata roots (MS + custom).
+ * @param {string}   opts.outputPath            Destination .sqlite path.
+ * @returns {Promise<{outputPath:string, stats:object, customPackagesPaths:string[]}>}
+ */
+export async function buildKnowledgeBase({ packagesPaths: pp, outputPath: op } = {}) {
+  if (pp) packagesPaths = parsePathList(Array.isArray(pp) ? pp.join(',') : String(pp));
+  if (op) outputPath = op;
+  customPackagesPaths = packagesPaths.filter(p => !/PackagesLocalDirectory[\\/]?$/i.test(p));
+  resetState();
+  await main();
+  return { outputPath, stats: { ...stats }, customPackagesPaths: [...customPackagesPaths] };
+}
+
+// Auto-run ONLY when executed directly as a CLI (`node build/build-kb.js …`),
+// not when imported as a module (the Azure custom-delta rebuild imports it).
+const invokedDirectly = process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch(err => {
+    console.error('FATAL ERROR:', err);
+    process.exit(1);
+  });
+}

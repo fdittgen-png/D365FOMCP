@@ -58,6 +58,15 @@ export function reloadSecDb() {
   }
 }
 
+/** Close and discard the KB DB singleton so the next getKbDb() reopens it.
+ *  Used by the KB database upload endpoint before swapping the file on disk. */
+export function reloadKbDb() {
+  if (kbDb) {
+    try { kbDb.close(); } catch (e) { console.warn('Warning closing KB DB:', e.message); }
+    kbDb = null;
+  }
+}
+
 // ── Query helper ─────────────────────────────────────────────────────────────
 
 /**

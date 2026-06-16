@@ -101,3 +101,26 @@ app.http('d365admin-upload', {
     };
   },
 });
+
+// /api/admin/kb-upload — redirect to the KB database upload endpoint, which
+// (like the Sec upload) serves www/kb-upload.html with per-request placeholders.
+app.http('d365admin-kb-upload', {
+  methods: ['GET'],
+  route: 'admin/kb-upload',
+  authLevel: 'anonymous',
+  handler: async (request) => {
+    const user = getAuthUser(request);
+    const easyAuth = isEasyAuthEnabled();
+    const rejection = decideAdminAccess({
+      user,
+      easyAuth,
+      wantsHtml: true,
+      redirectTarget: '/api/admin/kb-upload',
+    });
+    if (rejection) return rejection;
+    return {
+      status: 302,
+      headers: { Location: '/api/d365kb/upload' },
+    };
+  },
+});

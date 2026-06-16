@@ -33,6 +33,10 @@ export const d365LookupTableFieldSchema = z.object({
   enum_type: z.string().nullable(),
   label: z.string().nullable(),
   mandatory: z.number().nullable(),
+  // Customization provenance (false / null on standard Microsoft fields, and
+  // on KB databases built before the customization columns existed).
+  is_extension: z.boolean(),
+  source_module: z.string().nullable(),
 });
 
 export const d365LookupTableIndexSchema = z.object({
@@ -72,6 +76,12 @@ export const d365LookupTableOutput = z.object({
   clustered_index: z.string().nullable(),
   replacement_key: z.string().nullable(),
   field_count: z.number(),
+  // Customization summary: is_customized=true when an AxTableExtension adds
+  // fields; custom_field_count counts them; customization_modules lists the
+  // models that contributed them.
+  is_customized: z.boolean(),
+  custom_field_count: z.number(),
+  customization_modules: z.array(z.string()),
   fields: z.array(d365LookupTableFieldSchema),
   indexes: z.array(d365LookupTableIndexSchema),
   outgoing_relations: z.array(d365LookupTableRelationSchema),
@@ -185,6 +195,24 @@ export const secEffectivePermissionSchema = z.object({
   grant_correct: z.string().nullable(),
   grant_invoke: z.string().nullable(),
   duty_perm: z.string().nullable(),
+  source: z.string().nullable().optional(),
+});
+
+// Deny-wins resolved view: one row per securable object after applying
+// Deny-over-Grant per operation. Each effective_* is the net verdict —
+// 'Allow', 'Deny', or null (no specification). `status` distinguishes a
+// fully-granted object from one that is partly or wholly blocked, which
+// maps directly to a UI control being enabled / greyed / hidden.
+export const secEffectiveResolvedSchema = z.object({
+  object_name: z.string(),
+  object_type: z.string().nullable(),
+  effective_read: z.string().nullable(),
+  effective_create: z.string().nullable(),
+  effective_update: z.string().nullable(),
+  effective_delete: z.string().nullable(),
+  effective_correct: z.string().nullable(),
+  effective_invoke: z.string().nullable(),
+  status: z.enum(['granted', 'partial', 'denied']),
 });
 
 export const secEffectivePermissionsOutput = z.object({
@@ -196,6 +224,9 @@ export const secEffectivePermissionsOutput = z.object({
   entry_point_count: z.number(),
   truncated: z.boolean(),
   permissions: z.array(secEffectivePermissionSchema),
+  // Deny-wins resolved view: one row per object after applying Deny-over-Grant.
+  denied_object_count: z.number(),
+  effective: z.array(secEffectiveResolvedSchema),
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -981,6 +1012,10 @@ export const secObjectAccessPathSchema = z.object({
   grant_create: z.string().nullable(),
   grant_update: z.string().nullable(),
   grant_delete: z.string().nullable(),
+  grant_correct: z.string().nullable(),
+  grant_invoke: z.string().nullable(),
+  // true when this path REMOVES access (Deny duty/role, or a Deny grant value).
+  denied: z.boolean(),
 });
 export const secObjectAccessOutput = z.object({
   object_name: z.string(),
@@ -989,6 +1024,8 @@ export const secObjectAccessOutput = z.object({
   truncated: z.boolean(),
   user_count: z.number(),
   role_count: z.number(),
+  grant_path_count: z.number(),
+  deny_path_count: z.number(),
   paths: z.array(secObjectAccessPathSchema),
   users: z.array(z.object({
     user_id: z.string(),

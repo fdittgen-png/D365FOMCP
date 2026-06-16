@@ -129,6 +129,12 @@
         <code>SecurityDatabaseCustomizations.xml</code></li>
     <li><strong>Optional (AOT):</strong> Place AOT security XMLs in an <code>aot/</code>
         subdirectory (preserving the PackagesLocalDirectory structure)</li>
+    <li><strong>Microsoft + customizations:</strong> the <code>aot/</code> tree may contain security
+        objects from <em>both</em> the Microsoft standard models <em>and</em> your customization
+        models (e.g. <code>iExtension</code>, <code>HISOL</code> from <code>C:\Workspace\DEV\Metadata</code>).
+        All <code>AxSecurityRole/Duty/Privilege</code> folders are discovered recursively and merged;
+        the contributing modules are recorded in <code>sec_metadata.security_modules</code> so you can
+        confirm the custom split after the build.</li>
   </ul>
 </div>
 

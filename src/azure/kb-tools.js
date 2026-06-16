@@ -59,6 +59,17 @@ export function registerKbTools(server, db) {
     return Number.isFinite(n) ? n : null;
   }
 
+  /** True when `col` exists on `table`. Lets tools degrade gracefully on KB
+   *  databases built before the customization columns (is_extension /
+   *  source_module / is_customized) were added by the builder. */
+  function tableHasColumn(table, col) {
+    try {
+      return q(`PRAGMA table_info(${table})`).some(c => c.name === col);
+    } catch { return false; }
+  }
+  const fieldsHaveCustomization = tableHasColumn('fields', 'is_extension');
+  const tablesHaveCustomization = tableHasColumn('tables', 'is_customized');
+
   function queryFormatted(sql, params = [], columns) {
     try {
       const rows = q(sql, params);
@@ -83,8 +94,9 @@ export function registerKbTools(server, db) {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
 
+      const customizedCol = tablesHaveCustomization ? 'is_customized' : '0 AS is_customized';
       const tbl = q(
-        `SELECT table_name, module_id, label, table_group, save_per_company, cache_lookup, clustered_index, replacement_key
+        `SELECT table_name, module_id, label, table_group, save_per_company, cache_lookup, clustered_index, replacement_key, ${customizedCol}
          FROM tables WHERE table_name = ? COLLATE NOCASE`, [tn]
       );
 
@@ -106,8 +118,13 @@ export function registerKbTools(server, db) {
       // two sides never drift.
       let fieldRows = [];
       try {
+        // is_extension / source_module are projected as constants on older DBs
+        // so downstream code can rely on the keys existing regardless.
+        const extCols = fieldsHaveCustomization
+          ? 'is_extension, source_module'
+          : '0 AS is_extension, NULL AS source_module';
         fieldRows = q(
-          `SELECT field_name, field_type, edt, enum_type, label, mandatory
+          `SELECT field_name, field_type, edt, enum_type, label, mandatory, ${extCols}
            FROM fields WHERE table_name = ? COLLATE NOCASE ORDER BY field_name`, [row.table_name]
         );
       } catch (err) {
@@ -149,6 +166,11 @@ export function registerKbTools(server, db) {
         clustered_index: row.clustered_index ?? null,
         replacement_key: row.replacement_key ?? null,
         field_count: fieldRows.length,
+        is_customized: Boolean(row.is_customized),
+        custom_field_count: fieldRows.filter(f => f.is_extension).length,
+        customization_modules: [...new Set(
+          fieldRows.filter(f => f.is_extension && f.source_module).map(f => f.source_module)
+        )],
         fields: fieldRows.map(f => ({
           name: f.field_name,
           type: f.field_type ?? null,
@@ -156,6 +178,8 @@ export function registerKbTools(server, db) {
           enum_type: f.enum_type ?? null,
           label: f.label ? resolve(f.label) : null,
           mandatory: toNum(f.mandatory),
+          is_extension: Boolean(f.is_extension),
+          source_module: f.source_module ?? null,
         })),
         indexes: idxRows.map(i => ({
           name: i.index_name,
@@ -185,6 +209,11 @@ export function registerKbTools(server, db) {
       let out = `## ${typed.table_name}\n`;
       out += `Module: ${typed.module_id || '-'} | Group: ${typed.table_group || '-'} | PerCompany: ${typed.save_per_company ?? '-'} | Cache: ${typed.cache_lookup || '-'}\n`;
       if (typed.label) out += `Label: ${typed.label}\n`;
+      if (typed.is_customized) {
+        out += `Customized: ${typed.custom_field_count} custom field(s)`
+          + (typed.customization_modules.length ? ` from ${typed.customization_modules.join(', ')}` : '')
+          + '\n';
+      }
       out += '\n';
 
       out += `## Fields (${typed.field_count})\n`;
@@ -196,8 +225,9 @@ export function registerKbTools(server, db) {
           Enum: f.enum_type ?? '',
           Label: f.label ?? '-',
           Mand: f.mandatory ?? '',
+          Custom: f.is_extension ? (f.source_module || '✓') : '',
         })),
-        ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand'],
+        ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand', 'Custom'],
       );
       out += '\n\n';
 
