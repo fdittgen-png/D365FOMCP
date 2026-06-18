@@ -118,6 +118,52 @@ export function _clearSodRuleset() {
   _sodRulesetError = null;
 }
 
+/** Map the D365 SegregationOfDutiesSeverity enum (Low/Medium/High, or its
+ *  numeric form 0/1/2) onto the risk_level vocabulary the SoD scorer uses. */
+function severityToRiskLevel(severity) {
+  if (severity == null) return 'Medium';
+  const s = String(severity).trim().toLowerCase();
+  if (s === 'high' || s === '2') return 'High';
+  if (s === 'low' || s === '0') return 'Low';
+  if (s === 'medium' || s === '1') return 'Medium';
+  // Unknown value (e.g. a future enum member) — keep it verbatim so it surfaces.
+  return String(severity).trim() || 'Medium';
+}
+
+/**
+ * Prefer SoD rules exported from D365 (`sod_rules` table) over the external
+ * SOD_RULES_FILE JSON. Each D365 rule pairs two duties (by AOT identifier); a
+ * violation occurs when a user holds BOTH. We adapt that pair onto the same
+ * two-group shape detectSodViolations consumes (each group = one duty), so the
+ * detector is source-agnostic. Returns true when DB rules were loaded.
+ */
+function loadSodRulesFromDb(db) {
+  let rows;
+  try {
+    rows = db.prepare(`SELECT rule_name, duty_first, duty_second, duty_first_name,
+      duty_second_name, severity, risk, mitigation FROM sod_rules`).all();
+  } catch {
+    return false; // table absent (e.g. a pre-gap-#2 DB) — keep JSON behaviour
+  }
+  if (!rows || !rows.length) return false;
+  _sodRuleset = {
+    source: 'd365',
+    rules: rows.map((r) => ({
+      id: r.rule_name,
+      name: r.rule_name,
+      risk_level: severityToRiskLevel(r.severity),
+      category: '',
+      severity: r.severity || undefined,
+      risk: r.risk || undefined,
+      mitigation: r.mitigation || undefined,
+      duty_group_a: { name: r.duty_first_name || r.duty_first, duties: [r.duty_first] },
+      duty_group_b: { name: r.duty_second_name || r.duty_second, duties: [r.duty_second] },
+    })),
+  };
+  _sodRulesetError = null;
+  return true;
+}
+
 // ── Shared: expand roles through sub-role hierarchy ─────────────────────────
 
 function expandRoles(q, roleIds) {
@@ -158,7 +204,7 @@ function effectiveDuties(q, allRoleIds) {
 
 // ── Shared: run SoD detection for a set of duties ───────────────────────────
 
-const RISK_WEIGHTS = { Critical: 3, High: 2, Medium: 1 };
+const RISK_WEIGHTS = { Critical: 3, High: 2, Medium: 1, Low: 1 };
 
 function detectSodViolations(dutySet, dutyToRoles, roleNameMap) {
   if (!_sodRuleset) return [];
@@ -176,6 +222,10 @@ function detectSodViolations(dutySet, dutyToRoles, roleNameMap) {
         rule_name: rule.name,
         risk_level: rule.risk_level || 'Medium',
         category: rule.category || '',
+        // Carried through from D365-sourced rules; absent for JSON rules.
+        ...(rule.severity ? { severity: rule.severity } : {}),
+        ...(rule.risk ? { risk: rule.risk } : {}),
+        ...(rule.mitigation ? { mitigation: rule.mitigation } : {}),
         group_a_name: rule.duty_group_a.name,
         group_a_matched: matchedA,
         group_a_roles: [...rolesA],
@@ -192,9 +242,25 @@ function detectSodViolations(dutySet, dutyToRoles, roleNameMap) {
 
 export function registerSecTools(server, db) {
 
-  loadSodRuleset();
+  loadSodRuleset();          // external JSON ruleset (SOD_RULES_FILE), if any
+  loadSodRulesFromDb(db);    // prefer live D365 rules (sod_rules table) when present
 
   const q = (sql, params = []) => query(db, sql, params);
+
+  // The `resource_type` column on role_direct_entity_permissions was added in a
+  // later (v3) build. Older deployed snapshots lack it, so a query referencing
+  // `rdep.resource_type` throws "no such column" — which surfaced as the
+  // sec_effective_permissions / sec_object_access schema fault. Detect the
+  // column once at registration and fall back to a literal object type so both
+  // tools degrade gracefully on a pre-v3 DB instead of erroring.
+  let rdepHasResourceType = false;
+  try {
+    rdepHasResourceType = q('PRAGMA table_info(role_direct_entity_permissions)')
+      .some((c) => String(c.name).toLowerCase() === 'resource_type');
+  } catch { /* table absent — keep false */ }
+  const rdepObjectType = rdepHasResourceType
+    ? "COALESCE(rdep.resource_type, 'DataEntity')"
+    : "'DataEntity'";
 
   // ── 1. sec_lookup_role ──────────────────────────────────────────────────
 
@@ -1095,19 +1161,23 @@ export function registerSecTools(server, db) {
         grant_create: formatCrudFlag(t.grant_create),
         grant_update: formatCrudFlag(t.grant_update),
         grant_delete: formatCrudFlag(t.grant_delete),
+        grant_correct: formatCrudFlag(t.grant_correct),
+        grant_invoke: formatCrudFlag(t.grant_invoke),
       }));
 
       let out = `## Permission Trace: ${typed.role_name}\n`;
       out += `${typed.result_count} entry point(s)` + (typed.object_name ? ` matching "${typed.object_name}"` : '') + '\n';
       out += `Grant rows: ${typed.grant_count} • Deny rows: ${typed.deny_count}\n\n`;
       // P4-07: explicit CRUD legend so an agent doesn't have to guess.
-      out += `**Legend:** Y = granted • N = not granted • (empty) = no specification\n\n`;
+      // Co = Correct, Inv = Invoke (Invoke governs action menu items / buttons).
+      out += `**Legend:** Y = granted • N = not granted • (empty) = no specification • Co = Correct • Inv = Invoke\n\n`;
       if (typed.deny_count > 0) {
-        out += `_⛔ Deny rows actively REMOVE the listed CRUD on the entry point. They are excluded from \`sec_effective_permissions\`. Inspect carefully when answering "why does X have access to Y?"._\n\n`;
+        out += `_⛔ Deny rows actively REMOVE the listed access on the entry point and override grants (Deny wins). \`sec_effective_permissions\` resolves the net verdict; this view shows every contributing path._\n\n`;
       }
       out += formatMarkdownTable(annotated, [
         'Deny', 'duty_id', 'priv_name', 'object_type', 'object_name',
         'grant_read', 'grant_create', 'grant_update', 'grant_delete',
+        'grant_correct', 'grant_invoke',
       ]);
       if (typed.truncated) out += truncationNote('user', limit);
       return structuredResult(typed, out);
@@ -1215,7 +1285,7 @@ export function registerSecTools(server, db) {
     'sec_effective_permissions',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Compute flattened effective permissions for a user or role: all entry points with CRUD grants, resolving sub-roles. Optionally filter by object name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Compute the NET effective permissions for a user or role, resolving sub-roles and applying Deny-over-Grant (Deny wins). Returns one row per object with the effective verdict on all six access levels (Read/Create/Update/Delete/Correct/Invoke) and a status: granted (control enabled) · partial (some ops denied → control likely greyed) · denied (blocked). An object ABSENT from the result means no grant at all (control hidden). Consumes duty chains, direct privileges and direct entity permissions. Use to answer "can this user actually use this button, and if not why?".',
       inputSchema: {
         user_id: z.string().min(1).max(500).optional().describe('User ID (provide this OR role_name)'),
         role_name: z.string().min(1).max(500).optional().describe('Role name (provide this OR user_id)'),
@@ -1260,6 +1330,8 @@ export function registerSecTools(server, db) {
         entry_point_count: 0,
         truncated: false,
         permissions: [],
+        denied_object_count: 0,
+        effective: [],
       });
 
       const placeholders = roleIds.map(() => '?').join(',');
@@ -1277,44 +1349,62 @@ export function registerSecTools(server, db) {
       const allRoleArr = [...allRoleIds];
       const allPlaceholders = allRoleArr.map(() => '?').join(',');
 
-      let objectFilter = '';
       const objParam = object_name ? `%${object_name.trim()}%` : null;
-      if (objParam) objectFilter = ' AND ep.object_name LIKE ?';
+      const epFilter = objParam ? ' AND ep.object_name LIKE ?' : '';
+      const entityFilter = objParam ? ' AND rdep.entity_name LIKE ?' : '';
 
+      // Hard safety ceiling on contributing rows so a many-role user can't
+      // pull millions of entry points into memory. The Deny-wins aggregation
+      // below collapses these into one row per object.
+      const RAW_CAP = 20000;
       const queryParams = [];
-      queryParams.push(...allRoleArr);
+      queryParams.push(...allRoleArr);                 // branch 1: duties
       if (objParam) queryParams.push(objParam);
-      queryParams.push(...allRoleArr);
+      queryParams.push(...allRoleArr);                 // branch 2: direct privileges
       if (objParam) queryParams.push(objParam);
-      queryParams.push(limit);
+      queryParams.push(...allRoleArr);                 // branch 3: direct entity perms
+      if (objParam) queryParams.push(objParam);
+      queryParams.push(RAW_CAP);
 
-      // P4-02 / CR-SEC-002: only `permission_type = 'Grant'` rows from
-      // role_duties contribute to effective permissions. Deny rows actively
-      // remove permissions and are inspected via `sec_permission_trace`.
-      const perms = q(`
-        SELECT DISTINCT ep.object_name, ep.object_type,
+      // P4-02 / CR-SEC-002 superseded: effective permissions now resolve
+      // Deny-over-Grant rather than dropping Deny rows. We gather every
+      // contributing path — duty chain (Grant AND Deny), direct privileges,
+      // and direct entity permissions — carrying the duty-level and role-level
+      // permission_type so the aggregation can apply Deny-wins per operation.
+      const rows = q(`
+        SELECT ep.object_name, ep.object_type,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke,
-               rd.permission_type as duty_perm
+               rd.permission_type as duty_perm, r.permission_type as role_perm,
+               'duty' as source
         FROM role_duties rd
+        JOIN roles r ON r.role_id = rd.role_id
         JOIN duty_privileges dp ON dp.duty_id = rd.duty_id COLLATE NOCASE
         JOIN privilege_entry_points ep ON ep.privilege_name = dp.privilege_name COLLATE NOCASE
-        WHERE rd.role_id IN (${allPlaceholders})
-          AND rd.permission_type = 'Grant'
-          ${objectFilter}
+        WHERE rd.role_id IN (${allPlaceholders}) ${epFilter}
         UNION ALL
-        SELECT DISTINCT ep.object_name, ep.object_type,
+        SELECT ep.object_name, ep.object_type,
                ep.grant_read, ep.grant_create, ep.grant_update,
                ep.grant_delete, ep.grant_correct, ep.grant_invoke,
-               'Grant' as duty_perm
+               'Grant' as duty_perm, r.permission_type as role_perm,
+               'direct_priv' as source
         FROM role_direct_privileges rp
+        JOIN roles r ON r.role_id = rp.role_id
         JOIN privilege_entry_points ep ON ep.privilege_name = rp.privilege_name COLLATE NOCASE
-        WHERE rp.role_id IN (${allPlaceholders}) ${objectFilter}
-        ORDER BY object_name
+        WHERE rp.role_id IN (${allPlaceholders}) ${epFilter}
+        UNION ALL
+        SELECT rdep.entity_name as object_name, ${rdepObjectType} as object_type,
+               rdep.grant_read, rdep.grant_create, rdep.grant_update,
+               rdep.grant_delete, rdep.grant_correct, rdep.grant_invoke,
+               'Grant' as duty_perm, r.permission_type as role_perm,
+               'direct_entity' as source
+        FROM role_direct_entity_permissions rdep
+        JOIN roles r ON r.role_id = rdep.role_id
+        WHERE rdep.role_id IN (${allPlaceholders}) ${entityFilter}
         LIMIT ?
       `, queryParams);
 
-      if (!perms.length) {
+      if (!rows.length) {
         return emptyResult(`effective permissions for ${subjectLabel}` +
           (object_name ? ` on "${object_name}"` : ''), {
           subject_type: subjectType,
@@ -1325,8 +1415,72 @@ export function registerSecTools(server, db) {
           entry_point_count: 0,
           truncated: false,
           permissions: [],
+          denied_object_count: 0,
+          effective: [],
         });
       }
+
+      // ── Deny-wins aggregation ────────────────────────────────────────────
+      // For each operation on a row, derive a per-op verdict: a path DENIES an
+      // operation when the duty or role is a Deny carrier (it removes whatever
+      // the privilege would have granted) or the stored grant value is itself
+      // 'Deny'. Otherwise a non-null grant value means Allow. Across all paths
+      // for an object, Deny on an op wins over Allow.
+      const OPS = ['read', 'create', 'update', 'delete', 'correct', 'invoke'];
+      const rowOpSignal = (row, op) => {
+        const v = row['grant_' + op];
+        if (v === null || v === undefined || v === '') return null;
+        const pathDeny = row.duty_perm === 'Deny' || row.role_perm === 'Deny';
+        if (pathDeny || /^deny$/i.test(String(v))) return 'Deny';
+        return 'Allow';
+      };
+
+      const agg = new Map(); // key -> { object_name, object_type, ops{}, grantPath, denyPath }
+      for (const row of rows) {
+        const key = `${row.object_name}\0${row.object_type ?? ''}`;
+        let e = agg.get(key);
+        if (!e) {
+          e = { object_name: row.object_name, object_type: row.object_type ?? null,
+                ops: {}, grantPath: false, denyPath: false };
+          agg.set(key, e);
+        }
+        const rowDeny = row.duty_perm === 'Deny' || row.role_perm === 'Deny';
+        if (rowDeny) e.denyPath = true; else e.grantPath = true;
+        for (const op of OPS) {
+          const sig = rowOpSignal(row, op);
+          if (sig === null) continue;
+          // Deny wins: once Deny, stay Deny; otherwise Allow.
+          if (e.ops[op] !== 'Deny') e.ops[op] = sig === 'Deny' ? 'Deny' : (e.ops[op] || 'Allow');
+        }
+      }
+
+      const effective = [...agg.values()].map(e => {
+        const present = OPS.filter(op => e.ops[op]);
+        let status;
+        if (present.length) {
+          const anyDeny = present.some(op => e.ops[op] === 'Deny');
+          const anyAllow = present.some(op => e.ops[op] === 'Allow');
+          status = anyDeny && anyAllow ? 'partial' : anyDeny ? 'denied' : 'granted';
+        } else {
+          // Entry point referenced but with no explicit CRUD spec: launch
+          // access governed purely by Grant vs Deny path presence.
+          status = e.denyPath && !e.grantPath ? 'denied' : e.denyPath && e.grantPath ? 'partial' : 'granted';
+        }
+        return {
+          object_name: e.object_name,
+          object_type: e.object_type,
+          effective_read: e.ops.read ?? null,
+          effective_create: e.ops.create ?? null,
+          effective_update: e.ops.update ?? null,
+          effective_delete: e.ops.delete ?? null,
+          effective_correct: e.ops.correct ?? null,
+          effective_invoke: e.ops.invoke ?? null,
+          status,
+        };
+      }).sort((a, b) => a.object_name.localeCompare(b.object_name));
+
+      const deniedCount = effective.filter(e => e.status !== 'granted').length;
+      const cappedEffective = effective.slice(0, limit);
 
       const typed = {
         subject_type: subjectType,
@@ -1334,9 +1488,9 @@ export function registerSecTools(server, db) {
         subject_label: subjectLabel,
         role_count: allRoleArr.length,
         object_filter: object_name ?? null,
-        entry_point_count: perms.length,
-        truncated: perms.length >= limit,
-        permissions: perms.map(p => ({
+        entry_point_count: rows.length,
+        truncated: rows.length >= RAW_CAP || effective.length > limit,
+        permissions: rows.slice(0, limit).map(p => ({
           object_name: p.object_name,
           object_type: p.object_type ?? null,
           grant_read: p.grant_read ?? null,
@@ -1346,28 +1500,34 @@ export function registerSecTools(server, db) {
           grant_correct: p.grant_correct ?? null,
           grant_invoke: p.grant_invoke ?? null,
           duty_perm: p.duty_perm ?? null,
+          source: p.source ?? null,
         })),
+        denied_object_count: deniedCount,
+        effective: cappedEffective,
       };
 
-      // Markdown fallback from the typed object.
+      // ── Markdown fallback: lead with the Deny-wins resolved view ──────────
       let out = `## Effective Permissions\n${typed.subject_label}\n`;
-      out += `${typed.entry_point_count} entry point(s)` + (typed.object_filter ? ` matching "${typed.object_filter}"` : '') + '\n';
-      out += `Roles expanded (incl. sub-roles): ${typed.role_count}\n\n`;
-      out += `_Note: Deny overrides are excluded from this result. Use \`sec_permission_trace\` to see the full picture._\n\n`;
-      // P4-07: explicit CRUD legend + Y/N rendering.
-      out += `**Legend:** Y = granted • N = not granted • (empty) = no specification\n\n`;
-      const renderedPerms = typed.permissions.map(p => ({
-        object_name: p.object_name,
-        object_type: p.object_type ?? '',
-        grant_read: formatCrudFlag(p.grant_read),
-        grant_create: formatCrudFlag(p.grant_create),
-        grant_update: formatCrudFlag(p.grant_update),
-        grant_delete: formatCrudFlag(p.grant_delete),
-        duty_perm: formatPermission(p.duty_perm),
+      out += `${effective.length} object(s) • ${deniedCount} with a Deny override • from ${typed.entry_point_count} path(s) across ${typed.role_count} role(s)` +
+             (typed.object_filter ? ` • filter "${typed.object_filter}"` : '') + '\n\n';
+      out += `_Deny-wins applied: an explicit Deny on any operation overrides all Grants. ` +
+             `**status** = granted (enabled) · partial (some ops denied → control likely greyed) · denied (blocked). ` +
+             `An object **absent** here means no grant at all (control hidden)._\n\n`;
+      out += `**Legend:** Y = allowed • ⛔ = denied • (empty) = no specification\n\n`;
+      const flag = (v) => v == null || v === '' ? '' : (/^deny$/i.test(String(v)) ? '⛔' : 'Y');
+      const renderedEff = cappedEffective.map(e => ({
+        object_name: e.object_name,
+        type: e.object_type ?? '',
+        status: e.status,
+        R: flag(e.effective_read),
+        C: flag(e.effective_create),
+        U: flag(e.effective_update),
+        D: flag(e.effective_delete),
+        Co: flag(e.effective_correct),
+        Inv: flag(e.effective_invoke),
       }));
-      out += formatMarkdownTable(renderedPerms, [
-        'object_name', 'object_type', 'grant_read', 'grant_create',
-        'grant_update', 'grant_delete', 'duty_perm',
+      out += formatMarkdownTable(renderedEff, [
+        'object_name', 'type', 'status', 'R', 'C', 'U', 'D', 'Co', 'Inv',
       ]);
       if (typed.truncated) out += truncationNote('user', limit);
 
@@ -1699,7 +1859,7 @@ export function registerSecTools(server, db) {
     'sec_sod_check',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Check Segregation of Duties (SoD) violations for one or all users. Uses an external JSON ruleset (SOD_RULES_FILE env var). Each rule defines two duty groups; a violation occurs when a user holds at least one duty from each group.',
+      description: 'Check Segregation of Duties (SoD) violations for one or all users. Prefers the live D365 SoD rules captured at build time (sod_rules table, from SystemSegregationOfDutiesRuleEntity); falls back to an external JSON ruleset (SOD_RULES_FILE env var) when no D365 rules are present. A violation occurs when a user holds duties from both sides of a rule.',
       inputSchema: {
         user_id: z.string().min(1).max(500).optional().describe('Check a single user (omit for all enabled users)'),
         category: z.string().min(1).max(200).optional().describe('Filter rules by category (e.g., accounts_payable)'),
@@ -1803,6 +1963,10 @@ export function registerSecTools(server, db) {
       out += `${typed.user_count} user(s) checked • ${typed.violation_count} violation(s) • Risk score: ${typed.risk_score}\n\n`;
       for (const ur of allResults) {
         out += `### ${ur.user_id} (${ur.person_name || 'N/A'}) — ${ur.violation_count} violation(s)\n`;
+        // D365-sourced rules carry a mitigation; only show that column when present.
+        const hasMitigation = ur.violations.some(v => v.mitigation);
+        const cols = ['rule_id', 'rule_name', 'risk', 'group_a', 'group_b'];
+        if (hasMitigation) cols.push('mitigation');
         out += formatMarkdownTable(
           ur.violations.map(v => ({
             rule_id: v.rule_id,
@@ -1810,8 +1974,9 @@ export function registerSecTools(server, db) {
             risk: v.risk_level,
             group_a: `${v.group_a_name}: ${v.group_a_matched.join(', ')}`,
             group_b: `${v.group_b_name}: ${v.group_b_matched.join(', ')}`,
+            ...(hasMitigation ? { mitigation: v.mitigation || '' } : {}),
           })),
-          ['rule_id', 'rule_name', 'risk', 'group_a', 'group_b'],
+          cols,
         ) + '\n\n';
       }
       return structuredResult(typed, out);
@@ -1824,7 +1989,7 @@ export function registerSecTools(server, db) {
     'sec_what_if',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Simulate adding or removing roles from a user. Returns the projected licence tier change (with monthly/annual cost delta) and SoD impact (new vs resolved violations). Requires SOD_RULES_FILE for SoD analysis.',
+      description: 'Simulate adding or removing roles from a user. Returns the projected licence tier change (with monthly/annual cost delta) and SoD impact (new vs resolved violations). SoD analysis uses the live D365 rules (sod_rules table) when present, otherwise the SOD_RULES_FILE JSON ruleset.',
       inputSchema: {
         user_id: z.string().min(1).max(500).describe('User ID to simulate changes for'),
         add_roles: z.array(z.string().min(1).max(500)).optional().default([]).describe('Role names to add'),
@@ -1903,7 +2068,7 @@ export function registerSecTools(server, db) {
         sodNew = sodProjected.filter(v => !currentIds.has(v.rule_id));
         sodResolved = sodCurrent.filter(v => !projectedIds.has(v.rule_id));
       } else {
-        warnings.push('SOD_RULES_FILE not configured — SoD impact not computed.');
+        warnings.push('No SoD ruleset available (no sod_rules in the DB and SOD_RULES_FILE not configured) — SoD impact not computed.');
       }
 
       const currentRoleNames = currentRoleIds.map(rid => roleNameMap.get(rid) || rid);
@@ -1984,7 +2149,7 @@ export function registerSecTools(server, db) {
     'sec_object_access',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Reverse permission chain: given an object name (menu item, form, table), find all privileges, duties, roles, and users that grant access to it. Walks entry_points → privileges → duties → roles → users.',
+      description: 'Reverse permission chain: given an object name (menu item, form, table), find every privilege, duty, role and user whose access touches it — including Deny paths (⛔, which REMOVE access and override grants) and direct entity permissions. Surfaces all six access levels (Read/Create/Update/Delete/Correct/Invoke; Invoke governs action buttons). Use to answer "who can — or is blocked from — this object/button?".',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
         limit: z.number().int().min(1).max(500).optional().default(200).describe('Max access paths to return'),
@@ -1995,41 +2160,64 @@ export function registerSecTools(server, db) {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
       const objName = object_name.trim();
 
-      // Step 1: find entry points matching the object
-      const paths = q(`
-        SELECT r.role_name, r.permission_type,
+      // Step 1: find every path touching the object — Grant AND Deny, plus
+      // direct privileges and direct (object-level) entity permissions. Deny
+      // paths are NOT filtered out: a disabled button is often explained by a
+      // Deny that removes access the grants would otherwise give.
+      const like = `%${objName}%`;
+      const rawPaths = q(`
+        SELECT r.role_name, rd.permission_type as duty_perm, r.permission_type as role_perm,
                rd.duty_id, ep.privilege_name,
                ep.entry_point_name, ep.object_type,
-               ep.grant_read, ep.grant_create, ep.grant_update, ep.grant_delete
+               ep.grant_read, ep.grant_create, ep.grant_update, ep.grant_delete,
+               ep.grant_correct, ep.grant_invoke
         FROM privilege_entry_points ep
         JOIN duty_privileges dp ON dp.privilege_name = ep.privilege_name COLLATE NOCASE
         JOIN role_duties rd ON rd.duty_id = dp.duty_id COLLATE NOCASE
         JOIN roles r ON r.role_id = rd.role_id
         WHERE (ep.object_name LIKE ? COLLATE NOCASE OR ep.entry_point_name LIKE ? COLLATE NOCASE)
-          AND rd.permission_type = 'Grant'
         UNION ALL
-        SELECT r.role_name, r.permission_type,
+        SELECT r.role_name, 'Grant' as duty_perm, r.permission_type as role_perm,
                '(direct)' as duty_id, rp.privilege_name,
                ep.entry_point_name, ep.object_type,
-               ep.grant_read, ep.grant_create, ep.grant_update, ep.grant_delete
+               ep.grant_read, ep.grant_create, ep.grant_update, ep.grant_delete,
+               ep.grant_correct, ep.grant_invoke
         FROM privilege_entry_points ep
         JOIN role_direct_privileges rp ON rp.privilege_name = ep.privilege_name COLLATE NOCASE
         JOIN roles r ON r.role_id = rp.role_id
         WHERE (ep.object_name LIKE ? COLLATE NOCASE OR ep.entry_point_name LIKE ? COLLATE NOCASE)
+        UNION ALL
+        SELECT r.role_name, 'Grant' as duty_perm, r.permission_type as role_perm,
+               '(direct entity)' as duty_id, '(direct entity)' as privilege_name,
+               rdep.entity_name as entry_point_name, ${rdepObjectType} as object_type,
+               rdep.grant_read, rdep.grant_create, rdep.grant_update, rdep.grant_delete,
+               rdep.grant_correct, rdep.grant_invoke
+        FROM role_direct_entity_permissions rdep
+        JOIN roles r ON r.role_id = rdep.role_id
+        WHERE rdep.entity_name LIKE ? COLLATE NOCASE
         ORDER BY role_name
         LIMIT ?
-      `, [`%${objName}%`, `%${objName}%`, `%${objName}%`, `%${objName}%`, limit]);
+      `, [like, like, like, like, like, limit]);
 
-      if (!paths.length) return emptyResult(`access paths for "${objName}"`, {
+      const hasDenyValue = (p) => /^deny$/i.test(String(p.grant_read ?? '')) ||
+        /^deny$/i.test(String(p.grant_create ?? '')) || /^deny$/i.test(String(p.grant_update ?? '')) ||
+        /^deny$/i.test(String(p.grant_delete ?? '')) || /^deny$/i.test(String(p.grant_correct ?? '')) ||
+        /^deny$/i.test(String(p.grant_invoke ?? ''));
+      const isDenied = (p) => p.duty_perm === 'Deny' || p.role_perm === 'Deny' || hasDenyValue(p);
+
+      if (!rawPaths.length) return emptyResult(`access paths for "${objName}"`, {
         object_name: objName,
         limit,
         result_count: 0,
         truncated: false,
         user_count: 0,
         role_count: 0,
+        grant_path_count: 0,
+        deny_path_count: 0,
         paths: [],
         users: [],
       });
+      const paths = rawPaths;
 
       // Step 2: find users who hold these roles
       const roleNames = [...new Set(paths.map(p => p.role_name))];
@@ -2044,6 +2232,7 @@ export function registerSecTools(server, db) {
         LIMIT ?
       `, [...roleNames, 500]) : [];
 
+      const denyPathCount = paths.filter(isDenied).length;
       const typed = {
         object_name: objName,
         limit,
@@ -2051,9 +2240,11 @@ export function registerSecTools(server, db) {
         truncated: paths.length >= limit,
         user_count: new Set(users.map(u => u.user_id)).size,
         role_count: roleNames.length,
+        grant_path_count: paths.length - denyPathCount,
+        deny_path_count: denyPathCount,
         paths: paths.map(p => ({
           role_name: p.role_name,
-          permission_type: p.permission_type ?? null,
+          permission_type: p.duty_perm ?? null,
           duty_id: p.duty_id ?? null,
           privilege_name: p.privilege_name,
           entry_point_name: p.entry_point_name,
@@ -2062,6 +2253,9 @@ export function registerSecTools(server, db) {
           grant_create: p.grant_create ?? null,
           grant_update: p.grant_update ?? null,
           grant_delete: p.grant_delete ?? null,
+          grant_correct: p.grant_correct ?? null,
+          grant_invoke: p.grant_invoke ?? null,
+          denied: isDenied(p),
         })),
         users: users.map(u => ({
           user_id: u.user_id,
@@ -2071,22 +2265,36 @@ export function registerSecTools(server, db) {
       };
 
       let out = `## Object Access: ${typed.object_name}\n`;
-      out += `${typed.result_count} access path(s) • ${typed.role_count} role(s) • ${typed.user_count} user(s)\n\n`;
+      out += `${typed.result_count} access path(s) • ${typed.role_count} role(s) • ${typed.user_count} user(s) • ` +
+             `${typed.grant_path_count} grant / ${typed.deny_path_count} deny\n\n`;
+      if (typed.deny_path_count > 0) {
+        out += `_⛔ rows are Deny paths — they REMOVE the access on this object and override grants (Deny wins)._\n\n`;
+      }
+      out += `**Legend:** Y = allowed • ⛔ = denied • (empty) = no specification\n\n`;
 
+      // On a Deny path, any specified operation becomes a removal (⛔);
+      // on a Grant path, render the stored flag as Y / (empty).
+      const cell = (p, v) => {
+        if (v == null || v === '') return '';
+        if (p.denied || /^deny$/i.test(String(v))) return '⛔';
+        return formatCrudFlag(v);
+      };
       out += '### Access Paths\n';
       out += formatMarkdownTable(
         typed.paths.map(p => ({
-          role: p.role_name,
+          role: (p.denied ? '⛔ ' : '') + p.role_name,
           duty: p.duty_id ?? '',
           privilege: p.privilege_name,
           entry_point: p.entry_point_name,
           type: p.object_type ?? '',
-          R: formatCrudFlag(p.grant_read),
-          C: formatCrudFlag(p.grant_create),
-          U: formatCrudFlag(p.grant_update),
-          D: formatCrudFlag(p.grant_delete),
+          R: cell(p, p.grant_read),
+          C: cell(p, p.grant_create),
+          U: cell(p, p.grant_update),
+          D: cell(p, p.grant_delete),
+          Co: cell(p, p.grant_correct),
+          Inv: cell(p, p.grant_invoke),
         })),
-        ['role', 'duty', 'privilege', 'entry_point', 'type', 'R', 'C', 'U', 'D'],
+        ['role', 'duty', 'privilege', 'entry_point', 'type', 'R', 'C', 'U', 'D', 'Co', 'Inv'],
       ) + '\n\n';
 
       if (users.length) {

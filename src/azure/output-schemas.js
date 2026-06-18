@@ -961,6 +961,10 @@ export const secSodViolationSchema = z.object({
   rule_name: z.string(),
   risk_level: z.string(),
   category: z.string(),
+  // Present for rules sourced from the D365 SoD export (not the JSON ruleset).
+  severity: z.string().optional(),
+  risk: z.string().optional(),
+  mitigation: z.string().optional(),
   group_a_name: z.string(),
   group_a_matched: z.array(z.string()),
   group_a_roles: z.array(z.string()),

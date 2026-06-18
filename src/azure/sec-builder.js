@@ -145,6 +145,26 @@ CREATE TABLE IF NOT EXISTS role_direct_entity_permissions (
 );
 CREATE INDEX IF NOT EXISTS idx_rdep_entity ON role_direct_entity_permissions(entity_name);
 
+-- SEGREGATION OF DUTIES RULES (from D365 DMF: SystemSegregationOfDutiesRuleEntity)
+-- duty_first / duty_second are the AOT duty identifiers (join to duties.duty_id).
+-- A rule is violated when a user holds BOTH duties. Severity is the D365
+-- SegregationOfDutiesSeverity enum (Low/Medium/High). Supersedes the external
+-- SOD_RULES_FILE JSON ruleset when populated.
+CREATE TABLE IF NOT EXISTS sod_rules (
+  rule_name        TEXT PRIMARY KEY,
+  duty_first       TEXT NOT NULL,
+  duty_second      TEXT NOT NULL,
+  duty_first_name  TEXT,
+  duty_second_name TEXT,
+  severity         TEXT,
+  risk             TEXT,
+  mitigation       TEXT,
+  valid_from       TEXT,
+  valid_to         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sod_first  ON sod_rules(duty_first COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_sod_second ON sod_rules(duty_second COLLATE NOCASE);
+
 -- SEARCH INDEX + METADATA
 CREATE TABLE IF NOT EXISTS sec_search (
   object_type      TEXT,
@@ -291,16 +311,40 @@ function getModuleFromPath(filePath, packagesPaths) {
   return 'Unknown';
 }
 
+/**
+ * Recursively collect en-US `*.label.txt` files under an AxLabelFile directory.
+ *
+ * Label resources are nested at
+ * `AxLabelFile/LabelResources/<locale>/<name>.<locale>.label.txt` — NOT directly
+ * in the AxLabelFile dir — so a flat readdir finds nothing (the gap #4 root
+ * cause: `Labels loaded: 0`). Locale is matched case-insensitively because some
+ * packages ship `en-us` rather than `en-US`.
+ */
+function findLabelFiles(dir, depth = 0, out = []) {
+  if (depth > 4) return out;
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); }
+  catch { return out; }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      findLabelFiles(full, depth + 1, out);
+    } else if (/\.label\.txt$/i.test(entry.name) && /en-us/i.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 /** Load label files from a packages directory */
 function loadLabels(packagesPath) {
   const labels = new Map();
   const labelDirs = findAxDirs(packagesPath, 'AxLabelFile');
 
   for (const dir of labelDirs) {
-    try {
-      for (const file of readdirSync(dir)) {
-        if (!file.endsWith('.label.txt') || !file.includes('en-US')) continue;
-        const content = readFileSync(join(dir, file), 'utf-8');
+    for (const file of findLabelFiles(dir)) {
+      try {
+        const content = readFileSync(file, 'utf-8');
         for (const line of content.split('\n')) {
           const idx = line.indexOf('=');
           if (idx > 0) {
@@ -309,8 +353,8 @@ function loadLabels(packagesPath) {
             if (id && text) labels.set(id, text);
           }
         }
-      }
-    } catch { /* skip */ }
+      } catch { /* skip */ }
+    }
   }
   return labels;
 }
@@ -361,12 +405,22 @@ function getEffectivePermissionType(rawDmfPerm, roleName) {
 // Exported for tests
 export { getEffectivePermissionType };
 
-/** Find a DMF file by trying multiple name variants */
+/** Find a DMF file by trying multiple name variants.
+ *  First tries each name as an exact path; if none hit, falls back to a
+ *  case-insensitive directory scan (DMF names files by entity *label*, whose
+ *  casing/spacing varies between exports, e.g. `Security segregation of duties
+ *  rule.xml`). */
 function findDmfFile(dir, ...names) {
   for (const name of names) {
     const path = join(dir, name);
     if (existsSync(path)) return path;
   }
+  try {
+    const wanted = new Set(names.map((n) => n.toLowerCase()));
+    for (const entry of readdirSync(dir)) {
+      if (wanted.has(entry.toLowerCase())) return join(dir, entry);
+    }
+  } catch { /* dir unreadable / missing — fall through to null */ }
   return null;
 }
 
@@ -539,6 +593,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   // ── Phase 1: Parse AOT Security Metadata ───────────────────────────────────
 
   let packagesPaths = [];
+  let labelsLoaded = 0;  // visible at the DATA QUALITY CHECKS site below
 
   if (packagesPathArg && packagesPathArg.toLowerCase() !== 'skip') {
     log('[1/5] Parsing AOT security metadata...');
@@ -553,7 +608,8 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         for (const [k, v] of labels) labelMap.set(k, v);
       }
     }
-    log(`  Labels loaded: ${labelMap.size}`);
+    labelsLoaded = labelMap.size;
+    log(`  Labels loaded: ${labelsLoaded}`);
 
     const rl = (raw) => resolveLabel(labelMap, raw);
 
@@ -1170,6 +1226,51 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
       } else {
         log('    System Security Permissions.xml not found — role_direct_entity_permissions will be AOT-only');
       }
+
+      // -------------------------------------------------------------------
+      // 2j: Segregation of Duties rules (gap #2)
+      // -------------------------------------------------------------------
+      // `SystemSegregationOfDutiesRuleEntity` exports the SoD rules configured
+      // in System administration > Security > Segregation of duties. Each rule
+      // pairs two duties (by AOT identifier) that the same user must not hold.
+      // Entity shape (DMF tags are upper-cased):
+      //   SYSTEMSEGREGATIONOFDUTIESRULEENTITY
+      //     NAME, FIRSTSECURITYDUTYIDENTIFIER, SECONDSECURITYDUTYIDENTIFIER,
+      //     FIRSTSECURITYDUTYNAME, SECONDSECURITYDUTYNAME,
+      //     SEVERITY (Low/Medium/High), RISK, MITIGATION, VALIDFROM, VALIDTO
+      // DMF names the file by entity label, so match a few candidates
+      // case-insensitively (findDmfFile falls back to a dir scan).
+      const sodFile = findDmfFile(dmfInputDir,
+        'Security segregation of duties rule.xml',
+        'SystemSegregationOfDutiesRuleEntity.xml',
+        'Segregation of duties rule.xml');
+      stats.sodRules = 0;
+      stats.sodRulesSkipped = 0;
+      if (sodFile) {
+        const insertSod = db.prepare(`INSERT OR REPLACE INTO sod_rules
+          (rule_name, duty_first, duty_second, duty_first_name, duty_second_name, severity, risk, mitigation, valid_from, valid_to)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        const onSodRule = (name, dutyFirst, dutySecond, firstName, secondName, severity, risk, mitigation, validFrom, validTo) => {
+          // A rule with no name or a missing duty side carries no information.
+          if (!name || !dutyFirst || !dutySecond) { stats.sodRulesSkipped++; return; }
+          insertSod.run(
+            name, dutyFirst, dutySecond, firstName || null, secondName || null,
+            severity || null, risk || null, mitigation || null, validFrom || null, validTo || null,
+          );
+          stats.sodRules++;
+        };
+        const entities = parseDmfXml(xmlParser, sodFile, 'SYSTEMSEGREGATIONOFDUTIESRULEENTITY', log);
+        for (const e of entities) {
+          onSodRule(
+            e.NAME, e.FIRSTSECURITYDUTYIDENTIFIER, e.SECONDSECURITYDUTYIDENTIFIER,
+            e.FIRSTSECURITYDUTYNAME, e.SECONDSECURITYDUTYNAME,
+            e.SEVERITY, e.RISK, e.MITIGATION, e.VALIDFROM, e.VALIDTO,
+          );
+        }
+        log(`    SoD rules: ${stats.sodRules.toLocaleString()} rules${stats.sodRulesSkipped ? ` (${stats.sodRulesSkipped} skipped — missing name/duty)` : ''}`);
+      } else {
+        log('    Segregation of duties rule export not found — sec_sod_check will fall back to SOD_RULES_FILE JSON');
+      }
     });
 
     dmfTransaction();
@@ -1273,6 +1374,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     roleDuties: db.prepare('SELECT COUNT(*) as n FROM role_duties').get().n,
     dutyPrivileges: db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get().n,
     directEntityPerms: db.prepare('SELECT COUNT(*) as n FROM role_direct_entity_permissions').get().n,
+    sodRules: db.prepare('SELECT COUNT(*) as n FROM sod_rules').get().n,
   };
 
   // ── Data-quality checks ──────────────────────────────────────────────────────
@@ -1296,6 +1398,8 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     { name: 'entry points carry Invoke', pass: counts.entryPoints === 0 || epWithInvoke > 0, detail: `${epWithInvoke} entry points with Invoke` },
     { name: 'direct entity permissions present', pass: !dmfInputDir || dmfInputDir.toLowerCase() === 'skip' || dep.rows > 0, detail: `${dep.rows} rows, ${dep.distinctRoles} roles, ${dep.withDeny} with a Deny` },
     { name: 'resource_type captured', pass: dep.rows === 0 || dep.withType > 0, detail: `${dep.withType}/${dep.rows} rows have resource_type` },
+    { name: 'labels loaded', pass: !packagesPathArg || packagesPathArg.toLowerCase() === 'skip' || labelsLoaded > 0, detail: `${labelsLoaded} en-US labels loaded` },
+    { name: 'SoD rules from D365', pass: !dmfInputDir || dmfInputDir.toLowerCase() === 'skip' || counts.sodRules > 0, detail: counts.sodRules > 0 ? `${counts.sodRules} rules from DMF (overrides SOD_RULES_FILE)` : `0 rules — add SystemSegregationOfDutiesRuleEntity to the export; sec_sod_check falls back to SOD_RULES_FILE JSON` },
   ];
 
   // Source-module breakdown: which models contributed security objects. This
@@ -1372,6 +1476,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   log(`  User-Roles:      ${counts.userRoles}`);
   log(`  Companies:       ${counts.companies}`);
   log(`  Direct Entity Perms: ${counts.directEntityPerms}`);
+  log(`  SoD Rules:       ${counts.sodRules}`);
   log('===================================================');
 
   log('  DATA QUALITY CHECKS');
@@ -1387,4 +1492,4 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 }
 
 // Exported for testing
-export { extractField, streamParseLargeDmfXmlSync as _streamParseLargeDmfXmlSync };
+export { extractField, streamParseLargeDmfXmlSync as _streamParseLargeDmfXmlSync, loadLabels as _loadLabels };

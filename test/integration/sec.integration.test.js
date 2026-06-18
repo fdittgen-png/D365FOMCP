@@ -61,12 +61,17 @@ const SCHEMA = `
     role_id TEXT, privilege_name TEXT, PRIMARY KEY (role_id, privilege_name)
   );
   CREATE TABLE role_direct_entity_permissions (
-    role_id TEXT, entity_name TEXT, grant_read TEXT, grant_create TEXT,
+    role_id TEXT, entity_name TEXT, resource_type TEXT, grant_read TEXT, grant_create TEXT,
     grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT,
     PRIMARY KEY (role_id, entity_name)
   );
   CREATE TABLE sec_search (
     object_type TEXT, object_name TEXT, module_id TEXT, content TEXT
+  );
+  CREATE TABLE sod_rules (
+    rule_name TEXT PRIMARY KEY, duty_first TEXT NOT NULL, duty_second TEXT NOT NULL,
+    duty_first_name TEXT, duty_second_name TEXT, severity TEXT, risk TEXT,
+    mitigation TEXT, valid_from TEXT, valid_to TEXT
   );
   CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
 `;
