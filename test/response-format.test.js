@@ -320,6 +320,86 @@ for (const file of TOOL_FILES) {
   });
 }
 
+// ── Empty results in schema'd tools must carry a structured payload ──────────
+//
+// The MCP SDK validates every non-error tool response against the tool's
+// outputSchema and throws `-32602 "… has an output schema but no structured
+// content was provided"` when `structuredContent` is missing. emptyResult()
+// is a SUCCESS response (no isError), so on a tool that declares an
+// outputSchema it MUST be called with a second argument: the typed empty
+// payload (empty arrays, zeroed counts). A bare `emptyResult(context)` call in
+// kb-tools.js / sec-tools.js is the exact regression that made zero-row
+// queries fail intermittently — scan for it.
+//
+// xref-tools.js does not use emptyResult (its list tools return result_count:0
+// payloads directly). wiki-tools.js uses the `{ ...emptyResult(ctx),
+// structuredContent }` spread form, which is detected here too.
+
+/** Return one boolean per `emptyResult(` call in `src`: does it pass a 2nd arg
+ *  at the top level of the call? Hand-rolled lexer so commas inside the first
+ *  argument's strings/template-literals/expressions are not miscounted. */
+function emptyResultCallsPassStructured(src) {
+  const needle = 'emptyResult(';
+  const out = [];
+  let idx = 0;
+  while ((idx = src.indexOf(needle, idx)) !== -1) {
+    let i = idx + needle.length;
+    let depth = 1;            // we are inside the emptyResult( … ) parens
+    let topLevelComma = false;
+    while (i < src.length && depth > 0) {
+      const c = src[i];
+      if (c === '"' || c === "'") {            // single/double-quoted string
+        i++;
+        while (i < src.length && src[i] !== c) { if (src[i] === '\\') i++; i++; }
+        i++; continue;
+      }
+      if (c === '`') {                          // template literal (handle ${…})
+        i++;
+        while (i < src.length && src[i] !== '`') {
+          if (src[i] === '\\') { i += 2; continue; }
+          if (src[i] === '$' && src[i + 1] === '{') {
+            i += 2; let bd = 1;
+            while (i < src.length && bd > 0) {
+              const cc = src[i];
+              if (cc === '"' || cc === "'") {
+                i++; while (i < src.length && src[i] !== cc) { if (src[i] === '\\') i++; i++; } i++; continue;
+              }
+              if (cc === '{') bd++; else if (cc === '}') bd--;
+              i++;
+            }
+            continue;
+          }
+          i++;
+        }
+        i++; continue;
+      }
+      if (c === '(' || c === '[' || c === '{') { depth++; i++; continue; }
+      if (c === ')' || c === ']' || c === '}') { depth--; i++; continue; }
+      if (c === ',' && depth === 1) { topLevelComma = true; i++; continue; }
+      i++;
+    }
+    out.push(topLevelComma);
+    idx = i;
+  }
+  return out;
+}
+
+for (const file of ['kb-tools.js', 'sec-tools.js']) {
+  test(`given ${file}, when scanned, then every emptyResult() call passes a structured payload`, () => {
+    const src = readSource(file);
+    const calls = emptyResultCallsPassStructured(src);
+    assert.ok(calls.length > 0, `${file} should contain emptyResult() calls`);
+    const missing = calls.filter(passes => !passes).length;
+    assert.equal(
+      missing,
+      0,
+      `${file}: ${missing} of ${calls.length} emptyResult() calls omit the structured empty payload. ` +
+      `Every tool declares an outputSchema, so the empty path must call ` +
+      `emptyResult(context, typedEmptyPayload) — otherwise the MCP SDK throws -32602 on zero-row results.`,
+    );
+  });
+}
+
 // ── No hand-rolled "No results"/not-found strings ────────────────────────────
 
 for (const file of TOOL_FILES) {

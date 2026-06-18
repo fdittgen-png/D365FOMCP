@@ -103,16 +103,17 @@ describe('Task Recorder MCP service — in-process protocol', () => {
     assert.match(text, /IntegrationTest/, 'output must reference the recording name from the synthetic fixture');
   });
 
-  it('returns a graceful error textResult when neither file_url nor file_content is provided', async () => {
+  it('returns a tool-level error when neither file_url nor file_content is provided', async () => {
     // Both args are optional in the schema, so this path is handler-level —
-    // the tool returns a textResult starting with "ERROR:" rather than throwing.
+    // the tool returns an errorResult (isError=true) naming the missing inputs
+    // rather than throwing (migrated off the legacy "ERROR:" textResult).
     const result = await session.client.callTool({
       name: 'taskrecorder_to_markdown',
       arguments: {},
     });
     assert.ok(Array.isArray(result.content));
+    assert.equal(result.isError, true);
     const text = firstTextContent(result);
-    assert.match(text, /ERROR:/i);
     assert.match(text, /file_url|file_content/);
   });
 

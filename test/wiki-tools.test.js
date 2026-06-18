@@ -243,7 +243,7 @@ describe('wiki_list', () => {
     assert.equal(r.structuredContent.total, 2);
     assert.equal(r.structuredContent.pages.length, 1);
     assert.equal(r.structuredContent.truncated, true);
-    assert.match(r.content[0].text, /Showing the first 1 results/);
+    assert.match(r.content[0].text, /Showing first 1 results/);
   });
 
   it('returns empty-result when the wiki has no pages', async () => {
@@ -280,16 +280,16 @@ describe('wiki_read', () => {
   it('returns notFound with fuzzy suggestions for an unknown slug', async () => {
     const r = await handlers.wiki_read.handler({ slug: '1721475' });
     assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /Wiki page "1721475" not found/);
+    assert.match(r.content[0].text, /Wiki page .1721475. was not found/);
     assert.match(r.content[0].text, /1721474/);
   });
 
   it('rejects an empty slug with invalid-input', async () => {
     const r = await handlers.wiki_read.handler({ slug: '' });
     // errorResult('invalid-input', …) sets isError: true and renders the
-    // category as its human label "Your input did not validate".
+    // hint under a "## Error" heading (no structuredContent on error responses).
     assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /Your input did not validate/);
+    assert.match(r.content[0].text, /## Error/);
     assert.match(r.content[0].text, /Provide the page slug/);
   });
 });

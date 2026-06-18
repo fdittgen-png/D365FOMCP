@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D365FO Knowledge Base Update</title>
+<style>
+  :root {
+    --accent:#1f3a5f; --accent-strong:#16294a; --bg:#fff; --shell:#f4f6f9;
+    --border:#dbe1e8; --text:#1c2733; --muted:#5b6b7c;
+    --ok:#1e7d45; --ok-bg:#e6f4ec; --warn:#8a5a00; --warn-bg:#fdf3df;
+    --bad:#a4262c; --bad-bg:#fde7e9;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+         max-width:860px; margin:0 auto; padding:28px 20px; color:var(--text);
+         background:var(--shell); font-size:15px; line-height:1.5; }
+  a { color:var(--accent); }
+  .crumbs { font-size:12px; color:var(--muted); margin-bottom:8px; }
+  h1 { font-size:22px; margin-bottom:6px; color:var(--accent); }
+  .subtitle { color:var(--muted); margin-bottom:22px; font-size:14px; }
+  .card { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:22px 24px; margin-bottom:16px; }
+  .card h2 { font-size:14px; margin-bottom:12px; font-weight:600; }
+  .help-list { font-size:13px; color:var(--muted); padding-left:20px; }
+  .help-list li { margin-bottom:4px; }
+  .help-list code { background:var(--shell); padding:2px 6px; border-radius:3px; font-size:12px; font-family:'Cascadia Code','Consolas',monospace; }
+  .help-list strong { color:var(--text); }
+  .db-info { display:flex; gap:20px; flex-wrap:wrap; font-size:13px; color:var(--muted);
+             background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:12px 16px; margin-bottom:16px; }
+  .db-info .item { display:flex; gap:6px; }
+  .db-info .label { font-weight:600; color:var(--text); }
+  .auth-bar { font-size:13px; border-radius:6px; padding:12px 16px; margin-bottom:16px; border:1px solid var(--border); background:var(--bg); }
+  .auth-bar.signed-in { background:var(--ok-bg); border-color:#b9dec7; color:#0f5b30; }
+  .auth-bar.signed-out { background:var(--warn-bg); border-color:#e7c781; color:#6a5300; }
+  .auth-bar.denied { background:var(--bad-bg); border-color:#f0b0b3; color:#82071e; }
+  .auth-bar a { color:inherit; font-weight:600; }
+  .upload-area { border:2px dashed var(--border); border-radius:6px; padding:36px 20px; text-align:center; cursor:pointer; transition:all .15s; background:var(--shell); }
+  .upload-area:hover { border-color:var(--accent); background:#eef2f7; }
+  .upload-area.dragover { border-color:var(--accent); background:#e3eaf3; }
+  .upload-area.disabled { pointer-events:none; opacity:.5; }
+  .upload-area p { color:var(--muted); margin-bottom:8px; }
+  .upload-area .filename { font-weight:600; color:var(--accent); margin-top:8px; }
+  input[type="file"] { display:none; }
+  .btn { display:inline-block; background:var(--accent); color:#fff; border:none; padding:9px 22px; border-radius:4px; font-size:14px; font-weight:600; cursor:pointer; transition:background .15s; font-family:inherit; }
+  .btn:hover { background:var(--accent-strong); }
+  .btn:disabled { background:#9aa6b6; cursor:not-allowed; }
+  .btn-row { margin-top:14px; display:flex; align-items:center; gap:12px; }
+  .status { margin-top:14px; padding:14px 16px; border-radius:4px; display:none; font-size:13px; border:1px solid var(--border); }
+  .status.info { display:block; background:#e8eef6; border-color:#b9c9e0; color:#16294a; }
+  .status.success { display:block; background:var(--ok-bg); border-color:#b9dec7; color:#0f5b30; }
+  .status.error { display:block; background:var(--bad-bg); border-color:#f0b0b3; color:#82071e; }
+  .status h3 { font-size:14px; margin-bottom:6px; font-weight:600; }
+  pre { background:var(--shell); padding:10px 12px; border-radius:4px; overflow-x:auto; font-family:'Cascadia Code','Consolas',monospace; font-size:12px; line-height:1.5; margin-top:8px; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid #fff; border-top-color:transparent; border-radius:50%; animation:spin .6s linear infinite; vertical-align:-2px; margin-right:4px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="crumbs"><a href="/api/admin">Dashboard</a> &middot; <a href="/api/admin/db-health">DB health</a> &middot; KB upload</div>
+<h1>Knowledge Base Update</h1>
+<p class="subtitle">Upload a pre-built KB SQLite database (built locally from the Microsoft models + customizations) to refresh the live KB without redeploying.</p>
+
+{{AUTH_BAR}}
+
+<div class="db-info" id="dbInfo">{{DB_INFO}}</div>
+
+<div class="card">
+  <h2>How to produce the file</h2>
+  <ul class="help-list">
+    <li>Set <code>KB_PACKAGES_PATHS</code> to the Microsoft <code>PackagesLocalDirectory</code> plus your customization roots
+        (e.g. <code>C:\Workspace\DEV\Metadata</code>), then run <code>npm run build:kb</code>.</li>
+    <li>Upload the resulting <code>d365fo_kb.sqlite</code> (~1 GB). It is validated before being swapped in;
+        a build that fails validation is rejected and the current KB is left untouched.</li>
+    <li>The file streams to Azure Blob Storage first, so multi-hundred-MB uploads are not subject to the request timeout.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2>Update mode</h2>
+  <label style="display:block;font-size:13px;margin-bottom:6px;">
+    <input type="radio" name="mode" value="full" checked {{INPUT_DISABLED}}>
+    <strong>Full KB database</strong> — upload a complete pre-built <code>.sqlite</code>; it is validated and swapped in.
+  </label>
+  <label style="display:block;font-size:13px;">
+    <input type="radio" name="mode" value="delta" {{INPUT_DISABLED}}>
+    <strong>Customizations delta</strong> — upload a <code>.zip</code> of customization metadata (e.g.
+    <code>C:\Workspace\DEV\Metadata</code>); it is built and <em>additively merged</em> into the live KB
+    (Microsoft objects preserved).
+  </label>
+</div>
+
+<div class="card">
+  <form id="uploadForm">
+    <div class="upload-area {{UPLOAD_DISABLED}}" id="dropZone">
+      <p id="dropHint">Drag &amp; drop the <strong>.sqlite</strong> file here, or click to browse</p>
+      <p style="font-size:12px;color:#8b949e">(streamed directly to storage — large files supported)</p>
+      <div id="fileName" class="filename"></div>
+    </div>
+    <input type="file" id="dbFile" accept=".sqlite" {{INPUT_DISABLED}}>
+    <div class="btn-row">
+      <button type="submit" class="btn" id="submitBtn" disabled>Upload &amp; Update KB</button>
+    </div>
+  </form>
+  <div id="status" class="status"></div>
+</div>
+
+<script>
+"use strict";
+const form = document.getElementById('uploadForm');
+const statusEl = document.getElementById('status');
+const submitBtn = document.getElementById('submitBtn');
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('dbFile');
+const fileNameEl = document.getElementById('fileName');
+const dropHint = document.getElementById('dropHint');
+const canUpload = !fileInput.disabled;
+
+function currentMode() {
+  const r = document.querySelector('input[name="mode"]:checked');
+  return r ? r.value : 'full';
+}
+function applyMode() {
+  const delta = currentMode() === 'delta';
+  fileInput.accept = delta ? '.zip' : '.sqlite';
+  dropHint.innerHTML = 'Drag &amp; drop the <strong>' + (delta ? '.zip' : '.sqlite') + '</strong> file here, or click to browse';
+  fileInput.value = ''; fileNameEl.textContent = ''; submitBtn.disabled = true;
+}
+if (canUpload) {
+  document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', applyMode));
+}
+
+if (canUpload) {
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault(); dropZone.classList.remove('dragover');
+    const ext = currentMode() === 'delta' ? '.zip' : '.sqlite';
+    if (e.dataTransfer.files.length && e.dataTransfer.files[0].name.endsWith(ext)) {
+      fileInput.files = e.dataTransfer.files; onFileSelected();
+    }
+  });
+  fileInput.addEventListener('change', onFileSelected);
+}
+
+function onFileSelected() {
+  const file = fileInput.files[0];
+  if (file) {
+    fileNameEl.textContent = file.name + ' (' + (file.size / (1024*1024)).toFixed(1) + ' MB)';
+    submitBtn.disabled = false;
+    statusEl.className = 'status';
+  }
+}
+function showStatus(cls, html) { statusEl.className = 'status ' + cls; statusEl.innerHTML = html; }
+
+async function asyncUpload(file) {
+  showStatus('info', '<h3>Step 1/4: Requesting upload URL...</h3>');
+  const sasResp = await fetch('/api/d365kb/upload/sas?filename=' + encodeURIComponent(file.name));
+  const sas = await sasResp.json();
+  if (!sasResp.ok) throw new Error(sas.error || 'Failed to get upload URL');
+
+  showStatus('info', '<h3>Step 2/4: Uploading to Azure Storage...</h3><p>'
+    + (file.size / (1024*1024)).toFixed(0) + ' MB — this may take several minutes. Do not close this page.</p>');
+  const putResp = await fetch(sas.upload_url, {
+    method: 'PUT', headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Type': 'application/octet-stream' }, body: file,
+  });
+  if (!putResp.ok) throw new Error('Blob upload failed: HTTP ' + putResp.status);
+
+  const delta = currentMode() === 'delta';
+  const applyPath = delta ? '/api/d365kb/upload/rebuild' : '/api/d365kb/upload/apply';
+  showStatus('info', '<h3>Step 3/4: ' + (delta ? 'Building &amp; merging customizations' : 'Validating &amp; swapping database') + '...</h3>');
+  const applyResp = await fetch(applyPath, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: sas.job_id }),
+  });
+  const applyData = await applyResp.json();
+  if (!applyResp.ok) throw new Error(applyData.error || 'Apply failed');
+
+  for (let i = 0; i < 120; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    const pollResp = await fetch('/api/d365kb/upload/status?job_id=' + sas.job_id);
+    const poll = await pollResp.json();
+    if (poll.status === 'completed') return poll;
+    if (poll.status === 'failed') throw new Error(poll.error || 'Swap failed');
+    showStatus('info', '<h3>Step 3/4: ' + (poll.progress || poll.status) + '</h3>');
+  }
+  throw new Error('Swap timed out after 10 minutes');
+}
+
+form.addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!canUpload) return;
+  const file = fileInput.files[0];
+  if (!file) return;
+  submitBtn.disabled = true;
+  submitBtn.innerHTML = '<span class="spinner"></span> Working...';
+  try {
+    const poll = await asyncUpload(file);
+    showStatus('success', '<h3>Step 4/4: KB database swapped successfully</h3>'
+      + '<pre>' + JSON.stringify(poll.result, null, 2) + '</pre>');
+  } catch (err) {
+    showStatus('error', '<h3>Error</h3><p>' + err.message + '</p>');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Upload & Swap KB Database';
+  }
+});
+</script>
+</body>
+</html>

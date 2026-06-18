@@ -72,7 +72,7 @@ function createTaskRecorderServer() {
   const server = new McpServer({
     name: 'd365fo-taskrecorder',
     version: '1.0.0',
-    description: 'D365FO Task Recorder parser — converts .axtr recordings to structured Markdown for LLM consumption.',
+    description: 'D365FO Task Recorder service — converts .axtr recordings to structured Markdown, and to an enriched, self-contained MHTML document (screenshots + KB technical detail + role-based security).',
   });
   registerTaskRecorderTools(server);
   return server;

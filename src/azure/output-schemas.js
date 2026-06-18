@@ -33,6 +33,10 @@ export const d365LookupTableFieldSchema = z.object({
   enum_type: z.string().nullable(),
   label: z.string().nullable(),
   mandatory: z.number().nullable(),
+  // Customization provenance (false / null on standard Microsoft fields, and
+  // on KB databases built before the customization columns existed).
+  is_extension: z.boolean(),
+  source_module: z.string().nullable(),
 });
 
 export const d365LookupTableIndexSchema = z.object({
@@ -72,6 +76,12 @@ export const d365LookupTableOutput = z.object({
   clustered_index: z.string().nullable(),
   replacement_key: z.string().nullable(),
   field_count: z.number(),
+  // Customization summary: is_customized=true when an AxTableExtension adds
+  // fields; custom_field_count counts them; customization_modules lists the
+  // models that contributed them.
+  is_customized: z.boolean(),
+  custom_field_count: z.number(),
+  customization_modules: z.array(z.string()),
   fields: z.array(d365LookupTableFieldSchema),
   indexes: z.array(d365LookupTableIndexSchema),
   outgoing_relations: z.array(d365LookupTableRelationSchema),
@@ -185,6 +195,24 @@ export const secEffectivePermissionSchema = z.object({
   grant_correct: z.string().nullable(),
   grant_invoke: z.string().nullable(),
   duty_perm: z.string().nullable(),
+  source: z.string().nullable().optional(),
+});
+
+// Deny-wins resolved view: one row per securable object after applying
+// Deny-over-Grant per operation. Each effective_* is the net verdict —
+// 'Allow', 'Deny', or null (no specification). `status` distinguishes a
+// fully-granted object from one that is partly or wholly blocked, which
+// maps directly to a UI control being enabled / greyed / hidden.
+export const secEffectiveResolvedSchema = z.object({
+  object_name: z.string(),
+  object_type: z.string().nullable(),
+  effective_read: z.string().nullable(),
+  effective_create: z.string().nullable(),
+  effective_update: z.string().nullable(),
+  effective_delete: z.string().nullable(),
+  effective_correct: z.string().nullable(),
+  effective_invoke: z.string().nullable(),
+  status: z.enum(['granted', 'partial', 'denied']),
 });
 
 export const secEffectivePermissionsOutput = z.object({
@@ -196,6 +224,9 @@ export const secEffectivePermissionsOutput = z.object({
   entry_point_count: z.number(),
   truncated: z.boolean(),
   permissions: z.array(secEffectivePermissionSchema),
+  // Deny-wins resolved view: one row per object after applying Deny-over-Grant.
+  denied_object_count: z.number(),
+  effective: z.array(secEffectiveResolvedSchema),
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -347,6 +378,15 @@ export const d365GetEntitySourcesOutput = z.object({
   config_key: z.string().nullable(),
   field_count: z.number(),
   entity_fields: z.array(d365EntityFieldSchema),
+  // Entity-level X++ methods (empty on KB databases built before entity-method
+  // extraction was added). Use d365_get_class_methods with include_source for
+  // the full X++ body of any method.
+  method_count: z.number(),
+  methods: z.array(z.object({
+    method_name: z.string(),
+    signature: z.string().nullable(),
+    is_static: z.boolean(),
+  })),
 });
 
 // d365_sql_template — SQL templates
@@ -921,6 +961,10 @@ export const secSodViolationSchema = z.object({
   rule_name: z.string(),
   risk_level: z.string(),
   category: z.string(),
+  // Present for rules sourced from the D365 SoD export (not the JSON ruleset).
+  severity: z.string().optional(),
+  risk: z.string().optional(),
+  mitigation: z.string().optional(),
   group_a_name: z.string(),
   group_a_matched: z.array(z.string()),
   group_a_roles: z.array(z.string()),
@@ -981,6 +1025,10 @@ export const secObjectAccessPathSchema = z.object({
   grant_create: z.string().nullable(),
   grant_update: z.string().nullable(),
   grant_delete: z.string().nullable(),
+  grant_correct: z.string().nullable(),
+  grant_invoke: z.string().nullable(),
+  // true when this path REMOVES access (Deny duty/role, or a Deny grant value).
+  denied: z.boolean(),
 });
 export const secObjectAccessOutput = z.object({
   object_name: z.string(),
@@ -989,6 +1037,8 @@ export const secObjectAccessOutput = z.object({
   truncated: z.boolean(),
   user_count: z.number(),
   role_count: z.number(),
+  grant_path_count: z.number(),
+  deny_path_count: z.number(),
   paths: z.array(secObjectAccessPathSchema),
   users: z.array(z.object({
     user_id: z.string(),
@@ -1070,4 +1120,92 @@ export const wikiSearchOutput = z.object({
   total_matches: z.number(),
   matches: z.array(wikiSearchMatchSchema),
   truncated: z.boolean(),
+});
+
+
+// ── Task Recorder: taskrecorder_to_markdown ──────────────────────────────────
+
+export const taskrecorderMarkdownOutput = z.object({
+  markdown: z.string().describe('The full Markdown rendering of the recording (same as the text channel).'),
+  file_name: z.string().describe('The recording filename used in the document footer.'),
+});
+
+// ── Task Recorder: taskrecorder_to_document ──────────────────────────────────
+//
+// NOTE: this payload is a SUMMARY of the generated document, not the document
+// itself. The MHTML deliverable is at `output_path` (or in `document_mhtml`
+// when return_inline=true). Use these fields to confirm coverage and to decide
+// whether to open the file.
+
+export const taskrecorderDocStepSchema = z.object({
+  step: z.number().describe('1-based step number in recording order.'),
+  source: z.string().describe('Origin of the step: "client" (browser repro XML), "word" (.docx), or "recording" (.axtr only).'),
+  docx_text: z.string().nullable().describe('Step text from the Word document, if a .docx was supplied.'),
+  description: z.string().nullable().describe('Effective step description (client action / custom > localized > recorded).'),
+  action_type: z.string().nullable().describe('Action type: client kind (navigate/click/edit/error/...) or .axtr node type.'),
+  target: z.string().nullable().describe('Human-readable target, e.g. "Command: RequestClose (form SysAADClientTable)".'),
+  global_id: z.string().nullable().describe('Stable GlobalId (.axtr) or step id (client recording).'),
+  object_name: z.string().nullable().describe('AOT object the step touched (form or menu item) — the join key to BPM security.'),
+  screenshot_count: z.number().describe('Number of screenshots embedded for this step in the MHTML.'),
+  has_security: z.boolean().describe('True when the BPM package had a security block for this step\'s object.'),
+  matched_action_count: z.number().describe('For client steps: how many server (.axtr) actions correlate to this step.'),
+  texts_agree: z.boolean().describe('True when the Word step text matches the recorded description (false flags a mismatch).'),
+});
+
+export const taskrecorderClientRecordingSchema = z.object({
+  session_id: z.string().nullable(),
+  title: z.string().nullable(),
+  host: z.string().nullable(),
+  tenant: z.string().nullable(),
+  company: z.string().nullable(),
+  started_at: z.string().nullable(),
+  ended_at: z.string().nullable(),
+  step_count: z.number(),
+  screenshot_count: z.number(),
+  matched_step_count: z.number(),
+}).describe('Metadata of the browser-side client repro recording, when one was supplied.');
+
+export const taskrecorderDocFormSchema = z.object({
+  form_name: z.string().describe('AOT form name that was enriched from the KB.'),
+  kb_available: z.boolean().describe('False when the KB database was not configured/present.'),
+  kb_found: z.boolean().describe('True when the form exists in the KB snapshot.'),
+  class_count: z.number().describe('Number of related classes documented for the form.'),
+  endpoint_count: z.number().describe('Number of OData/data-entity endpoints documented for the form.'),
+});
+
+export const taskrecorderDocRoleSchema = z.object({
+  queried: z.string().describe('The BPM role identifier looked up (AOT name or DMF GUID).'),
+  role_name: z.string().nullable().describe('Resolved role display name, or null when not found.'),
+  found: z.boolean().describe('True when the role exists in the Security snapshot.'),
+  sub_role_count: z.number().describe('Direct sub-roles of this role.'),
+  duty_count: z.number().describe('Duties granted across the role and its sub-roles (capped).'),
+  privilege_count: z.number().describe('Distinct privileges granted (capped).'),
+  user_count: z.number().describe('Total users assigned to this role (full count, not the truncated list).'),
+});
+
+export const taskrecorderDocumentOutput = z.object({
+  recording: z.object({
+    name: z.string(),
+    description: z.string().nullable(),
+    canonical_id: z.string().nullable(),
+    version: z.string().nullable(),
+    language: z.string().nullable(),
+    action_count: z.number(),
+  }).describe('Functional metadata about the recording.'),
+  step_count: z.number().describe('Number of documented steps (client repro steps, or .axtr actions/Word steps).'),
+  screenshot_count: z.number().describe('Total screenshots embedded in the document.'),
+  screenshots_present: z.boolean().describe('True when at least one screenshot was embedded.'),
+  client_recording: taskrecorderClientRecordingSchema.nullable().describe('Client repro recording metadata, or null when none was supplied.'),
+  steps: z.array(taskrecorderDocStepSchema).describe('Per-step mapping summary (client step ↔ server .axtr action ↔ BPM security).'),
+  forms_enriched: z.array(taskrecorderDocFormSchema).describe('KB enrichment summary, one entry per distinct form/object.'),
+  roles_enriched: z.array(taskrecorderDocRoleSchema).describe('Security enrichment summary, one entry per distinct BPM role.'),
+  bpm_role_count: z.number().describe('Distinct role/duty/privilege grants found in the BPM package.'),
+  kb_available: z.boolean().describe('True when KB enrichment ran (KB_DB_PATH present).'),
+  sec_available: z.boolean().describe('True when Security enrichment ran (SEC_DB_PATH present).'),
+  output_path: z.string().nullable().describe('Absolute path the .mhtml was written to — open this file to view the document.'),
+  byte_size: z.number().describe('Size of the generated MHTML document in bytes.'),
+  document_mhtml: z.string().nullable().describe('The full MHTML text, present only when return_inline=true; otherwise null.'),
+  xml_output_path: z.string().nullable().describe('Absolute path the contract XML was written to (when include_xml=true), else null. Validates against schemas/task-recording-document.xsd.'),
+  document_xml: z.string().nullable().describe('The full contract XML text, present only when include_xml=true AND return_inline=true; otherwise null.'),
+  notes: z.array(z.string()).describe('Warnings/observations, e.g. "no screenshots embedded" or "KB database not available".'),
 });

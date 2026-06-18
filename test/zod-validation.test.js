@@ -40,6 +40,18 @@ const Database = require('better-sqlite3');
 function mockServer() {
   const handlers = {};
   return {
+    // Current API: registerTool(name, config, handler). The schema under test
+    // is config.inputSchema (PM-02 migrated every tool off the server.tool()
+    // overload).
+    registerTool: (name, config, handler) => {
+      handlers[name] = {
+        schema: config.inputSchema || {},
+        outputSchema: config.outputSchema,
+        handler,
+      };
+    },
+    // Legacy overload kept as a safety net so any not-yet-migrated call site
+    // still registers instead of silently vanishing.
     tool: (name, _desc, schema, handler) => {
       handlers[name] = { schema: schema || {}, handler };
     },

@@ -111,7 +111,7 @@ describe('d365_search — LIKE fallback (kb_search_fts absent)', () => {
 
   it('returns no-results message for unknown keyword on fallback', async () => {
     const { text } = await callTool(handlers, 'd365_search', { query: 'xyznonexistent' });
-    assert.match(text, /No results for "xyznonexistent"/);
+    assert.match(text, /No matches for "xyznonexistent" found/);
   });
 });
 
@@ -190,7 +190,7 @@ describe('d365_search — FTS5 path (kb_search_fts present)', () => {
 
   it('returns no-results message for unknown keyword on FTS5 path', async () => {
     const { text } = await callTool(handlers, 'd365_search', { query: 'xyznonexistent' });
-    assert.match(text, /No results for "xyznonexistent"/);
+    assert.match(text, /No matches for "xyznonexistent" found/);
   });
 
   it('quoted-term escaping: terms with FTS5 operator chars do not blow up', async () => {

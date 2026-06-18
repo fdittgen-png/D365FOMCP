@@ -1,0 +1,125 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  Data Task Automation (DTA) manifest — creates the EXPORT data project
+  "SecAnalysis_MCP" that feeds build/build-sec.js for the D365FO MCP Security DB.
+
+  WHAT THIS DOES
+    Operation=Export + ConfigurationOnly=Yes  →  CREATES the project and adds the
+    9 entities below in XML-Element format, WITHOUT running an export.
+
+  HOW TO IMPORT (creates the project)
+    Data management workspace → Data task automation → Import (upload this file)
+    → select the manifest → Run. The "SecAnalysis_MCP" export project is created.
+    (DTA requires the same tenant + an LCS project link. Per the 2026 LCS freeze,
+     newer tenants use the Power Platform admin center equivalent. If DTA is
+     unavailable, use the UI clone checklist in docs/Sec-DMF-Export-Runbook.md.)
+
+  TWO MANUAL STEPS AFTER IMPORT (DTA cannot express these)
+    1) FILTER — open the project → System Security Permissions → Filter, and add
+       ONE query-range EXPRESSION (Range tab, Criteria), keeping all rows that
+       define at least one access (drops all-unset noise; all roles):
+         ((ReadAccess != 0) || (CreateAccess != 0) || (UpdateAccess != 0) || (DeleteAccess != 0) || (CorrectAccess != 0) || (InvokeAccess != 0))
+       (Toggle "Show system names = Yes" to confirm the field names.)
+    2) LEGAL ENTITY — change <LegalEntity> below to your primary company before
+       import (security data is global; any company works).
+
+  Field coverage: SelectFields=All fields → RESOURCETYPE + the 6 access codes are
+  included (needed for resource-type/Invoke data quality). The build consumes the
+  exported file names directly — do not rename them.
+-->
+<TestManifest name='SecAnalysis_MCP - create export project'>
+  <SharedSetup>
+    <JobDefinition ID='SecExportJob'>
+      <Operation>Export</Operation>
+      <ConfigurationOnly>Yes</ConfigurationOnly>
+      <Truncate>No</Truncate>
+      <Mode>Export async</Mode>
+      <SupportedDataSourceType>Package</SupportedDataSourceType>
+      <ProcessMessagesInOrder>No</ProcessMessagesInOrder>
+      <PreventUploadWhenZeroRecords>No</PreventUploadWhenZeroRecords>
+      <UseCompanyFromMessage>No</UseCompanyFromMessage>
+      <LegalEntity>DAT</LegalEntity>
+      <DefinitionGroupID>SecAnalysis_MCP</DefinitionGroupID>
+      <PackageName>SecAnalysis_MCP</PackageName>
+    </JobDefinition>
+
+    <!-- One entity setup listing every entity the build consumes, all as
+         XML-Element / Full push / All fields. -->
+    <EntitySetup ID='SecEntities'>
+      <Entity name='System Security Role'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <Entity name='System Security Sub Role V2'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <Entity name='System Security Role Duty'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <Entity name='System Security Privilege'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <!-- The effective permission matrix — apply the filter expression here
+           AFTER import (see header, manual step 1). -->
+      <Entity name='System Security Permissions'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <Entity name='User information'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <Entity name='Security user role association'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <Entity name='SystemSecurityUserRoleOrganizationEntity'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+      <!-- Segregation of duties rules (gap #2) → sod_rules. Small entity; no
+           filter needed. When present, supersedes the SOD_RULES_FILE JSON. -->
+      <Entity name='Security segregation of duties rule'>
+        <SourceDataFormatName>XML-Element</SourceDataFormatName>
+        <DefaultRefreshType>Full push only</DefaultRefreshType>
+        <SelectFields>All fields</SelectFields>
+        <SkipStaging>Yes</SkipStaging>
+        <DisableEntity>No</DisableEntity>
+      </Entity>
+    </EntitySetup>
+  </SharedSetup>
+
+  <TestGroup name='Create SecAnalysis_MCP export project'>
+    <TestCase Title='Create SecAnalysis_MCP export project' ID='SECMCP1' RepeatCount='1' TraceParser='off' TimeOut='20'>
+      <JobDefinition RefID='SecExportJob' />
+      <EntitySetup RefID='SecEntities' />
+    </TestCase>
+  </TestGroup>
+</TestManifest>

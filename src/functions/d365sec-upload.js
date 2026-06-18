@@ -58,6 +58,79 @@ function getAuthUser(request) {
   return { principalId, principalName };
 }
 
+/**
+ * Whether authentication is required (issue #28). Defaults to true and
+ * fails closed: only the literal string "false" (case-insensitive) disables
+ * it — every other value (typos, "0", "no", "") is treated as true.
+ */
+export function isAuthRequired() {
+  const v = (process.env.REQUIRE_AUTH ?? '').trim().toLowerCase();
+  return v !== 'false';
+}
+
+/**
+ * Pure authorization decision for the upload endpoint (issues #27 + #28).
+ * Returns `null` when the request may proceed, or an HTTP response object
+ * `{ status, jsonBody }` describing the rejection. Fail-closed: an
+ * unavailable RBAC check (`authorized === null`) is a 503, never a
+ * warn-and-proceed; and with Easy Auth disabled the request is refused
+ * unless REQUIRE_AUTH is explicitly set to "false" (local-dev opt-out).
+ *
+ * @param {object} args
+ * @param {{principalId:string, principalName:string}|null} args.user  Easy Auth identity, or null.
+ * @param {boolean} args.easyAuth  Whether Easy Auth is enabled on the Function App.
+ * @param {boolean|null} args.authorized  RBAC result: true/false, or null when the check could not run.
+ * @param {boolean} [args.requireAuth]  Override for isAuthRequired() (defaults to it).
+ */
+export function decideUploadAuthorization({ user, easyAuth, authorized, requireAuth }) {
+  const mustAuth = requireAuth === undefined ? isAuthRequired() : requireAuth;
+
+  // Easy Auth not enabled: header identities are not trustworthy, so refuse
+  // unless the operator explicitly opted out for local development.
+  if (!easyAuth) {
+    if (mustAuth) {
+      return {
+        status: 503,
+        jsonBody: {
+          error: 'Easy Auth is not enabled on this Function App, so the uploader cannot be authenticated.',
+          hint: 'Enable Easy Auth (Authentication blade), or set REQUIRE_AUTH=false to allow unauthenticated local-dev uploads.',
+        },
+      };
+    }
+    return null; // local-dev opt-out
+  }
+
+  // Easy Auth enabled.
+  if (!user) {
+    return {
+      status: 401,
+      jsonBody: {
+        error: 'Authentication required.',
+        hint: 'Sign in via Azure AD at /api/d365sec/upload.',
+      },
+    };
+  }
+  if (authorized === null || authorized === undefined) {
+    return {
+      status: 503,
+      jsonBody: {
+        error: 'Authorization check unavailable — the managed-identity RBAC lookup could not run. Please retry.',
+        hint: 'Ensure the Function App has a system-assigned managed identity with RBAC read on the resource group.',
+      },
+    };
+  }
+  if (authorized === false) {
+    return {
+      status: 403,
+      jsonBody: {
+        error: `Access denied for ${user.principalName}.`,
+        hint: 'Owner or Contributor role on the resource group is required.',
+      },
+    };
+  }
+  return null; // authorized === true
+}
+
 /** Obtain an ARM access token using the Function App's managed identity. */
 async function getArmToken() {
   const endpoint = process.env.IDENTITY_ENDPOINT;
@@ -398,7 +471,7 @@ function detectDmfDir(extractedDir) {
   try {
     const files = readdirSync(extractedDir).map(f => f.toLowerCase());
     if (DMF_FILES.some(name => files.includes(name))) return extractedDir;
-  } catch { /* ignore */ }
+  } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
   return null;
 }
 
@@ -515,86 +588,25 @@ app.http('d365sec-upload', {
   authLevel: 'anonymous',
   handler: async (request, context) => {
 
-    // ── GET: serve the upload form ───────────────────────────────────────────
+    // ── GET: the upload form is now a tab on the unified back-office page.
+    // Redirect for back-compat; the POST endpoints below are unchanged.
     if (request.method === 'GET') {
-      const user = getAuthUser(request);
-      let authBarHtml;
-      let formAllowed = false;
-
-      if (!isEasyAuthEnabled() && !user) {
-        // Easy Auth not configured — allow access with warning (typical in dev)
-        formAllowed = true;
-        authBarHtml = `<div class="auth-bar signed-in">`
-          + `<span style="opacity:0.7">Authentication not configured — uploads allowed without sign-in. `
-          + `Enable Easy Auth in Azure Portal for production use.</span></div>`;
-      } else if (!user) {
-        // Easy Auth enabled but not signed in — show login prompt
-        authBarHtml = `<div class="auth-bar signed-out">`
-          + `Sign in required. <a href="/.auth/login/aad?post_login_redirect_uri=/api/d365sec/upload">Sign in with Azure AD</a>`
-          + ` (Owner or Contributor role needed to upload).</div>`;
-      } else {
-        // Signed in — check RBAC
-        const authorized = await isOwnerOrContributor(user.principalId);
-        if (authorized === true) {
-          formAllowed = true;
-          authBarHtml = `<div class="auth-bar signed-in">`
-            + `Signed in as <strong>${user.principalName}</strong></div>`;
-        } else if (authorized === false) {
-          authBarHtml = `<div class="auth-bar denied">`
-            + `Access denied for <strong>${user.principalName}</strong>. `
-            + `Owner or Contributor role on the resource group is required.</div>`;
-        } else {
-          // RBAC check unavailable (no managed identity) — allow with warning
-          formAllowed = true;
-          authBarHtml = `<div class="auth-bar signed-in">`
-            + `Signed in as <strong>${user.principalName}</strong> `
-            + `<span style="opacity:0.7">(RBAC check unavailable — managed identity not configured)</span></div>`;
-        }
-      }
-
-      const html = UPLOAD_HTML
-        .replace('{{AUTH_BAR}}', authBarHtml)
-        .replace('{{DB_INFO}}', buildDbInfoHtml())
-        .replace('{{UPLOAD_DISABLED}}', formAllowed ? '' : 'disabled')
-        .replace(/\{\{INPUT_DISABLED\}\}/g, formAllowed ? '' : 'disabled')
-        .replace('{{MAX_UPLOAD_MB}}', String(MAX_UPLOAD_BYTES / (1024 * 1024)));
-
-      return { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body: html };
+      return { status: 302, headers: { Location: '/api/backoffice#sec' } };
     }
 
     // ── POST: process ZIP upload ─────────────────────────────────────────────
     try {
-      // Auth check
+      // Auth check (issues #27 + #28 — fail closed via decideUploadAuthorization).
       const user = getAuthUser(request);
       const easyAuth = isEasyAuthEnabled();
+      // Only run the (async) RBAC lookup when there's an authenticated identity
+      // to check; otherwise authorized stays null and the decision function
+      // handles the unauthenticated / no-Easy-Auth cases.
+      const authorized = (easyAuth && user) ? await isOwnerOrContributor(user.principalId) : null;
+      const denial = decideUploadAuthorization({ user, easyAuth, authorized });
+      if (denial) return denial;
 
-      if (!user && easyAuth) {
-        return {
-          status: 401,
-          jsonBody: {
-            error: 'Authentication required.',
-            hint: 'Sign in via Azure AD at /api/d365sec/upload.',
-          },
-        };
-      }
-
-      if (user) {
-        const authorized = await isOwnerOrContributor(user.principalId);
-        if (authorized === false) {
-          return {
-            status: 403,
-            jsonBody: {
-              error: `Access denied for ${user.principalName}.`,
-              hint: 'Owner or Contributor role on the resource group is required.',
-            },
-          };
-        }
-        if (authorized === null) {
-          context.warn(`RBAC check unavailable — allowing ${user.principalName} (managed identity not configured)`);
-        }
-      }
-
-      const uploaderName = user?.principalName || 'anonymous (no Easy Auth)';
+      const uploaderName = user?.principalName || 'anonymous (REQUIRE_AUTH=false)';
       context.log(`Upload authorized for ${uploaderName}`);
 
       // ── Detect upload mode from Content-Type ────────────────────────────────
@@ -664,7 +676,7 @@ app.http('d365sec-upload', {
           await downloadToFile(zipUrl, urlZipPath, context);
           extractZipSafe(urlZipPath, tmpDir, context);
           // Clean up the downloaded zip to save disk space
-          try { rmSync(urlZipPath, { force: true }); } catch { /* ignore */ }
+          try { rmSync(urlZipPath, { force: true }); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
         }
 
         // ── Detect content and build ────────────────────────────────────────
@@ -698,7 +710,7 @@ app.http('d365sec-upload', {
             existing.close();
             if (dmfDir && !aotDir && hasAot) mode = 'merge-dmf';
             else if (aotDir && !dmfDir && hasDmfRoles) mode = 'merge-aot';
-          } catch { /* ignore */ }
+          } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
         }
 
         const newBuildPath = join(tmpDir, 'new-build.sqlite');
@@ -723,8 +735,11 @@ app.http('d365sec-upload', {
           finalCounts = mergeAotUpdateInPlace(dbPath, newBuildPath, ctx);
           modeLabel = 'merged (AOT into existing DMF)';
         } else {
-          const inplaceTemp = join(dirname(dbPath), 'd365fo_sec.sqlite.new');
+          // sync-inplace-temp: hoist the temp path above the rename try so the
+          // matching cleanup runs regardless of which step fails (P6-03).
+          let inplaceTemp = null;
           reloadSecDb();
+          inplaceTemp = join(dirname(dbPath), 'd365fo_sec.sqlite.new');
           copyFileSync(newBuildPath, inplaceTemp);
           rmSync(dbPath, { force: true });
           try { renameSync(inplaceTemp, dbPath); }
@@ -751,7 +766,7 @@ app.http('d365sec-upload', {
           },
         };
       } finally {
-        try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
       }
     } catch (err) {
       context.error('d365sec-upload error:', err);
@@ -848,8 +863,8 @@ function mergeBuildsInPlace(dbPath, newBuildPath, context) {
     db.close();
     return counts;
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-    try { db.exec('DETACH DATABASE new_db'); } catch { /* ignore */ }
+    try { db.exec('ROLLBACK'); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
+    try { db.exec('DETACH DATABASE new_db'); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
     db.close();
     throw err;
   }
@@ -916,8 +931,8 @@ function mergeAotUpdateInPlace(dbPath, newBuildPath, context) {
     db.close();
     return counts;
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-    try { db.exec('DETACH DATABASE new_db'); } catch { /* ignore */ }
+    try { db.exec('ROLLBACK'); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
+    try { db.exec('DETACH DATABASE new_db'); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
     db.close();
     throw err;
   }
@@ -939,14 +954,14 @@ async function runBuildAsync(jobId, context) {
       const zipPath = join(tmpDir, 'download.zip');
       await downloadToFile(job.sourceUrl, zipPath, { log: (msg) => context.log(msg) });
       extractZipSafe(zipPath, tmpDir, { log: (msg) => context.log(msg) });
-      try { rmSync(zipPath, { force: true }); } catch { /* ignore */ }
+      try { rmSync(zipPath, { force: true }); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
     } else if (job.blobName) {
       updateJob(jobId, { status: 'downloading', progress: 'Downloading ZIP from blob storage...' });
       const zipPath = join(tmpDir, 'upload.zip');
       await downloadBlobToFile(job.blobName, zipPath);
       updateJob(jobId, { status: 'extracting', progress: 'Extracting ZIP...' });
       extractZipSafe(zipPath, tmpDir, { log: (msg) => context.log(msg) });
-      try { rmSync(zipPath, { force: true }); } catch { /* ignore */ }
+      try { rmSync(zipPath, { force: true }); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
     }
 
     const dmfDir = detectDmfDir(tmpDir);
@@ -1003,9 +1018,12 @@ async function runBuildAsync(jobId, context) {
       finalCounts = mergeAotUpdateInPlace(dbPath, newBuildPath, context);
       modeLabel = 'merged (AOT into existing DMF)';
     } else {
-      // Full rebuild: replace dbPath with new build via same-directory rename
-      const inplaceTemp = join(dirname(dbPath), 'd365fo_sec.sqlite.new');
+      // Full rebuild: replace dbPath with new build via same-directory rename.
+      // async-inplace-temp: hoist the temp path above the rename try so the
+      // matching cleanup runs regardless of which step fails (P6-03).
+      let inplaceTemp = null;
       reloadSecDb();
+      inplaceTemp = join(dirname(dbPath), 'd365fo_sec.sqlite.new');
       copyFileSync(newBuildPath, inplaceTemp);
       rmSync(dbPath, { force: true });
       try { renameSync(inplaceTemp, dbPath); }
@@ -1034,7 +1052,7 @@ async function runBuildAsync(jobId, context) {
     context.error(`Build job ${jobId} failed:`, err);
     updateJob(jobId, { status: 'failed', error: err.message });
   } finally {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch (e) { console.warn('cleanup-warn (d365sec-upload):', e?.message); }
     if (job.blobName) deleteBlob(job.blobName).catch(() => {});
   }
 }

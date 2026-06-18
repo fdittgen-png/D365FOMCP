@@ -18,6 +18,7 @@ import {
   extractField,
   _streamParseLargeDmfXmlSync as streamParseLargeDmfXmlSync,
   getEffectivePermissionType,
+  _loadLabels as loadLabels,
 } from '../src/azure/sec-builder.js';
 
 const require = createRequire(import.meta.url);
@@ -38,6 +39,49 @@ describe('extractField', () => {
 
   it('returns null for empty field', () => {
     assert.equal(extractField('<A></A>', 'A'), null);
+  });
+});
+
+// ── loadLabels (gap #4: nested LabelResources + locale casing) ───────────────
+
+describe('loadLabels', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = join(tmpdir(), `sec-labels-test-${randomUUID().slice(0, 8)}`);
+    // Files are nested at AxLabelFile/LabelResources/<locale>/<name>.<locale>.label.txt
+    // — exactly the layout the old flat readdir missed. Cover both en-US and
+    // lowercase en-us dir/file casing, and a non-en file that must be ignored.
+    const usDir = join(tmpDir, 'PkgA', 'ModelA', 'AxLabelFile', 'LabelResources', 'en-US');
+    const lcDir = join(tmpDir, 'PkgB', 'ModelB', 'axlabelfile', 'LabelResources', 'en-us');
+    const frDir = join(tmpDir, 'PkgC', 'ModelC', 'AxLabelFile', 'LabelResources', 'fr');
+    mkdirSync(usDir, { recursive: true });
+    mkdirSync(lcDir, { recursive: true });
+    mkdirSync(frDir, { recursive: true });
+    writeFileSync(join(usDir, 'Foo.en-US.label.txt'), 'MyRole=My Role Text\nMyDuty=My Duty Text\n', 'utf-8');
+    writeFileSync(join(lcDir, 'Bar.en-us.label.txt'), 'LowerId=Lowercase Locale\n', 'utf-8');
+    writeFileSync(join(frDir, 'Baz.fr.label.txt'), 'FrId=Texte Francais\n', 'utf-8');
+  });
+
+  after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('loads labels nested under LabelResources/<locale> (the gap #4 fix)', () => {
+    const labels = loadLabels(tmpDir);
+    assert.equal(labels.get('MyRole'), 'My Role Text');
+    assert.equal(labels.get('MyDuty'), 'My Duty Text');
+    assert.ok(labels.size >= 2);
+  });
+
+  it('matches the locale case-insensitively (en-us as well as en-US)', () => {
+    const labels = loadLabels(tmpDir);
+    assert.equal(labels.get('LowerId'), 'Lowercase Locale');
+  });
+
+  it('ignores non-en-US locales', () => {
+    const labels = loadLabels(tmpDir);
+    assert.equal(labels.get('FrId'), undefined);
   });
 });
 
@@ -714,7 +758,7 @@ describe('buildSecurityDatabase — System Security Permissions.xml (CR-SEC-007)
   it('maps DMF access codes: 1→Allow, 2→Deny, 0→null', () => {
     const db = new Database(dbPath, { readonly: true });
     const row = db.prepare(
-      `SELECT grant_read, grant_create, grant_update, grant_delete,
+      `SELECT resource_type, grant_read, grant_create, grant_update, grant_delete,
               grant_correct, grant_invoke
          FROM role_direct_entity_permissions
         WHERE role_id = 'ROLE-GUID-1' AND entity_name = 'VENDTABLELISTPAGE'`
@@ -727,6 +771,7 @@ describe('buildSecurityDatabase — System Security Permissions.xml (CR-SEC-007)
     assert.equal(row.grant_delete, 'Deny');
     assert.equal(row.grant_correct, null);
     assert.equal(row.grant_invoke, null);
+    assert.equal(row.resource_type, 'MenuItemDisplay');
   });
 
   it('skips entities missing role id or resource name', () => {
@@ -736,5 +781,84 @@ describe('buildSecurityDatabase — System Security Permissions.xml (CR-SEC-007)
     ).get();
     db.close();
     assert.equal(orphan.c, 0);
+  });
+});
+
+// ── buildSecurityDatabase — Segregation of Duties rules (gap #2) ──────────────
+
+describe('buildSecurityDatabase — SystemSegregationOfDutiesRuleEntity (gap #2)', () => {
+  let tmpDir;
+  let dbPath;
+
+  before(() => {
+    tmpDir = join(tmpdir(), `sec-build-sod-${randomUUID().slice(0, 8)}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const dmfDir = join(tmpDir, 'dmf');
+    mkdirSync(dmfDir, { recursive: true });
+
+    writeFileSync(join(dmfDir, 'System Security Role.xml'),
+      `<?xml version="1.0" encoding="utf-8"?><Document></Document>`, 'utf-8');
+    writeFileSync(join(dmfDir, 'System Security Role Duty.xml'),
+      `<?xml version="1.0" encoding="utf-8"?><Document></Document>`, 'utf-8');
+
+    // Filename intentionally lower-cased to exercise the case-insensitive
+    // findDmfFile fallback (DMF names files by entity *label*; casing varies
+    // between exports). The canonical label is "Security segregation of duties rule".
+    writeFileSync(join(dmfDir, 'security segregation of duties rule.xml'),
+      `<?xml version="1.0" encoding="utf-8"?><Document>` +
+      `<SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
+        `<NAME>AP invoice vs payment</NAME>` +
+        `<FIRSTSECURITYDUTYIDENTIFIER>VendInvoiceProcess</FIRSTSECURITYDUTYIDENTIFIER>` +
+        `<SECONDSECURITYDUTYIDENTIFIER>VendPaymentProcess</SECONDSECURITYDUTYIDENTIFIER>` +
+        `<FIRSTSECURITYDUTYNAME>Process vendor invoices</FIRSTSECURITYDUTYNAME>` +
+        `<SECONDSECURITYDUTYNAME>Process vendor payments</SECONDSECURITYDUTYNAME>` +
+        `<SEVERITY>High</SEVERITY>` +
+        `<RISK>A clerk could pay a fictitious invoice they entered.</RISK>` +
+        `<MITIGATION>Monthly managerial review.</MITIGATION>` +
+        `<VALIDFROM>2020-01-01T00:00:00Z</VALIDFROM>` +
+        `<VALIDTO>2154-12-31T00:00:00Z</VALIDTO>` +
+      `</SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
+      `<SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
+        // missing second duty — must be skipped
+        `<NAME>Broken rule</NAME>` +
+        `<FIRSTSECURITYDUTYIDENTIFIER>SomeDuty</FIRSTSECURITYDUTYIDENTIFIER>` +
+      `</SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
+      `</Document>`, 'utf-8');
+
+    dbPath = join(tmpDir, 'sod-sec.sqlite');
+    buildSecurityDatabase({
+      packagesPathArg: 'skip',
+      dmfInputDir: dmfDir,
+      outputPath: dbPath,
+      log: () => {},
+    });
+  });
+
+  after(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('parses SoD rules into sod_rules (case-insensitive filename match)', () => {
+    const db = new Database(dbPath, { readonly: true });
+    const row = db.prepare(
+      `SELECT duty_first, duty_second, duty_first_name, duty_second_name,
+              severity, risk, mitigation, valid_to
+         FROM sod_rules WHERE rule_name = 'AP invoice vs payment'`
+    ).get();
+    db.close();
+    assert.ok(row, 'expected the AP rule in sod_rules');
+    assert.equal(row.duty_first, 'VendInvoiceProcess');
+    assert.equal(row.duty_second, 'VendPaymentProcess');
+    assert.equal(row.duty_first_name, 'Process vendor invoices');
+    assert.equal(row.severity, 'High');
+    assert.ok(row.mitigation.includes('managerial review'));
+    assert.ok(row.valid_to.startsWith('2154'));
+  });
+
+  it('skips rules missing a duty side', () => {
+    const db = new Database(dbPath, { readonly: true });
+    const c = db.prepare('SELECT COUNT(*) c FROM sod_rules').get().c;
+    db.close();
+    assert.equal(c, 1); // only the well-formed rule survives
   });
 });

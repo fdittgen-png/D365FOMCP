@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS role_direct_privileges (
 CREATE TABLE IF NOT EXISTS role_direct_entity_permissions (
   role_id          TEXT NOT NULL,
   entity_name      TEXT NOT NULL,
+  resource_type    TEXT,
   grant_read       TEXT,
   grant_create     TEXT,
   grant_update     TEXT,
@@ -143,6 +144,26 @@ CREATE TABLE IF NOT EXISTS role_direct_entity_permissions (
   PRIMARY KEY (role_id, entity_name)
 );
 CREATE INDEX IF NOT EXISTS idx_rdep_entity ON role_direct_entity_permissions(entity_name);
+
+-- SEGREGATION OF DUTIES RULES (from D365 DMF: SystemSegregationOfDutiesRuleEntity)
+-- duty_first / duty_second are the AOT duty identifiers (join to duties.duty_id).
+-- A rule is violated when a user holds BOTH duties. Severity is the D365
+-- SegregationOfDutiesSeverity enum (Low/Medium/High). Supersedes the external
+-- SOD_RULES_FILE JSON ruleset when populated.
+CREATE TABLE IF NOT EXISTS sod_rules (
+  rule_name        TEXT PRIMARY KEY,
+  duty_first       TEXT NOT NULL,
+  duty_second      TEXT NOT NULL,
+  duty_first_name  TEXT,
+  duty_second_name TEXT,
+  severity         TEXT,
+  risk             TEXT,
+  mitigation       TEXT,
+  valid_from       TEXT,
+  valid_to         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sod_first  ON sod_rules(duty_first COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_sod_second ON sod_rules(duty_second COLLATE NOCASE);
 
 -- SEARCH INDEX + METADATA
 CREATE TABLE IF NOT EXISTS sec_search (
@@ -237,7 +258,9 @@ function findAxDirs(basePath, dirName) {
       const entries = readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        if (entry.name === 'bin' || entry.name === 'node_modules') continue;
+        // XppMetadata is a compiled mirror present in customization models;
+        // skipping it avoids double-counting their security objects.
+        if (entry.name === 'bin' || entry.name === 'node_modules' || entry.name === 'XppMetadata') continue;
         const fullPath = join(dir, entry.name);
         if (entry.name.toLowerCase() === target) {
           results.push(fullPath);
@@ -288,16 +311,40 @@ function getModuleFromPath(filePath, packagesPaths) {
   return 'Unknown';
 }
 
+/**
+ * Recursively collect en-US `*.label.txt` files under an AxLabelFile directory.
+ *
+ * Label resources are nested at
+ * `AxLabelFile/LabelResources/<locale>/<name>.<locale>.label.txt` — NOT directly
+ * in the AxLabelFile dir — so a flat readdir finds nothing (the gap #4 root
+ * cause: `Labels loaded: 0`). Locale is matched case-insensitively because some
+ * packages ship `en-us` rather than `en-US`.
+ */
+function findLabelFiles(dir, depth = 0, out = []) {
+  if (depth > 4) return out;
+  let entries;
+  try { entries = readdirSync(dir, { withFileTypes: true }); }
+  catch { return out; }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      findLabelFiles(full, depth + 1, out);
+    } else if (/\.label\.txt$/i.test(entry.name) && /en-us/i.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
 /** Load label files from a packages directory */
 function loadLabels(packagesPath) {
   const labels = new Map();
   const labelDirs = findAxDirs(packagesPath, 'AxLabelFile');
 
   for (const dir of labelDirs) {
-    try {
-      for (const file of readdirSync(dir)) {
-        if (!file.endsWith('.label.txt') || !file.includes('en-US')) continue;
-        const content = readFileSync(join(dir, file), 'utf-8');
+    for (const file of findLabelFiles(dir)) {
+      try {
+        const content = readFileSync(file, 'utf-8');
         for (const line of content.split('\n')) {
           const idx = line.indexOf('=');
           if (idx > 0) {
@@ -306,8 +353,8 @@ function loadLabels(packagesPath) {
             if (id && text) labels.set(id, text);
           }
         }
-      }
-    } catch { /* skip */ }
+      } catch { /* skip */ }
+    }
   }
   return labels;
 }
@@ -358,12 +405,22 @@ function getEffectivePermissionType(rawDmfPerm, roleName) {
 // Exported for tests
 export { getEffectivePermissionType };
 
-/** Find a DMF file by trying multiple name variants */
+/** Find a DMF file by trying multiple name variants.
+ *  First tries each name as an exact path; if none hit, falls back to a
+ *  case-insensitive directory scan (DMF names files by entity *label*, whose
+ *  casing/spacing varies between exports, e.g. `Security segregation of duties
+ *  rule.xml`). */
 function findDmfFile(dir, ...names) {
   for (const name of names) {
     const path = join(dir, name);
     if (existsSync(path)) return path;
   }
+  try {
+    const wanted = new Set(names.map((n) => n.toLowerCase()));
+    for (const entry of readdirSync(dir)) {
+      if (wanted.has(entry.toLowerCase())) return join(dir, entry);
+    }
+  } catch { /* dir unreadable / missing — fall through to null */ }
   return null;
 }
 
@@ -513,7 +570,22 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     insertUserRole: db.prepare('INSERT OR REPLACE INTO user_roles VALUES (?,?)'),
     insertUserRoleCompany: db.prepare('INSERT OR REPLACE INTO user_role_companies VALUES (?,?,?)'),
     insertDirectPriv: db.prepare('INSERT OR REPLACE INTO role_direct_privileges VALUES (?,?)'),
-    insertDirectEntityPerm: db.prepare('INSERT OR REPLACE INTO role_direct_entity_permissions VALUES (?,?,?,?,?,?,?,?)'),
+    // The System Security Permissions matrix emits MULTIPLE rows per
+    // (role, resource) — one per privilege path — so a plain INSERT OR REPLACE
+    // would be last-write-wins and could silently overwrite a Deny with a Grant.
+    // Merge with Deny-wins per operation instead: Deny if either side denies,
+    // else Allow if either grants, else keep whatever is set.
+    insertDirectEntityPerm: db.prepare(`INSERT INTO role_direct_entity_permissions
+      (role_id, entity_name, resource_type, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke)
+      VALUES (?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(role_id, entity_name) DO UPDATE SET
+        resource_type = COALESCE(role_direct_entity_permissions.resource_type, excluded.resource_type),
+        grant_read   = CASE WHEN role_direct_entity_permissions.grant_read='Deny'   OR excluded.grant_read='Deny'   THEN 'Deny' WHEN role_direct_entity_permissions.grant_read='Allow'   OR excluded.grant_read='Allow'   THEN 'Allow' ELSE COALESCE(excluded.grant_read,   role_direct_entity_permissions.grant_read)   END,
+        grant_create = CASE WHEN role_direct_entity_permissions.grant_create='Deny' OR excluded.grant_create='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_create='Allow' OR excluded.grant_create='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_create, role_direct_entity_permissions.grant_create) END,
+        grant_update = CASE WHEN role_direct_entity_permissions.grant_update='Deny' OR excluded.grant_update='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_update='Allow' OR excluded.grant_update='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_update, role_direct_entity_permissions.grant_update) END,
+        grant_delete = CASE WHEN role_direct_entity_permissions.grant_delete='Deny' OR excluded.grant_delete='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_delete='Allow' OR excluded.grant_delete='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_delete, role_direct_entity_permissions.grant_delete) END,
+        grant_correct= CASE WHEN role_direct_entity_permissions.grant_correct='Deny' OR excluded.grant_correct='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_correct='Allow' OR excluded.grant_correct='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_correct, role_direct_entity_permissions.grant_correct) END,
+        grant_invoke = CASE WHEN role_direct_entity_permissions.grant_invoke='Deny' OR excluded.grant_invoke='Deny' THEN 'Deny' WHEN role_direct_entity_permissions.grant_invoke='Allow' OR excluded.grant_invoke='Allow' THEN 'Allow' ELSE COALESCE(excluded.grant_invoke, role_direct_entity_permissions.grant_invoke) END`),
     insertSearch: db.prepare('INSERT INTO sec_search VALUES (?,?,?,?)'),
     insertMeta: db.prepare('INSERT OR REPLACE INTO sec_metadata VALUES (?,?)'),
   };
@@ -521,6 +593,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   // ── Phase 1: Parse AOT Security Metadata ───────────────────────────────────
 
   let packagesPaths = [];
+  let labelsLoaded = 0;  // visible at the DATA QUALITY CHECKS site below
 
   if (packagesPathArg && packagesPathArg.toLowerCase() !== 'skip') {
     log('[1/5] Parsing AOT security metadata...');
@@ -535,7 +608,8 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         for (const [k, v] of labels) labelMap.set(k, v);
       }
     }
-    log(`  Labels loaded: ${labelMap.size}`);
+    labelsLoaded = labelMap.size;
+    log(`  Labels loaded: ${labelsLoaded}`);
 
     const rl = (raw) => resolveLabel(labelMap, raw);
 
@@ -1092,6 +1166,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         'System Security Permissions.xml', 'SystemSecurityPermissions.xml');
       stats.dmfDirectEntityPerms = 0;
       stats.dmfDirectEntityPermsSkipped = 0;
+      stats.dmfDirectEntityPermsAllZero = 0;
       if (permsFile) {
         const fileSize = statSync(permsFile).size;
         const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
@@ -1103,13 +1178,18 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
           return null;
         };
 
-        const onPermEntity = (roleId, resourceName, read, create, update, del, correct, invoke) => {
+        const onPermEntity = (roleId, resourceName, resourceType, read, create, update, del, correct, invoke) => {
           if (!roleId || !resourceName) { stats.dmfDirectEntityPermsSkipped++; return; }
+          const gr = mapAccess(read), gc = mapAccess(create), gu = mapAccess(update),
+                gd = mapAccess(del), gco = mapAccess(correct), gi = mapAccess(invoke);
+          // Skip all-zero rows (every access Unset): the resource is referenced
+          // but no operation is granted or denied → no information value. The
+          // DMF entity normally excludes these, but guard regardless of how the
+          // export was filtered.
+          if (!gr && !gc && !gu && !gd && !gco && !gi) { stats.dmfDirectEntityPermsAllZero++; return; }
           stmts.insertDirectEntityPerm.run(
-            roleId, resourceName,
-            mapAccess(read), mapAccess(create),
-            mapAccess(update), mapAccess(del),
-            mapAccess(correct), mapAccess(invoke),
+            roleId, resourceName, resourceType || null,
+            gr, gc, gu, gd, gco, gi,
           );
           stats.dmfDirectEntityPerms++;
         };
@@ -1121,6 +1201,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
             (inner) => onPermEntity(
               extractField(inner, 'SECURITYROLEIDENTIFIER'),
               extractField(inner, 'RESOURCENAME'),
+              extractField(inner, 'RESOURCETYPE'),
               extractField(inner, 'READACCESS'),
               extractField(inner, 'CREATEACCESS'),
               extractField(inner, 'UPDATEACCESS'),
@@ -1134,7 +1215,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
           const entities = parseDmfXml(xmlParser, permsFile, 'SYSTEMSECURITYPERMISSIONENTITY', log);
           for (const e of entities) {
             onPermEntity(
-              e.SECURITYROLEIDENTIFIER, e.RESOURCENAME,
+              e.SECURITYROLEIDENTIFIER, e.RESOURCENAME, e.RESOURCETYPE,
               e.READACCESS, e.CREATEACCESS, e.UPDATEACCESS,
               e.DELETEACCESS, e.CORRECTACCESS, e.INVOKEACCESS,
             );
@@ -1144,6 +1225,51 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         stats.directEntityPerms += stats.dmfDirectEntityPerms;
       } else {
         log('    System Security Permissions.xml not found — role_direct_entity_permissions will be AOT-only');
+      }
+
+      // -------------------------------------------------------------------
+      // 2j: Segregation of Duties rules (gap #2)
+      // -------------------------------------------------------------------
+      // `SystemSegregationOfDutiesRuleEntity` exports the SoD rules configured
+      // in System administration > Security > Segregation of duties. Each rule
+      // pairs two duties (by AOT identifier) that the same user must not hold.
+      // Entity shape (DMF tags are upper-cased):
+      //   SYSTEMSEGREGATIONOFDUTIESRULEENTITY
+      //     NAME, FIRSTSECURITYDUTYIDENTIFIER, SECONDSECURITYDUTYIDENTIFIER,
+      //     FIRSTSECURITYDUTYNAME, SECONDSECURITYDUTYNAME,
+      //     SEVERITY (Low/Medium/High), RISK, MITIGATION, VALIDFROM, VALIDTO
+      // DMF names the file by entity label, so match a few candidates
+      // case-insensitively (findDmfFile falls back to a dir scan).
+      const sodFile = findDmfFile(dmfInputDir,
+        'Security segregation of duties rule.xml',
+        'SystemSegregationOfDutiesRuleEntity.xml',
+        'Segregation of duties rule.xml');
+      stats.sodRules = 0;
+      stats.sodRulesSkipped = 0;
+      if (sodFile) {
+        const insertSod = db.prepare(`INSERT OR REPLACE INTO sod_rules
+          (rule_name, duty_first, duty_second, duty_first_name, duty_second_name, severity, risk, mitigation, valid_from, valid_to)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+        const onSodRule = (name, dutyFirst, dutySecond, firstName, secondName, severity, risk, mitigation, validFrom, validTo) => {
+          // A rule with no name or a missing duty side carries no information.
+          if (!name || !dutyFirst || !dutySecond) { stats.sodRulesSkipped++; return; }
+          insertSod.run(
+            name, dutyFirst, dutySecond, firstName || null, secondName || null,
+            severity || null, risk || null, mitigation || null, validFrom || null, validTo || null,
+          );
+          stats.sodRules++;
+        };
+        const entities = parseDmfXml(xmlParser, sodFile, 'SYSTEMSEGREGATIONOFDUTIESRULEENTITY', log);
+        for (const e of entities) {
+          onSodRule(
+            e.NAME, e.FIRSTSECURITYDUTYIDENTIFIER, e.SECONDSECURITYDUTYIDENTIFIER,
+            e.FIRSTSECURITYDUTYNAME, e.SECONDSECURITYDUTYNAME,
+            e.SEVERITY, e.RISK, e.MITIGATION, e.VALIDFROM, e.VALIDTO,
+          );
+        }
+        log(`    SoD rules: ${stats.sodRules.toLocaleString()} rules${stats.sodRulesSkipped ? ` (${stats.sodRulesSkipped} skipped — missing name/duty)` : ''}`);
+      } else {
+        log('    Segregation of duties rule export not found — sec_sod_check will fall back to SOD_RULES_FILE JSON');
       }
     });
 
@@ -1183,7 +1309,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
             if (!dap.Name) continue;
             const grant = dap.Grant || {};
             stmts.insertDirectEntityPerm.run(
-              roleId, dap.Name,
+              roleId, dap.Name, dap.Type || null,
               grant.Read || null, grant.Create || null,
               grant.Update || null, grant.Delete || null,
               grant.Correct || null, grant.Invoke || null,
@@ -1247,17 +1373,67 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     subRoles: db.prepare('SELECT COUNT(*) as n FROM role_subroles').get().n,
     roleDuties: db.prepare('SELECT COUNT(*) as n FROM role_duties').get().n,
     dutyPrivileges: db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get().n,
+    directEntityPerms: db.prepare('SELECT COUNT(*) as n FROM role_direct_entity_permissions').get().n,
+    sodRules: db.prepare('SELECT COUNT(*) as n FROM sod_rules').get().n,
   };
+
+  // ── Data-quality checks ──────────────────────────────────────────────────────
+  // Loud PASS/WARN gate so a degraded export can't slip through unnoticed (this
+  // is how role_direct_entity_permissions silently sat at 0 on prod).
+  const dutiesNoPriv = db.prepare(
+    'SELECT COUNT(*) as n FROM duties d WHERE NOT EXISTS (SELECT 1 FROM duty_privileges dp WHERE dp.duty_id = d.duty_id)'
+  ).get().n;
+  const epWithInvoke = db.prepare(
+    "SELECT COUNT(*) as n FROM privilege_entry_points WHERE grant_invoke IS NOT NULL AND grant_invoke <> ''"
+  ).get().n;
+  const dep = {
+    rows: counts.directEntityPerms,
+    withType: db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE resource_type IS NOT NULL AND resource_type <> ''").get().n,
+    withDeny: db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE 'Deny' IN (grant_read,grant_create,grant_update,grant_delete,grant_correct,grant_invoke)").get().n,
+    distinctRoles: db.prepare('SELECT COUNT(DISTINCT role_id) as n FROM role_direct_entity_permissions').get().n,
+  };
+  const hadPermsExport = (stats.dmfDirectEntityPerms || 0) > 0 || dep.rows > 0;
+  const checks = [
+    { name: 'duties have privileges', pass: counts.duties === 0 || dutiesNoPriv < counts.duties, detail: `${dutiesNoPriv}/${counts.duties} duties have NO privileges` },
+    { name: 'entry points carry Invoke', pass: counts.entryPoints === 0 || epWithInvoke > 0, detail: `${epWithInvoke} entry points with Invoke` },
+    { name: 'direct entity permissions present', pass: !dmfInputDir || dmfInputDir.toLowerCase() === 'skip' || dep.rows > 0, detail: `${dep.rows} rows, ${dep.distinctRoles} roles, ${dep.withDeny} with a Deny` },
+    { name: 'resource_type captured', pass: dep.rows === 0 || dep.withType > 0, detail: `${dep.withType}/${dep.rows} rows have resource_type` },
+    { name: 'labels loaded', pass: !packagesPathArg || packagesPathArg.toLowerCase() === 'skip' || labelsLoaded > 0, detail: `${labelsLoaded} en-US labels loaded` },
+    { name: 'SoD rules from D365', pass: !dmfInputDir || dmfInputDir.toLowerCase() === 'skip' || counts.sodRules > 0, detail: counts.sodRules > 0 ? `${counts.sodRules} rules from DMF (overrides SOD_RULES_FILE)` : `0 rules — add SystemSegregationOfDutiesRuleEntity to the export; sec_sod_check falls back to SOD_RULES_FILE JSON` },
+  ];
+
+  // Source-module breakdown: which models contributed security objects. This
+  // makes it verifiable that both Microsoft-standard and customization-model
+  // security objects were considered — a custom model (e.g. iExtension, HISOL)
+  // appearing here proves its AOT security objects were merged in.
+  let securityModules = [];
+  try {
+    securityModules = db.prepare(`
+      SELECT module_id, COUNT(*) AS n FROM (
+        SELECT module_id FROM roles
+        UNION ALL SELECT module_id FROM duties
+        UNION ALL SELECT module_id FROM privileges
+      ) WHERE module_id IS NOT NULL AND module_id <> ''
+      GROUP BY module_id ORDER BY n DESC
+    `).all();
+  } catch (e) { log(`  (security module breakdown unavailable: ${e.message})`); }
 
   const metaTransaction = db.transaction(() => {
     stmts.insertMeta.run('build_date', new Date().toISOString());
     stmts.insertMeta.run('aot_source', packagesPathArg || 'none');
     stmts.insertMeta.run('dmf_source', dmfInputDir || 'none');
+    stmts.insertMeta.run('security_module_count', String(securityModules.length));
+    // Persist the full module→count map (small; dozens of modules) so the
+    // admin UI can show the MS-vs-custom split without re-querying.
+    stmts.insertMeta.run('security_modules', JSON.stringify(
+      securityModules.map(m => ({ module: m.module_id, objects: m.n }))
+    ));
     for (const [k, v] of Object.entries(counts)) {
       stmts.insertMeta.run(k, String(v));
     }
   });
   metaTransaction();
+  log(`  Security source modules: ${securityModules.length} (${securityModules.slice(0, 8).map(m => m.module_id).join(', ')}${securityModules.length > 8 ? ', …' : ''})`);
 
   db.pragma('journal_mode = DELETE');
   db.exec('VACUUM');
@@ -1299,10 +1475,21 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   log(`  Users:           ${counts.users}`);
   log(`  User-Roles:      ${counts.userRoles}`);
   log(`  Companies:       ${counts.companies}`);
+  log(`  Direct Entity Perms: ${counts.directEntityPerms}`);
+  log(`  SoD Rules:       ${counts.sodRules}`);
   log('===================================================');
 
-  return { stats, counts, elapsed, fileSize };
+  log('  DATA QUALITY CHECKS');
+  let anyWarn = false;
+  for (const c of checks) {
+    if (!c.pass) anyWarn = true;
+    log(`   [${c.pass ? 'PASS' : 'WARN'}] ${c.name} — ${c.detail}`);
+  }
+  if (anyWarn) log('   ⚠ One or more checks WARNed — review the export before uploading this DB.');
+  log('===================================================');
+
+  return { stats, counts, elapsed, fileSize, checks };
 }
 
 // Exported for testing
-export { extractField, streamParseLargeDmfXmlSync as _streamParseLargeDmfXmlSync };
+export { extractField, streamParseLargeDmfXmlSync as _streamParseLargeDmfXmlSync, loadLabels as _loadLabels };

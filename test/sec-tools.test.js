@@ -11,6 +11,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'module';
+import { z } from 'zod';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -55,6 +56,33 @@ async function callToolFull(name, args) {
   const tool = toolHandlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
   return await tool.handler(args);
+}
+
+/**
+ * Mirror of the MCP SDK's `validateToolOutput` (server/mcp.js): a tool that
+ * declares an `outputSchema` must emit `structuredContent` on EVERY non-error
+ * response — validation is skipped only for `isError` results. A success
+ * response that omits `structuredContent` makes the SDK throw
+ * `-32602 "… has an output schema but no structured content was provided"`.
+ * This asserts the same contract against a captured handler result so the
+ * empty-result regression can never resurface.
+ */
+function assertSdkOutputContract(name, result) {
+  const tool = toolHandlers[name];
+  assert.ok(tool, `tool "${name}" not registered`);
+  if (!tool.outputSchema) return;          // tool has no schema → SDK skips validation
+  if (result.isError) return;              // SDK skips validation for error responses
+  assert.notEqual(
+    result.structuredContent, undefined,
+    `${name}: outputSchema is declared but the response carries no structuredContent — ` +
+    `the MCP SDK would reject this with -32602.`,
+  );
+  const parsed = z.object(tool.outputSchema).safeParse(result.structuredContent);
+  assert.ok(
+    parsed.success,
+    `${name}: structuredContent does not satisfy its outputSchema: ` +
+    (parsed.success ? '' : JSON.stringify(parsed.error.issues)),
+  );
 }
 
 before(async () => {
@@ -108,7 +136,7 @@ before(async () => {
       role_id TEXT, privilege_name TEXT, PRIMARY KEY (role_id, privilege_name)
     );
     CREATE TABLE role_direct_entity_permissions (
-      role_id TEXT, entity_name TEXT, grant_read TEXT, grant_create TEXT,
+      role_id TEXT, entity_name TEXT, resource_type TEXT, grant_read TEXT, grant_create TEXT,
       grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT,
       PRIMARY KEY (role_id, entity_name)
     );
@@ -178,7 +206,7 @@ before(async () => {
     INSERT INTO role_direct_privileges VALUES ('R1', 'LedgerJournalPost');
 
     -- Direct entity permissions
-    INSERT INTO role_direct_entity_permissions VALUES ('R1', 'VendInvoiceHeaderEntity', 'Allow', 'Allow', 'Allow', 'Allow', NULL, NULL);
+    INSERT INTO role_direct_entity_permissions VALUES ('R1', 'VendInvoiceHeaderEntity', 'DataEntity', 'Allow', 'Allow', 'Allow', 'Allow', NULL, NULL);
 
     -- Search index
     INSERT INTO sec_search VALUES ('role', 'SystemAdministrator', 'System', 'SystemAdministrator System administrator Full access');
@@ -523,25 +551,40 @@ describe('sec_raw_sql', () => {
 // The Grant filter tests below verify each non-trace tool excludes the R3
 // Deny row, and that sec_permission_trace surfaces it with a ⛔ marker.
 
-describe('P4-02 Deny filter — sec_effective_permissions', () => {
-  it('given john.doe (with Deny role R3 in chain), then output excludes the Deny row', async () => {
+describe('Deny-wins — sec_effective_permissions', () => {
+  it('given john.doe (Deny role R3 in chain), Deny-wins marks VendInvoiceJournal denied', async () => {
     const result = await callToolFull('sec_effective_permissions', { user_id: 'john.doe@trelleborg.com' });
-    // The structuredContent enumerates entry points, all duty_perm should be 'Grant'
     assert.ok(result.structuredContent);
-    const denyEntries = result.structuredContent.permissions.filter(p => p.duty_perm === 'Deny');
-    assert.equal(denyEntries.length, 0, `expected 0 Deny rows, got ${denyEntries.length}`);
-    assert.match(result.content[0].text, /Deny overrides are excluded/);
+    // R2/R4 grant VendInvoiceProcess; R3 denies it. Deny overrides Grant.
+    const vij = result.structuredContent.effective.find(e => e.object_name === 'VendInvoiceJournal');
+    assert.ok(vij, 'VendInvoiceJournal should appear in the effective view');
+    assert.equal(vij.status, 'denied', 'Deny from R3 must override the Grant from R2/R4');
+    assert.equal(vij.effective_read, 'Deny');
+    assert.ok(result.structuredContent.denied_object_count >= 1);
+    // VendPaymentJournal (granted via R4, no deny) stays granted → mixed result.
+    const vpj = result.structuredContent.effective.find(e => e.object_name === 'VendPaymentJournal');
+    assert.ok(vpj);
+    assert.equal(vpj.status, 'granted');
   });
 
-  it('given a Deny role queried directly, then permissions are empty (Deny does not grant)', async () => {
+  it('given a Deny role queried directly, Deny-wins reports the object as denied', async () => {
     const result = await callToolFull('sec_effective_permissions', { role_name: 'TBG Deny AP Posting' });
-    // Deny role contributes only Deny duties; with the filter on, it has 0 effective grants.
-    if (result.structuredContent) {
-      assert.equal(result.structuredContent.entry_point_count, 0);
-    } else {
-      // emptyResult path
-      assert.match(result.content[0].text, /No effective permissions|leaf result/);
-    }
+    assert.ok(result.structuredContent);
+    assert.ok(result.structuredContent.entry_point_count >= 1, 'Deny paths are now included, not dropped');
+    const vij = result.structuredContent.effective.find(e => e.object_name === 'VendInvoiceJournal');
+    assert.ok(vij);
+    assert.equal(vij.status, 'denied');
+  });
+
+  it('surfaces Invoke and consumes direct entity permissions', async () => {
+    // R1 (SystemAdministrator) has a direct entity permission on VendInvoiceHeaderEntity.
+    const result = await callToolFull('sec_effective_permissions', { role_name: 'SystemAdministrator' });
+    assert.ok(result.structuredContent);
+    const entity = result.structuredContent.effective.find(e => e.object_name === 'VendInvoiceHeaderEntity');
+    assert.ok(entity, 'direct entity permission should appear in the effective view');
+    assert.equal(entity.status, 'granted');
+    // The schema/typed view exposes Invoke (was previously dropped).
+    assert.ok(result.structuredContent.effective.every(e => 'effective_invoke' in e));
   });
 });
 
@@ -857,6 +900,53 @@ describe('PM-06 Sec structured output', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+//  Empty-result structured-output contract (MCP -32602 regression)
+//
+//  A tool with an outputSchema must emit structuredContent on EVERY non-error
+//  response. Before the fix, the empty-result path returned text only, so the
+//  SDK rejected zero-row results with:
+//    "Output validation error: Tool … has an output schema but no structured
+//     content was provided"
+//  — which surfaced to callers as intermittent failures correlated with empty
+//  result sets. This block drives each remaining empty path through the real
+//  handler and asserts the SDK contract (the issue #33 blocks below cover the
+//  rest: role_hierarchy, find_users_by_role, find_roles_by_duty, company_users,
+//  raw_sql).
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('empty-result structured output (MCP -32602 regression)', () => {
+  const EMPTY_CASES = [
+    // role exists, object filter matches nothing → empty perms (post-expansion path)
+    ['sec_effective_permissions', { role_name: 'SystemAdministrator', object_name: 'NoSuchObjectXYZ' }],
+    // existing user with zero role assignments → no-roles path (pre-expansion)
+    ['sec_effective_permissions', { user_id: 'disabled@trelleborg.com' }],
+    ['sec_object_access', { object_name: 'NoSuchObjectXYZ' }],
+    ['sec_search', { query: 'zqxjnevermatchesanythingatall' }],
+    ['sec_find_roles_by_privilege', { privilege_name: 'NoSuchPrivilegeXYZ' }],
+    ['sec_permission_trace', { role_name: 'SystemAdministrator', object_name: 'NoSuchObjectXYZ' }],
+    // Deny role: effectively grants nothing → empty (with deny_role context)
+    ['sec_find_users_by_role', { role_name: 'TBG Deny AP Posting' }],
+  ];
+
+  for (const [name, args] of EMPTY_CASES) {
+    it(`${name}: zero-row result still emits schema-valid structuredContent`, async () => {
+      const result = await callToolFull(name, args);
+      // Must be the empty-success channel, not a not-found error.
+      assert.notEqual(result.isError, true, `${name}: expected empty-success, got isError`);
+      assert.match(result.content[0].text, /No results/);
+      assertSdkOutputContract(name, result);
+    });
+  }
+
+  it('sec_find_users_by_role (Deny role): empty payload flags deny_role=true', async () => {
+    const result = await callToolFull('sec_find_users_by_role', { role_name: 'TBG Deny AP Posting' });
+    assertSdkOutputContract('sec_find_users_by_role', result);
+    assert.equal(result.structuredContent.deny_role, true);
+    assert.deepEqual(result.structuredContent.users, []);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 //  New tools: sec_licence_assessment, sec_sod_check, sec_what_if, sec_object_access
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1153,6 +1243,22 @@ describe('sec_object_access', () => {
     const directPaths = result.structuredContent.paths.filter(p => p.duty_id === '(direct)');
     assert.ok(directPaths.length >= 1, 'Expected at least one direct privilege path');
   });
+
+  it('surfaces Deny paths (not just grants) and counts them', async () => {
+    // R3 "TBG Deny AP Posting" denies VendInvoiceProcess → VendInvoiceJournal.
+    const result = await callToolFull('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    assert.ok(result.structuredContent);
+    assert.ok(result.structuredContent.deny_path_count >= 1, 'Deny path must be included, not filtered out');
+    const denyPath = result.structuredContent.paths.find(p => p.denied === true);
+    assert.ok(denyPath, 'a denied path should be present');
+    assert.equal(denyPath.role_name, 'TBG Deny AP Posting');
+  });
+
+  it('exposes Invoke/Correct in the path schema', async () => {
+    const result = await callToolFull('sec_object_access', { object_name: 'VendInvoiceJournal' });
+    const p = result.structuredContent.paths[0];
+    assert.ok('grant_invoke' in p && 'grant_correct' in p);
+  });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1181,7 +1287,7 @@ describe('issue #33 — sec_lookup_role with no duties / no privileges', () => {
   it('given a role with no duties, when sec_lookup_role runs, then it returns the role header without crashing or emitting a Duties section', async () => {
     const result = await callTool('sec_lookup_role', { role_name: 'IssueEmptyRole' });
     // The role header must render — assert structural shape with anchored regex.
-    assert.match(result, /^# IssueEmptyRole$/m);
+    assert.match(result, /^## IssueEmptyRole$/m);
     // The Property table is rendered.
     assert.match(result, /^\| Property \| Value \|$/m);
     // No Duties section appears (because there are zero rows).
@@ -1208,7 +1314,7 @@ describe('issue #33 — sec_lookup_user with no roles', () => {
   it('given a user with zero role assignments, when sec_lookup_user runs, then it renders the profile without a Roles section', async () => {
     const result = await callTool('sec_lookup_user', { user_id: 'lonely.user@trelleborg.com' });
     // Profile header renders — anchored regex.
-    assert.match(result, /^# lonely\.user@trelleborg\.com$/m);
+    assert.match(result, /^## lonely\.user@trelleborg\.com$/m);
     // The user metadata table renders with the expected fields.
     assert.match(result, /^\| Name \| Lonely User \|$/m);
     assert.match(result, /^\| Enabled \| Yes \|$/m);
@@ -1233,7 +1339,12 @@ describe('issue #33 — sec_company_users on empty / unknown company', () => {
     assert.notEqual(result.isError, true);
     // The message identifies the queried company (uppercased per the
     // tool's own normalization). Match the structural shape, not exact phrasing.
-    assert.match(result.content[0].text, /^No users found for company "NOTACOMPANY"\.$/);
+    assert.match(result.content[0].text, /^No users assigned to company "NOTACOMPANY" found\.$/m);
+    // The empty path must still emit schema-valid structuredContent (-32602 guard).
+    assertSdkOutputContract('sec_company_users', result);
+    assert.equal(result.structuredContent.company_id, 'NOTACOMPANY');
+    assert.equal(result.structuredContent.result_count, 0);
+    assert.deepEqual(result.structuredContent.assignments, []);
   });
 
   it('given lowercase input for an empty company, when sec_company_users runs, then the message echoes the upper-cased id', async () => {
@@ -1254,7 +1365,10 @@ describe('issue #33 — sec_role_hierarchy on a leaf role', () => {
     // Shape: success channel.
     assert.notEqual(result.isError, true);
     // Must reference the role and the direction.
-    assert.match(result.content[0].text, /No children found for role "SystemAdministrator"/);
+    assert.match(result.content[0].text, /No children of role "SystemAdministrator" found/);
+    assertSdkOutputContract('sec_role_hierarchy', result);
+    assert.equal(result.structuredContent.direction, 'children');
+    assert.equal(result.structuredContent.result_count, 0);
   });
 
   it('given a role with zero parents, when sec_role_hierarchy(direction=parents) runs, then it returns a clear empty-result message', async () => {
@@ -1262,7 +1376,10 @@ describe('issue #33 — sec_role_hierarchy on a leaf role', () => {
     const tool = toolHandlers['sec_role_hierarchy'];
     const result = await tool.handler({ role_name: 'SystemAdministrator', direction: 'parents' });
     assert.notEqual(result.isError, true);
-    assert.match(result.content[0].text, /No parents found for role "SystemAdministrator"/);
+    assert.match(result.content[0].text, /No parents of role "SystemAdministrator" found/);
+    assertSdkOutputContract('sec_role_hierarchy', result);
+    assert.equal(result.structuredContent.direction, 'parents');
+    assert.equal(result.structuredContent.result_count, 0);
   });
 });
 
@@ -1285,7 +1402,11 @@ describe('issue #33 — sec_find_users_by_role on a role with zero assignments',
     // Shape: success channel — empty is valid, not an error.
     assert.notEqual(result.isError, true);
     // Match the shape of the message: identifies the role.
-    assert.match(result.content[0].text, /No users found with role "NoUsersRole"/);
+    assert.match(result.content[0].text, /No users with role "NoUsersRole" found/);
+    assertSdkOutputContract('sec_find_users_by_role', result);
+    assert.equal(result.structuredContent.role_name, 'NoUsersRole');
+    assert.equal(result.structuredContent.result_count, 0);
+    assert.equal(result.structuredContent.deny_role, false);
   });
 });
 
@@ -1307,16 +1428,163 @@ describe('issue #33 — sec_find_roles_by_duty on a duty with zero roles', () =>
     const result = await tool.handler({ duty_name: 'D_ISSUE33_ORPHAN' });
     // Shape: success channel.
     assert.notEqual(result.isError, true);
-    assert.match(result.content[0].text, /No roles contain duty "D_ISSUE33_ORPHAN"/);
+    assert.match(result.content[0].text, /No roles granting duty "D_ISSUE33_ORPHAN" found/);
+    assertSdkOutputContract('sec_find_roles_by_duty', result);
+    assert.equal(result.structuredContent.duty_id, 'D_ISSUE33_ORPHAN');
+    assert.equal(result.structuredContent.result_count, 0);
   });
 });
 
 describe('issue #33 — sec_raw_sql on a SELECT that returns zero rows', () => {
   it('given a SELECT with no matching rows, when sec_raw_sql runs, then it surfaces a no-results indicator (not a crash)', async () => {
-    const result = await callTool('sec_raw_sql', {
+    const result = await callToolFull('sec_raw_sql', {
       sql: "SELECT role_name FROM roles WHERE role_name = 'definitely-not-a-real-role'",
     });
-    // The shared formatMarkdownTable returns "No results found." for empty rows.
-    assert.match(result, /No results found/);
+    // Empty success path — emptyResult heading, not formatMarkdownTable's text.
+    assert.notEqual(result.isError, true);
+    assert.match(result.content[0].text, /No rows matching your query found/);
+    // rawSqlOutput requires row_count/columns/rows — the empty payload must satisfy it.
+    assertSdkOutputContract('sec_raw_sql', result);
+    assert.equal(result.structuredContent.row_count, 0);
+    assert.deepEqual(result.structuredContent.rows, []);
+    assert.deepEqual(result.structuredContent.columns, []);
+  });
+});
+
+// ── gap #2: sec_sod_check prefers live D365 rules (sod_rules table) ──────────
+// A separate in-memory DB carrying the sod_rules table; registering tools
+// against it must make sec_sod_check use the D365 rules over any JSON ruleset.
+describe('sec_sod_check — D365 sod_rules table source (gap #2)', () => {
+  let sodHandlers;
+
+  before(async () => {
+    const sodDb = new Database(':memory:');
+    sodDb.pragma('journal_mode = OFF');
+    sodDb.exec(`
+      CREATE TABLE roles (role_id TEXT PRIMARY KEY, role_name TEXT NOT NULL);
+      CREATE TABLE role_subroles (parent_role_id TEXT, child_role_id TEXT, is_transitive INTEGER DEFAULT 0, PRIMARY KEY (parent_role_id, child_role_id));
+      CREATE TABLE duties (duty_id TEXT PRIMARY KEY, duty_name TEXT);
+      CREATE TABLE role_duties (role_id TEXT, duty_id TEXT, permission_type TEXT DEFAULT 'Grant', PRIMARY KEY (role_id, duty_id));
+      CREATE TABLE users (user_id TEXT PRIMARY KEY, person_name TEXT, enabled INTEGER DEFAULT 1);
+      CREATE TABLE user_roles (user_id TEXT, role_id TEXT, PRIMARY KEY (user_id, role_id));
+      CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE sod_rules (
+        rule_name TEXT PRIMARY KEY, duty_first TEXT NOT NULL, duty_second TEXT NOT NULL,
+        duty_first_name TEXT, duty_second_name TEXT, severity TEXT, risk TEXT,
+        mitigation TEXT, valid_from TEXT, valid_to TEXT
+      );
+      INSERT INTO sec_metadata VALUES ('build_date', '2026-06-18T00:00:00Z');
+      INSERT INTO roles VALUES ('R_BOTH', 'ApFullClerk');
+      INSERT INTO roles VALUES ('R_INV', 'ApInvoiceClerk');
+      INSERT INTO duties VALUES ('VendInvoiceProcess', 'Process vendor invoices');
+      INSERT INTO duties VALUES ('VendPaymentProcess', 'Process vendor payments');
+      INSERT INTO role_duties VALUES ('R_BOTH', 'VendInvoiceProcess', 'Grant');
+      INSERT INTO role_duties VALUES ('R_BOTH', 'VendPaymentProcess', 'Grant');
+      INSERT INTO role_duties VALUES ('R_INV', 'VendInvoiceProcess', 'Grant');
+      INSERT INTO users VALUES ('both@trelleborg.com', 'Both Duties', 1);
+      INSERT INTO users VALUES ('inv@trelleborg.com', 'Invoice Only', 1);
+      INSERT INTO user_roles VALUES ('both@trelleborg.com', 'R_BOTH');
+      INSERT INTO user_roles VALUES ('inv@trelleborg.com', 'R_INV');
+      INSERT INTO sod_rules VALUES (
+        'AP invoice vs payment', 'VendInvoiceProcess', 'VendPaymentProcess',
+        'Process vendor invoices', 'Process vendor payments', 'High',
+        'A clerk could pay a fictitious invoice they entered.',
+        'Monthly managerial review.', NULL, NULL
+      );
+    `);
+    const { registerSecTools } = await import('../src/azure/sec-tools.js');
+    const mockServer = createMockServer();
+    registerSecTools(mockServer, sodDb); // loads the D365 rules into the SoD ruleset
+    sodHandlers = mockServer.handlers;
+  });
+
+  after(async () => {
+    const { _clearSodRuleset } = await import('../src/azure/sec-tools.js');
+    _clearSodRuleset();
+  });
+
+  it('flags a user holding both duties of a D365 rule', async () => {
+    const result = await sodHandlers['sec_sod_check'].handler({ user_id: 'both@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.violation_count, 1);
+    const v = result.structuredContent.violations[0].violations[0];
+    assert.equal(v.rule_id, 'AP invoice vs payment'); // rule name is the natural key
+    assert.equal(v.risk_level, 'High');               // mapped from severity
+    assert.equal(v.severity, 'High');
+    assert.match(v.mitigation, /managerial review/);
+    // markdown surfaces the mitigation column when present
+    assert.match(result.content[0].text, /managerial review/);
+  });
+
+  it('does not flag a user holding only one side', async () => {
+    const result = await sodHandlers['sec_sod_check'].handler({ user_id: 'inv@trelleborg.com' });
+    assert.ok(result.structuredContent);
+    assert.equal(result.structuredContent.violation_count, 0);
+  });
+
+  it('structured output still satisfies the schema with the extra fields', async () => {
+    const { secSodCheckOutput } = await import('../src/azure/output-schemas.js');
+    const result = await sodHandlers['sec_sod_check'].handler({ user_id: 'both@trelleborg.com' });
+    assert.doesNotThrow(() => secSodCheckOutput.parse(result.structuredContent));
+  });
+});
+
+// ── Regression: pre-v3 DB without role_direct_entity_permissions.resource_type ──
+// Older deployed snapshots lack the resource_type column; sec_effective_permissions
+// and sec_object_access referenced rdep.resource_type and threw "no such column"
+// (the live "rdep.resource_type schema fault"). Registering against such a DB must
+// degrade to object_type='DataEntity' rather than error.
+describe('sec tools tolerate a DB without rdep.resource_type', () => {
+  let legacyHandlers;
+
+  before(async () => {
+    const legacyDb = new Database(':memory:');
+    legacyDb.pragma('journal_mode = OFF');
+    legacyDb.exec(`
+      CREATE TABLE roles (role_id TEXT PRIMARY KEY, role_name TEXT NOT NULL, permission_type TEXT DEFAULT 'Grant');
+      CREATE TABLE role_subroles (parent_role_id TEXT, child_role_id TEXT, is_transitive INTEGER DEFAULT 0, PRIMARY KEY (parent_role_id, child_role_id));
+      CREATE TABLE duties (duty_id TEXT PRIMARY KEY, duty_name TEXT);
+      CREATE TABLE role_duties (role_id TEXT, duty_id TEXT, permission_type TEXT DEFAULT 'Grant', PRIMARY KEY (role_id, duty_id));
+      CREATE TABLE privileges (privilege_name TEXT PRIMARY KEY);
+      CREATE TABLE duty_privileges (duty_id TEXT, privilege_name TEXT, PRIMARY KEY (duty_id, privilege_name));
+      CREATE TABLE privilege_entry_points (
+        privilege_name TEXT, entry_point_name TEXT, object_type TEXT, object_name TEXT,
+        grant_read TEXT, grant_create TEXT, grant_update TEXT, grant_delete TEXT,
+        grant_correct TEXT, grant_invoke TEXT, PRIMARY KEY (privilege_name, entry_point_name)
+      );
+      CREATE TABLE role_direct_privileges (role_id TEXT, privilege_name TEXT, PRIMARY KEY (role_id, privilege_name));
+      -- NOTE: no resource_type column — exactly the pre-v3 shape that broke live.
+      CREATE TABLE role_direct_entity_permissions (
+        role_id TEXT, entity_name TEXT, grant_read TEXT, grant_create TEXT,
+        grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT,
+        PRIMARY KEY (role_id, entity_name)
+      );
+      CREATE TABLE users (user_id TEXT PRIMARY KEY, person_name TEXT, enabled INTEGER DEFAULT 1);
+      CREATE TABLE user_roles (user_id TEXT, role_id TEXT, PRIMARY KEY (user_id, role_id));
+      CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO sec_metadata VALUES ('build_date', '2026-06-10T00:00:00Z');
+      INSERT INTO roles VALUES ('RX', 'LegacyApRole', 'Grant');
+      INSERT INTO role_direct_entity_permissions VALUES ('RX', 'VendInvoiceHeaderEntity', 'Allow', 'Allow', 'Allow', NULL, NULL, NULL);
+      INSERT INTO users VALUES ('legacy@trelleborg.com', 'Legacy User', 1);
+      INSERT INTO user_roles VALUES ('legacy@trelleborg.com', 'RX');
+    `);
+    const { registerSecTools } = await import('../src/azure/sec-tools.js');
+    const mockServer = createMockServer();
+    registerSecTools(mockServer, legacyDb);
+    legacyHandlers = mockServer.handlers;
+  });
+
+  it('sec_effective_permissions does not throw a schema fault', async () => {
+    const result = await legacyHandlers['sec_effective_permissions'].handler({ user_id: 'legacy@trelleborg.com' });
+    assert.notEqual(result.isError, true, result.content?.[0]?.text);
+    const perm = result.structuredContent.effective.find(p => p.object_name === 'VendInvoiceHeaderEntity');
+    assert.ok(perm, 'expected the direct-entity permission to resolve');
+    assert.equal(perm.object_type, 'DataEntity'); // literal fallback when column absent
+  });
+
+  it('sec_object_access does not throw a schema fault', async () => {
+    const result = await legacyHandlers['sec_object_access'].handler({ object_name: 'VendInvoiceHeaderEntity' });
+    assert.notEqual(result.isError, true, result.content?.[0]?.text);
+    assert.ok(result.structuredContent);
   });
 });

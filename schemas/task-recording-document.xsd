@@ -1,0 +1,355 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Contract schema for the D365FO Task Recorder enriched document.
+
+  Produced by the `taskrecorder_to_document` MCP tool (when include_xml=true) as a
+  machine-consumable serialization of a Task Recorder recording: the recorded
+  process, the screenshots, the BPM-package security, the KB technical detail
+  (form / classes & methods / OData endpoints), and the role-based security
+  chain (roles / sub-roles / duties / privileges / users) from the Security DB.
+
+  Namespace : urn:trelleborg:d365fo:taskrecording:1.0
+  Validate  : xmllint - -schema task-recording-document.xsd <document>.xml - -noout
+
+  PRIVACY: the <User> element exposes id + name + enabled only. Email addresses
+  are never emitted by the producer and are intentionally absent from this contract.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:trelleborg:d365fo:taskrecording:1.0"
+           targetNamespace="urn:trelleborg:d365fo:taskrecording:1.0"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified"
+           version="1.1">
+
+  <!-- ── Root ──────────────────────────────────────────────────────────── -->
+  <xs:element name="TaskRecordingDocument">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Recording" type="RecordingType"/>
+        <xs:element name="FormsVisited" type="FormsVisitedType"/>
+        <xs:element name="Steps" type="StepsType"/>
+        <xs:element name="BpmSecurity" type="BpmSecurityType"/>
+        <xs:element name="Technical" type="TechnicalType"/>
+        <xs:element name="RoleBasedSecurity" type="RoleBasedSecurityType"/>
+        <xs:element name="ClientRecording" type="ClientRecordingType" minOccurs="0"/>
+        <xs:element name="Notes" type="NotesType"/>
+      </xs:sequence>
+      <xs:attribute name="schemaVersion" type="xs:string" use="required"/>
+      <xs:attribute name="generatedAt" type="xs:string" use="optional"/>
+      <xs:attribute name="sourceFile" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ── Recording ─────────────────────────────────────────────────────── -->
+  <xs:complexType name="RecordingType">
+    <xs:sequence>
+      <xs:element name="Description" type="xs:string" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="canonicalId" type="xs:string" use="optional"/>
+    <xs:attribute name="version" type="xs:string" use="optional"/>
+    <xs:attribute name="language" type="xs:string" use="optional"/>
+    <xs:attribute name="actionCount" type="xs:integer" use="optional"/>
+    <xs:attribute name="screenshotCount" type="xs:integer" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Forms visited ─────────────────────────────────────────────────── -->
+  <xs:complexType name="FormsVisitedType">
+    <xs:sequence>
+      <xs:element name="Form" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="name" type="xs:string" use="required"/>
+          <xs:attribute name="menuLabel" type="xs:string" use="optional"/>
+          <xs:attribute name="menuName" type="xs:string" use="optional"/>
+          <xs:attribute name="menuType" type="xs:string" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── BPM security grant (shared) ───────────────────────────────────── -->
+  <xs:complexType name="GrantType">
+    <xs:attribute name="accessLevel" type="xs:string" use="optional"/>
+    <xs:attribute name="role" type="xs:string" use="optional"/>
+    <xs:attribute name="roleName" type="xs:string" use="optional"/>
+    <xs:attribute name="duty" type="xs:string" use="optional"/>
+    <xs:attribute name="dutyName" type="xs:string" use="optional"/>
+    <xs:attribute name="privilege" type="xs:string" use="optional"/>
+    <xs:attribute name="privilegeName" type="xs:string" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="SecurityGrantsType">
+    <xs:sequence>
+      <xs:element name="Grant" type="GrantType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── Steps ─────────────────────────────────────────────────────────── -->
+  <xs:complexType name="StepsType">
+    <xs:sequence>
+      <xs:element name="Step" type="StepType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="StepType">
+    <xs:sequence>
+      <xs:element name="Description" type="xs:string" minOccurs="0"/>
+      <xs:element name="DocxText" type="xs:string" minOccurs="0"/>
+      <xs:element name="Target" type="xs:string" minOccurs="0"/>
+      <xs:element name="Control" minOccurs="0">
+        <xs:complexType>
+          <xs:attribute name="label" type="xs:string" use="optional"/>
+          <xs:attribute name="name" type="xs:string" use="optional"/>
+          <xs:attribute name="type" type="xs:string" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Screenshots">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Screenshot" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="name" type="xs:string" use="optional"/>
+                <xs:attribute name="mime" type="xs:string" use="optional"/>
+                <xs:attribute name="contentLocation" type="xs:string" use="required"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Security" type="SecurityGrantsType"/>
+      <xs:element name="Client" type="ClientStepType" minOccurs="0"/>
+      <xs:element name="ServerActions" type="ServerActionsType" minOccurs="0"/>
+    </xs:sequence>
+    <xs:attribute name="number" type="xs:integer" use="required"/>
+    <xs:attribute name="source" type="xs:string" use="optional"/>
+    <xs:attribute name="sequence" type="xs:integer" use="optional"/>
+    <xs:attribute name="actionType" type="xs:string" use="optional"/>
+    <xs:attribute name="objectName" type="xs:string" use="optional"/>
+    <xs:attribute name="globalId" type="xs:string" use="optional"/>
+    <xs:attribute name="textsAgree" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Client repro step detail (browser side) ───────────────────────── -->
+  <xs:complexType name="ClientStepType">
+    <xs:attribute name="kind" type="xs:string" use="optional"/>
+    <xs:attribute name="ts" type="xs:string" use="optional"/>
+    <xs:attribute name="formTitle" type="xs:string" use="optional"/>
+    <xs:attribute name="menuItem" type="xs:string" use="optional"/>
+    <xs:attribute name="company" type="xs:string" use="optional"/>
+    <xs:attribute name="url" type="xs:string" use="optional"/>
+    <xs:attribute name="label" type="xs:string" use="optional"/>
+    <xs:attribute name="role" type="xs:string" use="optional"/>
+    <xs:attribute name="href" type="xs:string" use="optional"/>
+    <xs:attribute name="fieldLabel" type="xs:string" use="optional"/>
+    <xs:attribute name="fieldName" type="xs:string" use="optional"/>
+    <xs:attribute name="controlType" type="xs:string" use="optional"/>
+    <xs:attribute name="oldValue" type="xs:string" use="optional"/>
+    <xs:attribute name="newValue" type="xs:string" use="optional"/>
+    <xs:attribute name="message" type="xs:string" use="optional"/>
+    <xs:attribute name="text" type="xs:string" use="optional"/>
+    <xs:attribute name="note" type="xs:string" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Correlated server-side .axtr actions for a client step ────────── -->
+  <xs:complexType name="ServerActionsType">
+    <xs:sequence>
+      <xs:element name="ServerAction" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:attribute name="sequence" type="xs:integer" use="optional"/>
+          <xs:attribute name="actionType" type="xs:string" use="optional"/>
+          <xs:attribute name="commandName" type="xs:string" use="optional"/>
+          <xs:attribute name="control" type="xs:string" use="optional"/>
+          <xs:attribute name="form" type="xs:string" use="optional"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── BPM security (consolidated) ───────────────────────────────────── -->
+  <xs:complexType name="BpmSecurityType">
+    <xs:sequence>
+      <xs:element name="Objects">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Object" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:sequence>
+                  <xs:element name="Grant" type="GrantType" minOccurs="0" maxOccurs="unbounded"/>
+                </xs:sequence>
+                <xs:attribute name="aotName" type="xs:string" use="optional"/>
+                <xs:attribute name="type" type="xs:string" use="optional"/>
+                <xs:attribute name="label" type="xs:string" use="optional"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Grants" type="SecurityGrantsType"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── Technical (KB) ────────────────────────────────────────────────── -->
+  <xs:complexType name="TechnicalType">
+    <xs:sequence>
+      <xs:element name="Form" type="KbFormType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="available" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="KbFormType">
+    <xs:sequence>
+      <xs:element name="RootTables">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Table" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="name" type="xs:string" use="required"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Classes">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Class" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:sequence>
+                  <xs:element name="Method" minOccurs="0" maxOccurs="unbounded">
+                    <xs:complexType>
+                      <xs:attribute name="name" type="xs:string" use="required"/>
+                      <xs:attribute name="signature" type="xs:string" use="optional"/>
+                    </xs:complexType>
+                  </xs:element>
+                </xs:sequence>
+                <xs:attribute name="name" type="xs:string" use="required"/>
+                <xs:attribute name="edgeType" type="xs:string" use="optional"/>
+                <xs:attribute name="methodsTruncated" type="xs:boolean" use="optional"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Endpoints">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Endpoint" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="entityName" type="xs:string" use="required"/>
+                <xs:attribute name="publicName" type="xs:string" use="optional"/>
+                <xs:attribute name="publicCollection" type="xs:string" use="optional"/>
+                <xs:attribute name="isPublic" type="xs:string" use="optional"/>
+                <xs:attribute name="primaryTable" type="xs:string" use="optional"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Notes" type="NotesType"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="xs:string" use="required"/>
+    <xs:attribute name="found" type="xs:boolean" use="optional"/>
+    <xs:attribute name="label" type="xs:string" use="optional"/>
+    <xs:attribute name="module" type="xs:string" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Role-based security (Sec DB) ──────────────────────────────────── -->
+  <xs:complexType name="RoleBasedSecurityType">
+    <xs:sequence>
+      <xs:element name="Role" type="RoleType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="available" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="RoleType">
+    <xs:sequence>
+      <xs:element name="SubRoles">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="SubRole" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="name" type="xs:string" use="required"/>
+                <xs:attribute name="transitive" type="xs:string" use="optional"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Duties">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Duty" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="id" type="xs:string" use="required"/>
+                <xs:attribute name="name" type="xs:string" use="optional"/>
+                <xs:attribute name="permissionType" type="xs:string" use="optional"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Privileges">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Privilege" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <xs:attribute name="name" type="xs:string" use="required"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Users">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="User" minOccurs="0" maxOccurs="unbounded">
+              <xs:complexType>
+                <!-- id + name + enabled only — no email by contract -->
+                <xs:attribute name="id" type="xs:string" use="required"/>
+                <xs:attribute name="name" type="xs:string" use="optional"/>
+                <xs:attribute name="enabled" type="xs:string" use="optional"/>
+              </xs:complexType>
+            </xs:element>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="Notes" type="NotesType"/>
+    </xs:sequence>
+    <xs:attribute name="queried" type="xs:string" use="required"/>
+    <xs:attribute name="found" type="xs:boolean" use="optional"/>
+    <xs:attribute name="roleId" type="xs:string" use="optional"/>
+    <xs:attribute name="roleName" type="xs:string" use="optional"/>
+    <xs:attribute name="label" type="xs:string" use="optional"/>
+    <xs:attribute name="licenseType" type="xs:string" use="optional"/>
+    <xs:attribute name="permissionType" type="xs:string" use="optional"/>
+    <xs:attribute name="usersIncluded" type="xs:boolean" use="optional"/>
+    <xs:attribute name="userCount" type="xs:integer" use="optional"/>
+    <xs:attribute name="dutiesTruncated" type="xs:boolean" use="optional"/>
+    <xs:attribute name="privilegesTruncated" type="xs:boolean" use="optional"/>
+    <xs:attribute name="usersTruncated" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Client recording metadata (browser-side repro) ────────────────── -->
+  <xs:complexType name="ClientRecordingType">
+    <xs:attribute name="sessionId" type="xs:string" use="optional"/>
+    <xs:attribute name="title" type="xs:string" use="optional"/>
+    <xs:attribute name="severity" type="xs:string" use="optional"/>
+    <xs:attribute name="host" type="xs:string" use="optional"/>
+    <xs:attribute name="tenant" type="xs:string" use="optional"/>
+    <xs:attribute name="company" type="xs:string" use="optional"/>
+    <xs:attribute name="startedAt" type="xs:string" use="optional"/>
+    <xs:attribute name="endedAt" type="xs:string" use="optional"/>
+    <xs:attribute name="extensionVersion" type="xs:string" use="optional"/>
+    <xs:attribute name="initialUrl" type="xs:string" use="optional"/>
+    <xs:attribute name="stepCount" type="xs:integer" use="optional"/>
+    <xs:attribute name="screenshotCount" type="xs:integer" use="optional"/>
+  </xs:complexType>
+
+  <!-- ── Notes (reused) ────────────────────────────────────────────────── -->
+  <xs:complexType name="NotesType">
+    <xs:sequence>
+      <xs:element name="Note" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

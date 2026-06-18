@@ -20,7 +20,7 @@ Run ALL of these in parallel:
 Organize findings into:
 
 1. **Table Overview**: Module, table group, cache lookup, record count context
-2. **Key Fields**: List important fields with types and EDTs. Flag enum fields.
+2. **Key Fields**: List important fields with types and EDTs. Flag enum fields. **Flag customizations:** `d365_lookup_table` reports `is_customized`, `custom_field_count`, and `customization_modules`; each field carries `is_extension`/`source_module`, so call out which fields are added by customization models (e.g. `iExtension`) vs. standard.
 3. **Indexes**: Unique and non-unique, clustered index
 4. **Relations**: Outgoing FKs (this table references) and incoming FKs (tables referencing this)
 5. **Extensions**: Any CoC or event handler extensions found
