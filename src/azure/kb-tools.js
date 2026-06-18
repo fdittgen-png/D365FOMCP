@@ -20,6 +20,7 @@ import {
   errorResult,
   makeLabelResolver,
   structuredResult,
+  numberSourceLines,
   validateLikePattern,
   patternErrorResult,
   READ_ONLY_DB_ANNOTATIONS,
@@ -705,11 +706,12 @@ export function registerKbTools(server, db) {
       if (typed.is_abstract || typed.extends_class || typed.implements_list) out += '\n';
 
       if (typed.include_source) {
+        out += `_Source blocks are line-numbered (body-relative; line 1 = first line of each method)._\n\n`;
         for (const m of typed.methods) {
           out += `### ${m.method_name}${m.is_static ? ' (static)' : ''}\n`;
           out += `Signature: \`${m.signature || '-'}\`\n`;
           if (m.source_code) {
-            out += '```x++\n' + m.source_code + '\n```\n\n';
+            out += '```x++\n' + numberSourceLines(m.source_code) + '\n```\n\n';
           } else {
             out += '_No source code available._\n\n';
           }
@@ -764,13 +766,15 @@ export function registerKbTools(server, db) {
       }
 
       const r = result[0];
+      const sourceCode = r.source_code ?? null;
       const typed = {
         owner_type: r.owner_type,
         owner_name: r.owner_name,
         method_name: r.method_name,
         signature: r.signature ?? null,
         is_static: Boolean(r.is_static),
-        source_code: r.source_code ?? null,
+        source_code: sourceCode,
+        line_count: sourceCode ? sourceCode.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length : null,
       };
 
       let out = `## ${typed.owner_name}.${typed.method_name}\n`;
@@ -778,7 +782,10 @@ export function registerKbTools(server, db) {
       out += `Signature: \`${typed.signature || '-'}\`\n\n`;
 
       if (typed.source_code) {
-        out += '```x++\n' + typed.source_code + '\n```';
+        // Render with body-relative line numbers so callers can cite an exact
+        // `:line` reproducibly (1 = first line of the method body).
+        out += `_Line numbers are body-relative (line 1 = first line of the method source); ${typed.line_count} line(s)._\n\n`;
+        out += '```x++\n' + numberSourceLines(typed.source_code) + '\n```';
       } else {
         out += '_No source code available for this method._';
       }

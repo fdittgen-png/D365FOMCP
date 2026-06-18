@@ -107,7 +107,7 @@ Before any commit / deploy of `src/azure/*.js`, `src/functions/*.js`, `host.json
    ```
    This catches import errors, syntax errors, and the template-literal trap before they hit Azure.
 
-4. **Run the test suite** (`npm test`) — should be 254/254 passing. Adding test cases is preferred over skipping.
+4. **Run the test suite** (`npm test`) — must be fully green (943/943 as of 2026-06; the count grows each phase, so treat the pre-change pass count as the floor, never regress it). Adding test cases is preferred over skipping.
 
 5. **For changes to `sec-builder.js` SCHEMA**: verify the new schema is backward-compatible with the in-place merge functions in `d365sec-upload.js`. The `mergeBuildsInPlace` and `mergeAotUpdateInPlace` functions enumerate specific table names — if you add a new table, decide whether it's DMF-sourced or AOT-sourced and add it to the right list.
 
@@ -116,6 +116,20 @@ Before any commit / deploy of `src/azure/*.js`, `src/functions/*.js`, `host.json
    - Use `COLLATE NOCASE` literals which match the NOCASE indexes
    - For known-casing data, prefer explicit `IN ('CamelCase', 'UPPERCASE')` over `COLLATE NOCASE`
    - Avoid joining on case-mismatched columns without `COLLATE NOCASE` on the join condition itself
+
+7. **`structuredContent` ↔ `outputSchema` — the two `-32602` traps** (both bit us 2026-06). A tool that declares an `outputSchema` is validated on BOTH ends (server on send, client on receive):
+   - **Success path:** every non-error response MUST carry `structuredContent` matching the schema — *including zero-row results*. Pass `emptyResult(context, typedEmptyPayload)` with the typed empty shape (empty arrays, zeroed counts, known scalars). A bare `emptyResult(context)` throws `-32602 "has an output schema but no structured content was provided"` on the server. A static-scan test enforces that every `emptyResult(` in `kb-tools.js`/`sec-tools.js` passes a 2nd arg.
+   - **Error path:** error responses must carry **no** `structuredContent`. The SDK *client* validates `structuredContent` against the schema even when `isError` is true (`client/index.js`), so an `{error:{…}}` payload fails for every schema'd tool with `-32602 "Structured content does not match…"`. `errorResult`/`notFoundResult`/`patternErrorResult`/`timeoutErrorResult` are text + `isError` only — put diagnostics in the text channel.
+8. **`@SYS` label leaks:** label-rendering tools must resolve via `makeLabelResolver(db)`, and the labels table column is **`text`** (not `label_text`). A wrong column name makes the resolver silently degrade to pass-through and leak raw `@SYS…` IDs (contract item 10).
+
+### Fixing a failing or just-migrated suite (methodology — 2026-06)
+
+1. **Cascading root cause before mass-editing.** Dozens of failures are often one cause. `test did not finish before its parent and was cancelled` = a `before()` hook threw — most often a stale mock server that only implements the deprecated `tool()` and not `registerTool(name, config, handler)`. One harness fix turned ~46 red→green this session. Triage by root cause, not symptom count.
+2. **Stale test vs real bug.** For each failure, ask: does the impl follow the documented contract (the `shared.js` helpers / CLAUDE.md)? If yes, the *test* drifted — realign its assertion to the helper's current output (`emptyResult` → `## No results\n\nNo <ctx> found.`; `truncationNote('user')` → `Showing first N results (caller …)`; `notFoundResult` → ``X `name` was not found.`` + `**Did you mean:**`). If the impl violates a real invariant, fix the *impl*. Never make a test pass without making that decision.
+3. **Read the library source for exact rules** (see the `-32602` asymmetry above) — don't guess validation semantics.
+4. **Audit the whole class when fixing a contract bug** — grep every helper / call-site of the same shape (the empty-result trap had an error-channel sibling across 4 helpers).
+5. **Iterate on targeted files; full suite only at milestones.** `node --test test/<file>.test.js` is seconds; `npm test` is the whole suite. Use the targeted file while fixing a cluster; run the full suite to confirm the cluster is clear and once at the end.
+6. **Dirty tree: separate your edits from pre-existing/concurrent WIP.** `git stash` on an already-dirty tree conflates others' changes with yours and yields false baselines — use `git diff HEAD -- <file>` to see what's actually yours. At commit time stage by explicit path (`git add <files…>`), never `git add -A` when concurrent work is in the tree, and verify with `git diff --cached --stat`.
 
 ### After deploy
 1. Wait 30s for cold start

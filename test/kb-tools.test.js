@@ -626,6 +626,31 @@ describe('d365_get_method_source', () => {
     assert.ok(result.includes('construct'));
   });
 
+  it('renders body-relative line numbers and reports line_count', async () => {
+    const result = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_name: 'run',
+    });
+    // Markdown carries a numbered first line and the body-relative note.
+    assert.match(result.content[0].text, /body-relative/);
+    assert.match(result.content[0].text, /\n\s*1 \| /);
+    // Typed payload carries a positive integer line_count matching the raw body.
+    const lc = result.structuredContent.line_count;
+    assert.ok(Number.isInteger(lc) && lc > 0);
+    const expected = result.structuredContent.source_code
+      .replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n').length;
+    assert.equal(lc, expected);
+    // Numbering must not corrupt the code itself.
+    assert.ok(result.content[0].text.includes('this.post()'));
+  });
+
+  it('reports null line_count when no source is available', async () => {
+    const result = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_name: 'post',
+    });
+    assert.equal(result.structuredContent.source_code, null);
+    assert.equal(result.structuredContent.line_count, null);
+  });
+
   it('handles method without source code', async () => {
     const result = await callTool('d365_get_method_source', {
       owner_name: 'SalesFormLetter', method_name: 'post',

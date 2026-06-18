@@ -17,6 +17,7 @@ import { existsSync, unlinkSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
 import sql from 'mssql';
+import { releaseOutputLock } from './release-output-lock.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -194,6 +195,7 @@ async function build() {
   }
 
   // ── Initialize SQLite (file-based via better-sqlite3) ──────────────────────
+  releaseOutputLock(outputPath);
   if (existsSync(outputPath)) unlinkSync(outputPath);
   const db = new Database(outputPath);
 

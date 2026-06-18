@@ -2,8 +2,8 @@
 
 **Project**: tis-p-mcpd365fo
 **Owner**: Trelleborg IT Services (TIS)
-**Version**: 2.0
-**Date**: 2026-03-18
+**Version**: 2.1
+**Date**: 2026-05-07
 **Author**: Florian Dittgen
 **Status**: Current
 
@@ -452,11 +452,19 @@ This is required after uploading new database files (the `better-sqlite3` single
 | Development | Security MCP | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` |
 | Development | Task Recorder MCP | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 | Development | OTRS Extractor (HTTP, function-key auth) | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/otrs/extract` |
+| Development | Wiki catalog | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/wiki-mcp` |
+| Development | Wiki MCP (per wiki) | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/wiki-mcp/{name}` |
+| Development | Health probe | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/health` |
+| Development | Admin UI | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/admin` |
 | Production | KB MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Production | XRef MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
 | Production | Security MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
 | Production | Task Recorder MCP | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 | Production | OTRS Extractor (HTTP, function-key auth) | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/otrs/extract` |
+| Production | Wiki catalog | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/wiki-mcp` |
+| Production | Wiki MCP (per wiki) | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/wiki-mcp/{name}` |
+| Production | Health probe | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/health` |
+| Production | Admin UI | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/admin` |
 
 ---
 

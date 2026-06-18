@@ -27,6 +27,7 @@
 
 import { join } from 'path';
 import { buildSecurityDatabase } from '../src/azure/sec-builder.js';
+import { releaseOutputLock } from './release-output-lock.js';
 
 const DEFAULT_OUTPUT = join(
   process.env.USERPROFILE || process.env.HOME || '.',
@@ -45,4 +46,5 @@ if (!packagesPathArg && !dmfInputDir) {
   process.exit(1);
 }
 
+releaseOutputLock(outputPath);
 buildSecurityDatabase({ packagesPathArg, dmfInputDir, outputPath });

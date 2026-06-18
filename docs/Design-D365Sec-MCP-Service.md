@@ -394,7 +394,9 @@ function detectPermissionType(name, parentPermission = 'Grant') {
 
 Follows the `registerXTools(server, db)` pattern.
 
-### 5.2 Tool Catalog (15 tools)
+### 5.2 Tool Catalog (19 tools)
+
+> **Update (CR-SEC-007 / commit 86bdb56):** The original design shipped with the 15 tools below. Four governance tools were added subsequently in `sec-tools.js`. They are listed at the end of this section under "Governance Tools".
 
 #### Lookup Tools
 
@@ -430,6 +432,15 @@ Follows the `registerXTools(server, db)` pattern.
 | 13 | `sec_search` | `query`, `object_type?`, `limit?` | Full-text search across roles, duties, privileges, users |
 | 14 | `sec_stats` | (none) | Summary statistics: role counts (Grant/Deny), user counts (enabled/disabled), company count, duty/privilege counts |
 | 15 | `sec_raw_sql` | `sql` | Read-only ad-hoc SQL against the security database (500-row limit) |
+
+#### Governance Tools (added post-design)
+
+| # | Tool | Parameters | Description |
+|---|---|---|---|
+| 16 | `sec_licence_assessment` | `user_id?` | Per-user licence-type assessment from assigned roles |
+| 17 | `sec_sod_check` | varies | Segregation-of-Duties violation check for users / role pairs |
+| 18 | `sec_what_if` | `user_id`, `add_roles?`, `remove_roles?` | Effective-permission delta of adding/removing a role |
+| 19 | `sec_object_access` | `object_name` | Reverse lookup: which roles/users can read/write an object |
 
 ### 5.3 Tool Implementation Examples
 

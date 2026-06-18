@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ImportExportXml version="9.2.25000.000" SolutionPackageVersion="9.2" languagecode="1033" generatedBy="CrmLive" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SolutionManifest>
+    <UniqueName>D365FOGovernanceAgent</UniqueName>
+    <LocalizedNames>
+      <LocalizedName description="D365FO Governance Agent" languagecode="1033" />
+    </LocalizedNames>
+    <Descriptions>
+      <Description description="Copilot Studio agent for D365FO governance with skill workflows baked into the instructions." languagecode="1033" />
+    </Descriptions>
+    <Version>1.0.0.0</Version>
+    <Managed>0</Managed>
+    <Publisher>
+      <UniqueName>trelleborgtisd</UniqueName>
+      <LocalizedNames>
+        <LocalizedName description="Trelleborg TIS D365" languagecode="1033" />
+      </LocalizedNames>
+      <Descriptions />
+      <EMailAddress xsi:nil="true" />
+      <SupportingWebsiteUrl xsi:nil="true" />
+      <CustomizationPrefix>tisd</CustomizationPrefix>
+      <CustomizationOptionValuePrefix>10000</CustomizationOptionValuePrefix>
+      <Addresses />
+    </Publisher>
+    <RootComponents />
+    <MissingDependencies />
+  </SolutionManifest>
+</ImportExportXml>

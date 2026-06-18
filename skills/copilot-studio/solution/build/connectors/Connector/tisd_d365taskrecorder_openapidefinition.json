@@ -1,0 +1,30 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "d365taskrecorder",
+    "description": "Parses Microsoft Dynamics 365 Finance & Operations Task Recorder recordings (.axtr) and client repro recordings into a readable test-case document, optionally enriched with KB/Security context and a contract XML.",
+    "version": "1.0.0"
+  },
+  "host": "tis-d-mcpd365fo-func.azurewebsites.net",
+  "basePath": "/",
+  "schemes": [
+    "https"
+  ],
+  "paths": {
+    "/api/d365taskrecorder": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Immediate Response"
+          }
+        },
+        "x-ms-agentic-protocol": "mcp-streamable-1.0",
+        "operationId": "InvokeServer",
+        "summary": "d365-taskrecorder",
+        "description": "Convert a D365FO Task Recorder recording into documentation. Use this tool when the user provides a Task Recording (.axtr or reproReport XML) and wants it turned into a step-by-step Markdown test case (taskrecorder_to_markdown) or an enriched MHTML web-archive document correlating each client step to the matching server action, with optional KB/Security enrichment and a contract XML (taskrecorder_to_document). Do NOT use for ad-hoc metadata or security questions."
+      }
+    }
+  },
+  "securityDefinitions": {},
+  "security": []
+}

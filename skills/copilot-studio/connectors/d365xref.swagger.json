@@ -1,0 +1,24 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "d365-xref",
+    "description": "Cross-reference graph for Microsoft Dynamics 365 Finance & Operations X++ code. Resolves who-calls-what, who-extends-what, and downstream impact across the whole AOT: method callers, field usages, references, class/interface hierarchies, Chain-of-Command and event-handler extensions, cross-module dependencies, and full impact analysis.",
+    "version": "1.0.0"
+  },
+  "host": "tis-d-mcpd365fo-func.azurewebsites.net",
+  "basePath": "/",
+  "schemes": ["https"],
+  "paths": {
+    "/api/d365xref": {
+      "post": {
+        "responses": { "200": { "description": "Immediate Response" } },
+        "x-ms-agentic-protocol": "mcp-streamable-1.0",
+        "operationId": "InvokeServer",
+        "summary": "d365-xref",
+        "description": "Cross-reference / call-graph analysis for D365FO X++. Use this tool when the user asks about: dependencies and call chains (who calls a method, what a method calls), references and usages of an object or field, class inheritance and interface implementors, Chain-of-Command and event-handler extensions on standard objects, cross-module dependencies, and impact analysis before a change (the full downstream dependency tree). Do NOT use for table field metadata (use d365-kb) or for security/permissions (use d365-sec)."
+      }
+    }
+  },
+  "securityDefinitions": {},
+  "security": []
+}

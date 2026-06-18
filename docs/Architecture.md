@@ -2,8 +2,8 @@
 
 **Project**: tis-p-mcpd365fo
 **Owner**: Trelleborg IT Services (TIS)
-**Version**: 2.0
-**Date**: 2026-03-18
+**Version**: 2.1
+**Date**: 2026-05-07
 **Author**: Florian Dittgen
 **Status**: Current
 
@@ -11,14 +11,15 @@
 
 ## 1. Overview
 
-D365FO MCP Services provides four AI-accessible metadata intelligence services for Microsoft Dynamics 365 Finance & Operations:
+D365FO MCP Services provides five AI-accessible intelligence services for Microsoft Dynamics 365 Finance & Operations:
 
 - **Knowledge Base (KB)** -- structured metadata (tables, fields, enums, classes, methods with full X++ source, entities, security objects, labels)
 - **Cross-Reference (XRef)** -- code dependency graph (who calls/reads/extends/implements what, with line-level precision)
-- **Security (Sec)** -- normalized security configuration (roles, duties, privileges, sub-roles, users, company scoping, Grant/Deny semantics)
+- **Security (Sec)** -- normalized security configuration (roles, duties, privileges, sub-roles, users, company scoping, Grant/Deny semantics) plus governance tools (licence assessment, SoD check, what-if, object access)
 - **Task Recorder** -- parses `.axtr` task recording artifacts into Markdown for downstream LLM consumption
+- **Wiki** -- multi-tenant blob-backed markdown wikis; one Function App hosts any number of wikis, each with its own container and MCP endpoint (see §10)
 
-All four services expose tools via the **Model Context Protocol (MCP)** using Streamable HTTP transport. Consumers include Claude Code, Claude Desktop, Cursor, ChatGPT, and any MCP-compatible client.
+All five services expose tools via the **Model Context Protocol (MCP)** using Streamable HTTP transport. Consumers include Claude Code, Claude Desktop, Cursor, ChatGPT, and any MCP-compatible client.
 
 **Key metrics:**
 
@@ -26,9 +27,10 @@ All four services expose tools via the **Model Context Protocol (MCP)** using St
 |-----------|-------|
 | KB tools | 17 |
 | XRef tools | 16 |
-| Security tools | 15 |
+| Security tools | 19 |
 | Task Recorder tools | 1 |
-| **Total tools** | **49 across 4 services** |
+| Wiki tools (per wiki) | 4 |
+| **Total tools** | **57 across 5 services** (excluding per-wiki multiplier) |
 | KB database size | ~1,063 MB |
 | XRef database size | ~3,300 MB |
 | Security database size | ~60 MB |
@@ -285,10 +287,23 @@ The paths are configured via app settings `KB_DB_PATH` and `XREF_DB_PATH` in the
 |---------|----------|---------|
 | KB | `https://tis-{env}-mcpd365fo-func.azurewebsites.net/api/d365kb` | GET, POST, DELETE |
 | XRef | `https://tis-{env}-mcpd365fo-func.azurewebsites.net/api/d365xref` | GET, POST, DELETE |
+| Security | `https://tis-{env}-mcpd365fo-func.azurewebsites.net/api/d365sec` | GET, POST, DELETE |
+| Task Recorder | `https://tis-{env}-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` | GET, POST, DELETE |
+| Wiki catalog | `https://tis-{env}-mcpd365fo-func.azurewebsites.net/api/wiki-mcp` | GET (plain JSON, no MCP) |
+| Wiki MCP | `https://tis-{env}-mcpd365fo-func.azurewebsites.net/api/wiki-mcp/{name}` | GET, POST, DELETE |
 
 - **GET** (without `Accept: text/event-stream`): Health check, returns `{ name, version, status }`.
 - **POST**: MCP JSON-RPC messages (tool invocation).
 - **DELETE**: MCP session cleanup.
+
+**Non-MCP HTTP routes on the same Function App:**
+
+| Route | Purpose | Auth |
+|-------|---------|------|
+| `GET /api/health` | Lightweight health probe | anonymous |
+| `GET /api/admin` + `/api/admin/db-health` + `/api/admin/upload` | Admin UI (PR #67) | anonymous (internal/VPN) |
+| `POST /api/d365sec/upload` | Sec DB upload — sync (≤200 MB form) **and** async (URL download up to 4 GB via blob SAS), with job tracking via `src/azure/build-jobs.js` | anonymous (intended for Power Automate from internal network) |
+| `POST /api/otrs/extract`, `POST /api/otrs/ingest`, `GET /api/otrs-admin/*` | OTRS pipeline — see §9 | function-key |
 
 ---
 

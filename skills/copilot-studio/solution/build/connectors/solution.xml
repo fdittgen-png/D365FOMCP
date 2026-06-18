@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ImportExportXml version="9.2.25000.000" SolutionPackageVersion="9.2" languagecode="1033" generatedBy="CrmLive" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SolutionManifest>
+    <UniqueName>D365FOMCPConnectors</UniqueName>
+    <LocalizedNames>
+      <LocalizedName description="D365FO MCP Connectors" languagecode="1033" />
+    </LocalizedNames>
+    <Descriptions>
+      <Description description="MCP (streamable) custom connectors for the four D365FO governance services: KB, XRef, Security, Task Recorder." languagecode="1033" />
+    </Descriptions>
+    <Version>1.0.0.0</Version>
+    <Managed>0</Managed>
+    <Publisher>
+      <UniqueName>trelleborgtisd</UniqueName>
+      <LocalizedNames>
+        <LocalizedName description="Trelleborg TIS D365" languagecode="1033" />
+      </LocalizedNames>
+      <Descriptions />
+      <EMailAddress xsi:nil="true" />
+      <SupportingWebsiteUrl xsi:nil="true" />
+      <CustomizationPrefix>tisd</CustomizationPrefix>
+      <CustomizationOptionValuePrefix>10000</CustomizationOptionValuePrefix>
+      <Addresses />
+    </Publisher>
+    <RootComponents>
+      <RootComponent type="372" id="{a9d97f01-8170-d06e-b9b8-38b47484a05f}" schemaName="tisd_d365kb" behavior="0" />
+      <RootComponent type="372" id="{5e44c786-c36f-0f41-5e4f-5981d0e46316}" schemaName="tisd_d365xref" behavior="0" />
+      <RootComponent type="372" id="{a8ad4e9c-c226-4f89-7c1b-43ddba61c74c}" schemaName="tisd_d365sec" behavior="0" />
+      <RootComponent type="372" id="{8052f9a0-7f3f-c271-0001-62fb1d10281a}" schemaName="tisd_d365taskrecorder" behavior="0" />
+    </RootComponents>
+    <MissingDependencies />
+  </SolutionManifest>
+</ImportExportXml>

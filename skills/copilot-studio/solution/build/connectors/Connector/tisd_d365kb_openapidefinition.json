@@ -1,0 +1,30 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "d365kb",
+    "description": "Internal knowledge base for Microsoft Dynamics 365 Finance & Operations, covering all functional modules. Structured AOT metadata: tables (fields, EDTs, keys, indexes, relations), classes and methods (with source), enums, labels, data entities, module composition, and label resolution, plus a hallucination check to validate object/field claims.",
+    "version": "1.0.0"
+  },
+  "host": "tis-d-mcpd365fo-func.azurewebsites.net",
+  "basePath": "/",
+  "schemes": [
+    "https"
+  ],
+  "paths": {
+    "/api/d365kb": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Immediate Response"
+          }
+        },
+        "x-ms-agentic-protocol": "mcp-streamable-1.0",
+        "operationId": "InvokeServer",
+        "summary": "d365-kb",
+        "description": "D365FO metadata knowledge base. Use this tool when the user asks about: table structure (fields, types, EDTs, keys, indexes, relations and join keys), enum values, whether a field exists, class methods and X++ method source, data-entity sources, module composition, label text behind @SYS IDs, or to validate that a table/field/object actually exists (hallucination check). Do NOT use for who-calls-what (use d365-xref), permissions (use d365-sec), or live transactional data."
+      }
+    }
+  },
+  "securityDefinitions": {},
+  "security": []
+}

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ImportExportXml xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Entities />
+  <Roles />
+  <Workflows />
+  <FieldSecurityProfiles />
+  <Templates />
+  <EntityMaps />
+  <EntityRelationships />
+  <OrganizationSettings />
+  <optionsets />
+  <CustomControls />
+  <EntityDataProviders />
+  <Connectors>
+    <Connector>
+      <connectorid>a9d97f01-8170-d06e-b9b8-38b47484a05f</connectorid>
+      <description>D365 KB (Metadata) MCP (streamable) connector.</description>
+      <displayname>D365KB</displayname>
+      <iconbrandcolor>#1F3864</iconbrandcolor>
+      <name>tisd_d365kb</name>
+      <connectortype>1</connectortype>
+      <openapidefinition>/Connector/tisd_d365kb_openapidefinition.json</openapidefinition>
+      <connectionparameters>/Connector/tisd_d365kb_connectionparameters.json</connectionparameters>
+    </Connector>
+    <Connector>
+      <connectorid>5e44c786-c36f-0f41-5e4f-5981d0e46316</connectorid>
+      <description>D365 XRef (Cross-reference) MCP (streamable) connector.</description>
+      <displayname>D365XRef</displayname>
+      <iconbrandcolor>#1F3864</iconbrandcolor>
+      <name>tisd_d365xref</name>
+      <connectortype>1</connectortype>
+      <openapidefinition>/Connector/tisd_d365xref_openapidefinition.json</openapidefinition>
+      <connectionparameters>/Connector/tisd_d365xref_connectionparameters.json</connectionparameters>
+    </Connector>
+    <Connector>
+      <connectorid>a8ad4e9c-c226-4f89-7c1b-43ddba61c74c</connectorid>
+      <description>D365 Security MCP (streamable) connector.</description>
+      <displayname>D365Security</displayname>
+      <iconbrandcolor>#1F3864</iconbrandcolor>
+      <name>tisd_d365sec</name>
+      <connectortype>1</connectortype>
+      <openapidefinition>/Connector/tisd_d365sec_openapidefinition.json</openapidefinition>
+      <connectionparameters>/Connector/tisd_d365sec_connectionparameters.json</connectionparameters>
+    </Connector>
+    <Connector>
+      <connectorid>8052f9a0-7f3f-c271-0001-62fb1d10281a</connectorid>
+      <description>D365 Task Recorder MCP (streamable) connector.</description>
+      <displayname>D365TaskRecorder</displayname>
+      <iconbrandcolor>#1F3864</iconbrandcolor>
+      <name>tisd_d365taskrecorder</name>
+      <connectortype>1</connectortype>
+      <openapidefinition>/Connector/tisd_d365taskrecorder_openapidefinition.json</openapidefinition>
+      <connectionparameters>/Connector/tisd_d365taskrecorder_connectionparameters.json</connectionparameters>
+    </Connector>
+  </Connectors>
+  <Languages>
+    <Language>1033</Language>
+  </Languages>
+</ImportExportXml>

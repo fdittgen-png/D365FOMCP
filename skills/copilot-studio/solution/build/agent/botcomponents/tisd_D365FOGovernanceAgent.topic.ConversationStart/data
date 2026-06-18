@@ -1,0 +1,10 @@
+kind: AdaptiveDialog
+beginDialog:
+  kind: OnConversationStart
+  id: main
+  actions:
+    - kind: SendActivity
+      id: sendMessage_welcome
+      activity:
+        text:
+          - Hello, I'm the D365FO Governance Assistant. Ask me about D365FO metadata, X++ cross-references, security, or Task Recorder.

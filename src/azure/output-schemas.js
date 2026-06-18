@@ -315,6 +315,9 @@ export const d365GetMethodSourceOutput = z.object({
   signature: z.string().nullable(),
   is_static: z.boolean(),
   source_code: z.string().nullable(),
+  // Body-relative line count (null when no source). Lets callers cite a line
+  // range knowing the upper bound; the rendered Markdown is line-numbered.
+  line_count: z.number().int().nullable(),
 });
 
 // d365_find_referencing_tables — tables referencing this table

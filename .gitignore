@@ -20,3 +20,12 @@ diag*.ps1
 # Contains real role/duty assignments; keep local-only.
 Security roles assignment_*.csv
 *SOD matrix*.csv
+
+# Local-only deployment workspace — refactored Deploy.ps1 + npm cache.
+# Defaults may contain operator-specific RG / function app / contact info.
+local-deploy/
+
+# Security DMF data exports — contain real role/user/duty data. Keep local-only;
+# never publish to the (public) repo. Feeds build/build-sec.js.
+secanalysis*.zip
+*.dta.zip

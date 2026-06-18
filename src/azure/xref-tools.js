@@ -20,6 +20,7 @@ import {
   structuredResult,
   validateLikePattern,
   patternErrorResult,
+  customLayerNote,
   runWithBudget,
   QueryBudgetExceededError,
   timeoutErrorResult,
@@ -503,7 +504,7 @@ export function registerXrefTools(server, db) {
         truncated: result.length >= limit,
         results: result.map(r => ({ path: r.path, module: r.module ?? null })),
       };
-      if (!result.length) return emptyResult(`objects matching "${pattern}"`, typed);
+      if (!result.length) return emptyResult(`objects matching "${pattern}"`, typed, customLayerNote(pattern));
 
       let out = `## Objects matching "${pattern}"\n${typed.result_count} result(s)\n\n`;
       out += formatMarkdownTable(
@@ -998,7 +999,7 @@ export function registerXrefTools(server, db) {
         entity_extensions: entityExtensions,
         other,
       };
-      if (!result.length) return emptyResult(`extensions for "${object_name}"`, typed);
+      if (!result.length) return emptyResult(`extensions for "${object_name}"`, typed, customLayerNote(object_name));
 
       let out = `## Extensions for ${object_name}\nTotal: ${typed.total_count}\n\n`;
       const section = (title, rows, cols) => {

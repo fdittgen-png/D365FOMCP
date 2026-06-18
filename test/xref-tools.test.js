@@ -378,6 +378,18 @@ describe('xref_search_names', () => {
     const result = await callTool('xref_search_names', { pattern: '%', object_type: 'All', limit: 1 });
     assert.ok(result.includes('Showing first 1'));
   });
+
+  it('discloses the custom-layer coverage gap on an empty custom-prefix search', async () => {
+    const result = await callTool('xref_search_names', { pattern: 'TBG_NoSuchCustomObject', object_type: 'All', limit: 50 });
+    assert.ok(result.includes('No results'));
+    assert.match(result, /custom overlayer|custom prefix/i);
+  });
+
+  it('does NOT add the custom-layer note to a standard empty search', async () => {
+    const result = await callTool('xref_search_names', { pattern: 'ZzzDefinitelyNotARealObject', object_type: 'All', limit: 50 });
+    assert.ok(result.includes('No results'));
+    assert.doesNotMatch(result, /custom overlayer|custom prefix/i);
+  });
 });
 
 describe('xref_method_references', () => {

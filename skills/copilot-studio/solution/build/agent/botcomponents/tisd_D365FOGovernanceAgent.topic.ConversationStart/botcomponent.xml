@@ -1,0 +1,11 @@
+<botcomponent schemaname="tisd_D365FOGovernanceAgent.topic.ConversationStart">
+  <componenttype>9</componenttype>
+  <description>This system topic triggers when the agent receives an Activity indicating the beginning of a new conversation.</description>
+  <iscustomizable>0</iscustomizable>
+  <name>Conversation Start</name>
+  <parentbotid>
+    <schemaname>tisd_D365FOGovernanceAgent</schemaname>
+  </parentbotid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</botcomponent>

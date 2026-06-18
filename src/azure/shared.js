@@ -240,6 +240,50 @@ export function structuredResult(typed, fallbackText) {
 }
 
 /**
+ * Render source text with body-relative line numbers for citation.
+ *
+ * The KB `methods.source_code` column stores each method body as a standalone
+ * blob with no file-absolute offsets (see build-kb.js), so the only stable,
+ * reproducible coordinate we can expose is the line index WITHIN the method
+ * body (1 = first line of the method source). Numbering is right-aligned and
+ * deterministic, so a citation like "line 12" always points at the same line.
+ *
+ * Returns the numbered text; use the returned line count via String(text).split.
+ */
+export function numberSourceLines(text) {
+  const s = String(text ?? '').replace(/\r\n/g, '\n').replace(/\n$/, '');
+  const lines = s.split('\n');
+  const width = String(lines.length).length;
+  return lines.map((ln, i) => `${String(i + 1).padStart(width)} | ${ln}`).join('\n');
+}
+
+/**
+ * Disclosure note for XRef searches that target a custom/ISV overlayer prefix.
+ *
+ * The XRef SQLite snapshot is extracted from the dev layer (build-xref-db.js);
+ * it does not contain ISV/customer overlayer objects. A zero-row result for a
+ * custom-prefixed name therefore cannot distinguish "absent from this snapshot"
+ * from "does not exist". When an empty search's target matches a known custom
+ * prefix, callers get this note so they don't over-conclude from the 0 rows.
+ *
+ * Prefixes default to the known custom/ISV layers and are overridable via the
+ * comma-separated `XREF_CUSTOM_PREFIXES` env var. Returns '' when no prefix
+ * matches (the overwhelmingly common case), so standard empty results are
+ * untouched.
+ */
+const DEFAULT_XREF_CUSTOM_PREFIXES = ['TBG_', 'TBG', 'TOC_', 'TOC'];
+export function customLayerNote(name) {
+  const raw = String(name ?? '').replace(/^%+/, '').trim();
+  if (!raw) return '';
+  const env = (process.env.XREF_CUSTOM_PREFIXES || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const prefixes = env.length ? env : DEFAULT_XREF_CUSTOM_PREFIXES;
+  const hit = prefixes.find(p => raw.toLowerCase().startsWith(p.toLowerCase()));
+  if (!hit) return '';
+  return `\n\n_This XRef snapshot is built from the dev layer and may not include ISV/custom overlayer objects (matched custom prefix \`${hit}\`). A zero-row result for a custom-prefixed name can mean the object is absent from this snapshot rather than nonexistent — see \`docs/XRef-Custom-Layer-Coverage.md\`._`;
+}
+
+/**
  * Valid query that returned zero rows. Not an error — isError stays undefined.
  *
  * `structured` is the typed payload matching the tool's `outputSchema`, with
@@ -250,9 +294,11 @@ export function structuredResult(typed, fallbackText) {
  * validation for `isError` results but not for empty success results). Omitting
  * it is only safe on the handful of tools without an output schema.
  */
-export function emptyResult(context, structured) {
+export function emptyResult(context, structured, note) {
+  let text = `## No results\n\nNo ${context} found.`;
+  if (note) text += note;
   const result = {
-    content: [{ type: 'text', text: `## No results\n\nNo ${context} found.` }],
+    content: [{ type: 'text', text }],
   };
   if (structured !== undefined) result.structuredContent = structured;
   return result;

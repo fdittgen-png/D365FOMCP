@@ -1,4 +1,4 @@
-# Copilot Studio Skills — Role-Based Agent Configurations
+# Copilot Studio Skills — Agent Configurations
 
 Ready-to-use agent configurations for Microsoft Copilot Studio. Each file contains:
 
@@ -7,7 +7,18 @@ Ready-to-use agent configurations for Microsoft Copilot Studio. Each file contai
 3. **MCP Connections** — which services to connect
 4. **Sample Prompts** — starter prompts for testing
 
-## Available Configurations
+## ⭐ Start here (current)
+
+| File | What | Services | Tools |
+|------|------|----------|-------|
+| **`agent-d365fo.md`** | **Canonical governance agent** — verified live endpoints, real tool inventory, skills baked in (incl. the disabled-button security diagnosis) | All 4 | **54** |
+| `connectors/*.swagger.json` | MCP custom-connector definitions to import (one per service) | — | — |
+
+> **Use `agent-d365fo.md`.** It targets the deployed `tis-d-mcpd365fo-func` endpoints and the actual 54-tool set.
+
+## Legacy role-split configs (⚠ stale)
+
+The files below predate the current deployment: they point at the non-deployed `tis-p-mcpd365fo-func` host and list several tool names that no longer exist (e.g. `sec_check_permission`, `sec_find_role_conflicts`, `sec_lookup_entity_permissions`). Keep for role-split *instructions* inspiration only; correct the host + tool names against `agent-d365fo.md` before use.
 
 | File | Role | Services | Tools |
 |------|------|----------|-------|

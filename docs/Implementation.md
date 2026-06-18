@@ -2,8 +2,8 @@
 
 **Project**: tis-p-mcpd365fo
 **Owner**: Trelleborg IT Services (TIS)
-**Version**: 2.0
-**Date**: 2026-03-18
+**Version**: 2.1
+**Date**: 2026-05-07
 **Author**: Florian Dittgen
 **Status**: Current
 
@@ -15,12 +15,17 @@
 C:\working\MCP\
 ├── build/
 │   ├── build-kb.js              # KB database builder (XML → SQLite)
-│   └── build-xref-db.js         # XRef database builder (LocalDB → SQLite)
+│   ├── build-xref-db.js         # XRef database builder (LocalDB → SQLite)
+│   └── build-sec.js             # Security database builder (DMF + AOT → SQLite)
+├── config/
+│   └── wikis.json               # Wiki registry (overridable via WIKI_CONFIG_JSON)
 ├── docs/
 │   ├── Architecture.md           # System architecture (architects)
 │   ├── Implementation.md         # Implementation details (this document)
 │   ├── Administration.md         # Operations and deployment (Azure admins)
+│   ├── Operations.md             # Operational runbook (limits, mitigations, snapshots)
 │   ├── AI-Configuration.md       # MCP client setup (AI administrators)
+│   ├── MCP-Wiki-Services.md      # Multi-wiki MCP client reference
 │   ├── VS-Code-Guide.md           # VS Code setup and development workflow
 │   └── TIS-P-MCPD365FO-Concept.md  # Original concept v1.0 (deprecated)
 ├── infra/
@@ -29,7 +34,8 @@ C:\working\MCP\
 │   ├── dev.parameters.json       # Dev environment parameters
 │   ├── parameters.prod.json      # Prod environment parameters
 │   └── modules/
-│       ├── functionApp.bicep     # Function App + ASP + Storage + KV
+│       ├── functionApp.bicep     # Function App + ASP + Storage + KV + lifecycle policies + snapshot container
+│       ├── costAlerts.bicep      # Storage budget alert ($50/mo default)
 │       └── monitoring.bicep      # Log Analytics + App Insights
 ├── scripts/
 │   ├── Get-D365Configurations.ps1  # Export D365FO XPP configurations to XML
@@ -39,21 +45,50 @@ C:\working\MCP\
 │   ├── Deploy-Infrastructure.ps1   # Bicep deployment
 │   ├── Deploy-FunctionApp.ps1      # Code + DB deployment to Azure
 │   ├── Deploy-McpD365foData.ps1    # Master pipeline (roles + deploy)
+│   ├── Backup-Databases.ps1        # Snapshot upload to mcpsec-snapshots/ (issue #37)
+│   ├── Add-WikiMcp.ps1             # One-command wiki provisioning
 │   └── Set-RoleAssignments.ps1     # RBAC role assignment
 ├── src/
 │   ├── azure/
-│   │   ├── shared.js             # DB singletons, query helper, formatting
+│   │   ├── shared.js             # DB singletons, query helper, response-contract helpers
 │   │   ├── kb-tools.js           # 17 KB tool implementations
-│   │   └── xref-tools.js         # 16 XRef tool implementations
+│   │   ├── xref-tools.js         # 16 XRef tool implementations
+│   │   ├── sec-tools.js          # 19 Security tool implementations
+│   │   ├── taskrecorder-tools.js # 1 Task Recorder tool
+│   │   ├── taskrecorder-parser.js # .axtr parser (ZIP/XML → Markdown)
+│   │   ├── wiki-tools.js         # 4 Wiki tool implementations (per-wiki)
+│   │   ├── wiki-registry.js      # Multi-wiki registry loader
+│   │   ├── wiki-storage.js       # Blob-backed wiki page reader (60s cache)
+│   │   ├── wiki-search.js        # Weighted substring search
+│   │   ├── otrs-client.js        # OTRS REST client
+│   │   ├── otrs-storage.js       # OTRS state blob
+│   │   ├── otrs-extract-core.js  # OTRS pipeline orchestration (pure)
+│   │   ├── otrs-xml.js           # OTRS XML envelope serializer
+│   │   └── build-jobs.js         # Async upload job tracking for /api/d365sec/upload
 │   ├── functions/
 │   │   ├── d365kb.js             # Azure Function: KB MCP endpoint
 │   │   ├── d365xref.js           # Azure Function: XRef MCP endpoint
+│   │   ├── d365sec.js            # Azure Function: Security MCP endpoint
+│   │   ├── d365sec-upload.js     # Sec DB upload (sync + async URL download)
+│   │   ├── d365taskrecorder.js   # Task Recorder MCP + upload UI
+│   │   ├── d365health.js         # GET /api/health
+│   │   ├── d365admin-pages.js    # /api/admin, /api/admin/db-health, /api/admin/upload
+│   │   ├── otrs-extract.js       # POST /api/otrs/extract
+│   │   ├── otrs-ingest.js        # POST /api/otrs/ingest
+│   │   ├── otrs-admin.js         # /api/otrs-admin/*
+│   │   ├── wiki-mcp.js           # /api/wiki-mcp/{name} + catalog
 │   │   └── index.js              # Function App entry point
 │   └── local/
 │       ├── mcp-server-kb.js      # Local stdio server (KB)
-│       └── mcp-server-xref.js    # Local stdio server (XRef)
-├── host.json                     # Azure Functions runtime config
-├── package.json                  # Dependencies and scripts
+│       ├── mcp-server-xref.js    # Local stdio server (XRef)
+│       ├── mcp-server-sec.js     # Local stdio server (Security)
+│       ├── mcp-server-taskrecorder.js  # Local stdio server (Task Recorder)
+│       └── mcp-server-wiki.js    # Local stdio server (Wiki — takes wiki-name arg)
+├── .github/workflows/
+│   └── ci.yml                    # CI: npm ci + npm test on Node 20 (PR #55)
+├── .nvmrc                        # Pins local Node version to 20
+├── host.json                     # Azure Functions runtime config (2 GB body cap)
+├── package.json                  # Dependencies, scripts, engines (Node 20.x)
 └── package-lock.json
 ```
 
@@ -231,6 +266,47 @@ node --max-old-space-size=8192 build/build-xref-db.js [server] [database] [outpu
 | 15 | `xref_find_field_usages` | Find all code locations that read or write a specific table field | `table_name`, `field_name`, `kind?`, `limit?` |
 | 16 | `xref_find_event_handlers` | Find event handlers/delegates: SubscribesTo, DataEventHandler, Pre/PostHandler | `object_name`, `method_name?`, `limit?` |
 
+### 4.3 Security Tools (19)
+
+| # | Tool Name | Description | Key Parameters |
+|---|-----------|-------------|----------------|
+| 1 | `sec_lookup_role` | Full role: sub-roles, duties, direct privileges, license, Grant/Deny | `role_name` |
+| 2 | `sec_lookup_duty` | Duty details: containing roles, granted privileges | `duty_name` |
+| 3 | `sec_lookup_privilege` | Privilege: entry points (CRUD), parent duties, parent roles | `privilege_name` |
+| 4 | `sec_lookup_user` | User profile: roles, company scoping, enabled status | `user_id` |
+| 5 | `sec_role_hierarchy` | Sub-role tree (parent or child direction) | `role_name`, `direction?` |
+| 6 | `sec_find_users_by_role` | Users assigned to a role, optional company filter | `role_name`, `company_id?` |
+| 7 | `sec_find_roles_by_duty` | Roles containing a given duty | `duty_name` |
+| 8 | `sec_find_roles_by_privilege` | Roles granting a given privilege via duty chain | `privilege_name` |
+| 9 | `sec_company_users` | All users + roles scoped to a company | `company_id` |
+| 10 | `sec_permission_trace` | Full chain role → duties → privileges → entry points | `role_name`, `object_name?` |
+| 11 | `sec_compare_roles` | Side-by-side: shared/unique duties + privileges | `role1`, `role2` |
+| 12 | `sec_effective_permissions` | Flattened entry-point CRUD across sub-roles + Grant/Deny | `user_id` or `role_name`, `company_id?` |
+| 13 | `sec_search` | Full-text search across roles, duties, privileges, users | `query`, `object_type?`, `limit?` |
+| 14 | `sec_stats` | Summary counts (roles, users, duties, privileges, companies) | (none) |
+| 15 | `sec_raw_sql` | Read-only SQL against the Security database | `sql` |
+| 16 | `sec_licence_assessment` | Per-user licence-type assessment from assigned roles | `user_id?` |
+| 17 | `sec_sod_check` | Segregation-of-Duties violations for users / role pairs | varies |
+| 18 | `sec_what_if` | Effective-permission delta of adding/removing a role | `user_id`, `add_roles?`, `remove_roles?` |
+| 19 | `sec_object_access` | Reverse lookup: which roles/users can read/write an object | `object_name` |
+
+### 4.4 Task Recorder Tool (1)
+
+| # | Tool Name | Description | Key Parameters |
+|---|-----------|-------------|----------------|
+| 1 | `taskrecorder_to_markdown` | Parse a `.axtr` task recording into structured Markdown | `file_url?` or `file_content` (base64) |
+
+### 4.5 Wiki Tools (4 per wiki)
+
+Registered per wiki at `/api/wiki-mcp/{name}`. Tool names are identical across wikis; descriptions are templated to reference the specific wiki's title and description so the LLM picks the right server.
+
+| # | Tool Name | Description | Key Parameters |
+|---|-----------|-------------|----------------|
+| 1 | `wiki_index` | Read the wiki catalog (`index.md`) | (none) |
+| 2 | `wiki_list` | Enumerate every page (slug, title, summary, tags) | `limit?` |
+| 3 | `wiki_read` | Read a single page by slug | `slug` |
+| 4 | `wiki_search` | Weighted substring search across title / tags / body | `query`, `limit?` |
+
 ---
 
 ## 5. Query Patterns
@@ -329,9 +405,19 @@ The deployment disables server-side build (`SCM_DO_BUILD_DURING_DEPLOYMENT=false
 |--------|---------|-------------|
 | `build:kb` | `node build/build-kb.js` | Build KB SQLite database |
 | `build:xref` | `node --max-old-space-size=8192 build/build-xref-db.js` | Build XRef SQLite database |
+| `build:sec` | `node build/build-sec.js` | Build Security SQLite database (DMF + AOT merge) |
 | `start:kb` | `node src/local/mcp-server-kb.js` | Start local KB MCP server (stdio) |
 | `start:xref` | `node src/local/mcp-server-xref.js` | Start local XRef MCP server (stdio) |
+| `start:sec` | `node src/local/mcp-server-sec.js` | Start local Security MCP server (stdio) |
+| `start:taskrecorder` | `node src/local/mcp-server-taskrecorder.js` | Start local Task Recorder MCP server (stdio) |
+| `start:wiki` | `node src/local/mcp-server-wiki.js <name>` | Start a local Wiki MCP server (stdio) — positional arg names the wiki from `config/wikis.json` |
 | `start:azure` | `func start` | Start Azure Functions locally |
+| `test` | `node --test test/*.test.js test/integration/*.test.js` | Run full test suite (Node built-in test runner) |
+| `test:sec` / `test:kb` / `test:xref` / `test:taskrecorder` | `node --test test/<area>.test.js` | Per-area unit tests |
+
+### 7.4 Response-Format Contract
+
+Every MCP tool emits via the helpers in `src/azure/shared.js` (`structuredResult`, `emptyResult`, `notFoundResult`, `errorResult`, `freshnessBanner`, `formatMarkdownTable`, `formatPermission`, `truncationNote`, `contextAround`, `makeLabelResolver`). Tools are registered with `server.registerTool(name, { description, inputSchema, outputSchema, annotations: READ_ONLY_DB_ANNOTATIONS }, handler)` (typed-first, render Markdown from typed). The static-scan test `test/response-format.test.js` enforces these rules across all five services.
 
 ---
 

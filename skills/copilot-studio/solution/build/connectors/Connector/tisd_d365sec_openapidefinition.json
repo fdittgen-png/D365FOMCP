@@ -1,0 +1,30 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "d365sec",
+    "description": "Security model analysis for Microsoft Dynamics 365 Finance & Operations. Walks the role → sub-role → duty → privilege → entry-point chain plus direct grants and admin customizations, applying Deny-over-Grant (Deny wins). Answers effective permissions, object access, segregation-of-duties, licence assessment, and what-if role changes.",
+    "version": "1.0.0"
+  },
+  "host": "tis-d-mcpd365fo-func.azurewebsites.net",
+  "basePath": "/",
+  "schemes": [
+    "https"
+  ],
+  "paths": {
+    "/api/d365sec": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Immediate Response"
+          }
+        },
+        "x-ms-agentic-protocol": "mcp-streamable-1.0",
+        "operationId": "InvokeServer",
+        "summary": "d365-sec",
+        "description": "D365FO security analysis. Use this tool when the user asks about: which roles/duties/privileges a user has, who can (or is blocked from) access to an object/menu-item/button, effective permissions for a user or role (with Deny-over-Grant resolution and granted/partial/denied status), segregation-of-duties conflicts, licence cost of a role assignment, or the impact of adding/removing a role (what-if). Effective permissions distinguish hidden (no grant) from greyed (some operations denied) from enabled. Do NOT use for code metadata (use d365-kb / d365-xref)."
+      }
+    }
+  },
+  "securityDefinitions": {},
+  "security": []
+}
