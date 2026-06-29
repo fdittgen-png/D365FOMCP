@@ -12,8 +12,6 @@
 import {
   query,
   formatMarkdownTable,
-  formatToonBlock,
-  textResult,
   emptyResult,
   notFoundResult,
   truncationNote,
@@ -22,6 +20,7 @@ import {
   formatPermission,
   formatCrudFlag,
   contextAround,
+  formatTextParam,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
 import { z } from 'zod';
@@ -269,10 +268,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { role_name: z.string().min(1).max(500).describe('Role name (case-insensitive)') },
+      inputSchema: { role_name: z.string().min(1).max(500).describe('Role name (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupRoleOutput.shape,
     },
-    async ({ role_name }) => {
+    async ({ role_name, format }) => {
       const rn = role_name.trim();
       const role = q(`SELECT * FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
 
@@ -363,7 +362,7 @@ export function registerSecTools(server, db) {
 
       out += `## Assigned Users: ${typed.assigned_user_count}\n`;
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -374,10 +373,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get duty details: parent roles, privileges granted, and entry points. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name (case-insensitive)') },
+      inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupDutyOutput.shape,
     },
-    async ({ duty_name }) => {
+    async ({ duty_name, format }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT * FROM duties WHERE duty_id = ? COLLATE NOCASE
         OR duty_name = ? COLLATE NOCASE`, [dn, dn]);
@@ -433,7 +432,7 @@ export function registerSecTools(server, db) {
         out += formatMarkdownTable(typed.privileges, ['privilege_name', 'label']) + '\n\n';
       }
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -444,10 +443,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get privilege details: entry points with CRUD grants, parent duties, and parent roles. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name (case-insensitive)') },
+      inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupPrivilegeOutput.shape,
     },
-    async ({ privilege_name }) => {
+    async ({ privilege_name, format }) => {
       const pn = privilege_name.trim();
       const priv = q(`SELECT * FROM privileges WHERE privilege_name = ? COLLATE NOCASE`, [pn]);
 
@@ -522,7 +521,7 @@ export function registerSecTools(server, db) {
         ) + '\n\n';
       }
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -533,10 +532,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get user profile: roles, company scoping, enabled status, and email. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { user_id: z.string().min(1).max(500).describe('User ID (case-insensitive)') },
+      inputSchema: { user_id: z.string().min(1).max(500).describe('User ID (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupUserOutput.shape,
     },
-    async ({ user_id }) => {
+    async ({ user_id, format }) => {
       const uid = user_id.trim();
       const user = q(`SELECT * FROM users WHERE user_id = ? COLLATE NOCASE`, [uid]);
 
@@ -703,7 +702,7 @@ export function registerSecTools(server, db) {
         out += formatMarkdownTable(typed.company_scoped_roles, ['role_name', 'company_id']) + '\n\n';
       }
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -717,10 +716,11 @@ export function registerSecTools(server, db) {
       inputSchema: {
       role_name: z.string().min(1).max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
+      format: formatTextParam,
     },
       outputSchema: secRoleHierarchyOutput.shape,
     },
-    async ({ role_name, direction }) => {
+    async ({ role_name, direction, format }) => {
       const dir = direction || 'children';
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
       if (!role.length) return notFoundResult('Role', role_name);
@@ -756,7 +756,7 @@ export function registerSecTools(server, db) {
 
       let out = `## ${typed.role_name} — ${typed.direction}\n`;
       out += formatMarkdownTable(typed.entries, ['role_name', 'is_transitive']);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -771,10 +771,11 @@ export function registerSecTools(server, db) {
       role_name: z.string().min(1).max(500).describe('Role name'),
       company_id: z.string().min(1).max(500).optional().describe('Filter to users scoped to this company'),
       limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results'),
+      format: formatTextParam,
     },
       outputSchema: secFindUsersByRoleOutput.shape,
     },
-    async ({ role_name, company_id, limit: rawLimit }) => {
+    async ({ role_name, company_id, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const role = q(`SELECT role_id, role_name, permission_type FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
       if (!role.length) return notFoundResult('Role', role_name);
@@ -848,7 +849,7 @@ export function registerSecTools(server, db) {
       out += `_Note: Deny overrides are not applied here. Use \`sec_permission_trace\` for the full picture._\n\n`;
       out += formatMarkdownTable(typed.users);
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -859,10 +860,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all roles that contain a specific duty. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name') },
+      inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name'), format: formatTextParam },
       outputSchema: secFindRolesByDutyOutput.shape,
     },
-    async ({ duty_name }) => {
+    async ({ duty_name, format }) => {
       const dn = duty_name.trim();
       const duty = q(`SELECT duty_id FROM duties
         WHERE duty_id = ? COLLATE NOCASE OR duty_name = ? COLLATE NOCASE`, [dn, dn]);
@@ -905,7 +906,7 @@ export function registerSecTools(server, db) {
         })),
         ['role_name', 'permission_type', 'license_type', 'duty_permission'],
       );
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -916,10 +917,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all roles that grant a privilege (via the duty chain or directly). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name') },
+      inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name'), format: formatTextParam },
       outputSchema: secFindRolesByPrivilegeOutput.shape,
     },
-    async ({ privilege_name }) => {
+    async ({ privilege_name, format }) => {
       const pn = privilege_name.trim();
 
       // Via duty chain
@@ -979,7 +980,7 @@ export function registerSecTools(server, db) {
         ) + '\n\n';
       }
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -993,10 +994,11 @@ export function registerSecTools(server, db) {
       inputSchema: {
       company_id: z.string().min(1).max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
       limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results'),
+      format: formatTextParam,
     },
       outputSchema: secCompanyUsersOutput.shape,
     },
-    async ({ company_id, limit: rawLimit }) => {
+    async ({ company_id, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
       const cid = company_id.trim().toUpperCase();
 
@@ -1041,7 +1043,7 @@ export function registerSecTools(server, db) {
         ['user_id', 'person_name', 'role_name', 'permission_type'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1056,10 +1058,11 @@ export function registerSecTools(server, db) {
       role_name: z.string().min(1).max(500).describe('Role name'),
       object_name: z.string().min(1).max(500).optional().describe('Filter to entry points targeting this object'),
       limit: z.number().int().min(1).max(500).optional().default(500).describe('Max results'),
+      format: formatTextParam,
     },
       outputSchema: secPermissionTraceOutput.shape,
     },
-    async ({ role_name, object_name, limit: rawLimit }) => {
+    async ({ role_name, object_name, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 500;
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
       if (!role.length) return notFoundResult('Role', role_name);
@@ -1180,7 +1183,7 @@ export function registerSecTools(server, db) {
         'grant_correct', 'grant_invoke',
       ]);
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1194,10 +1197,11 @@ export function registerSecTools(server, db) {
       inputSchema: {
       role1: z.string().min(1).max(500).describe('First role name'),
       role2: z.string().min(1).max(500).describe('Second role name'),
+      format: formatTextParam,
     },
       outputSchema: secCompareRolesOutput.shape,
     },
-    async ({ role1, role2 }) => {
+    async ({ role1, role2, format }) => {
       const r1 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role1.trim()]);
       const r2 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role2.trim()]);
       if (!r1.length) return notFoundResult('Role', role1);
@@ -1275,7 +1279,7 @@ export function registerSecTools(server, db) {
         }
       }
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1291,10 +1295,11 @@ export function registerSecTools(server, db) {
         role_name: z.string().min(1).max(500).optional().describe('Role name (provide this OR user_id)'),
         object_name: z.string().min(1).max(500).optional().describe('Filter to entry points for this object'),
         limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results'),
+        format: formatTextParam,
       },
       outputSchema: secEffectivePermissionsOutput.shape,
     },
-    async ({ user_id, role_name, object_name, limit: rawLimit }) => {
+    async ({ user_id, role_name, object_name, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
 
       let roleIds = [];
@@ -1531,7 +1536,7 @@ export function registerSecTools(server, db) {
       ]);
       if (typed.truncated) out += truncationNote('user', limit);
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1546,10 +1551,11 @@ export function registerSecTools(server, db) {
       query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
+      format: formatTextParam,
     },
       outputSchema: secSearchOutput.shape,
     },
-    async ({ query: searchQuery, object_type, limit: rawLimit }) => {
+    async ({ query: searchQuery, object_type, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 20;
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
       if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
@@ -1626,7 +1632,7 @@ export function registerSecTools(server, db) {
         ['object_type', 'object_name', 'module_id', 'match_context'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1637,10 +1643,10 @@ export function registerSecTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get summary statistics for the security database: role counts, user counts, company count, etc. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: {},
+      inputSchema: { format: formatTextParam },
       outputSchema: secStatsOutput.shape,
     },
-    async () => {
+    async ({ format }) => {
       const meta = q('SELECT key, value FROM sec_metadata ORDER BY key');
 
       const typed = {
@@ -1679,7 +1685,7 @@ export function registerSecTools(server, db) {
       out += `| User-Role Assignments | ${typed.user_role_assignments} |\n`;
       out += `| Companies | ${typed.companies} |\n`;
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1689,16 +1695,16 @@ export function registerSecTools(server, db) {
     'sec_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Pass format="toon" to render the text channel as a TOON block (compact, ~25-35% fewer tokens than Markdown for large uniform row sets).',
+      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Text channel defaults to TOON (compact, ~25-35% fewer tokens than Markdown for large uniform row sets). Pass format="markdown" for human-readable tables.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query'),
-        format: z.enum(['markdown', 'toon']).optional().default('markdown').describe('Text-channel rendering. "markdown" (default) or "toon" for token-efficient tabular output on large result sets.'),
+        format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),
       },
       outputSchema: rawSqlOutput.shape,
     },
     async ({ sql: rawSql, format }) => {
       const SAFETY_CAP = 500;
-      const fmt = format === 'toon' ? 'toon' : 'markdown';
+      const fmt = format === 'markdown' ? 'markdown' : 'toon';
       const trimmed = rawSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
         return errorResult('invalid-input', 'Only SELECT, WITH, and PRAGMA queries are allowed.');
@@ -1734,11 +1740,11 @@ export function registerSecTools(server, db) {
           columns,
           rows,
         };
-        let out = fmt === 'toon'
-          ? formatToonBlock('rows', rows, columns)
-          : formatMarkdownTable(rows);
-        if (truncated) out += truncationNote('hard', SAFETY_CAP);
-        return structuredResult(typed, out);
+        // Markdown is the opt-out; structuredResult renders TOON from `typed`
+        // by default (fmt === 'toon').
+        let md = formatMarkdownTable(rows);
+        if (truncated) md += truncationNote('hard', SAFETY_CAP);
+        return structuredResult(typed, md, fmt);
       } catch (err) {
         return errorResult('db-error', 'Check your SQL syntax and table/column names. Only read-only SELECT queries are supported.', err);
       }
@@ -1755,10 +1761,11 @@ export function registerSecTools(server, db) {
       inputSchema: {
         user_id: z.string().min(1).max(500).optional().describe('Assess a single user (omit for all enabled users)'),
         limit: z.number().int().min(1).max(500).optional().default(500).describe('Max users to return'),
+        format: formatTextParam,
       },
       outputSchema: secLicenceAssessmentOutput.shape,
     },
-    async ({ user_id, limit: rawLimit }) => {
+    async ({ user_id, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 500;
       const single = !!user_id;
 
@@ -1849,7 +1856,7 @@ export function registerSecTools(server, db) {
         ['user_id', 'person_name', 'required_tier', 'monthly_cost', 'driving_role', 'role_count'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1864,10 +1871,11 @@ export function registerSecTools(server, db) {
         user_id: z.string().min(1).max(500).optional().describe('Check a single user (omit for all enabled users)'),
         category: z.string().min(1).max(200).optional().describe('Filter rules by category (e.g., accounts_payable)'),
         limit: z.number().int().min(1).max(500).optional().default(100).describe('Max users to return'),
+        format: formatTextParam,
       },
       outputSchema: secSodCheckOutput.shape,
     },
-    async ({ user_id, category, limit: rawLimit }) => {
+    async ({ user_id, category, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       if (!_sodRuleset) {
         return errorResult('invalid-input', _sodRulesetError || 'SoD ruleset not loaded. Set SOD_RULES_FILE env var to a JSON file path.');
@@ -1956,7 +1964,7 @@ export function registerSecTools(server, db) {
       if (!allResults.length) {
         let out = '## SoD Check\n';
         out += `${users.length} user(s) checked — no violations found.\n`;
-        return structuredResult(typed, out);
+        return structuredResult(typed, out, format);
       }
 
       let out = '## SoD Check\n';
@@ -1979,7 +1987,7 @@ export function registerSecTools(server, db) {
           cols,
         ) + '\n\n';
       }
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -1994,10 +2002,11 @@ export function registerSecTools(server, db) {
         user_id: z.string().min(1).max(500).describe('User ID to simulate changes for'),
         add_roles: z.array(z.string().min(1).max(500)).optional().default([]).describe('Role names to add'),
         remove_roles: z.array(z.string().min(1).max(500)).optional().default([]).describe('Role names to remove'),
+        format: formatTextParam,
       },
       outputSchema: secWhatIfOutput.shape,
     },
-    async ({ user_id, add_roles: addRolesRaw, remove_roles: removeRolesRaw }) => {
+    async ({ user_id, add_roles: addRolesRaw, remove_roles: removeRolesRaw, format }) => {
       const addRoles = Array.isArray(addRolesRaw) ? addRolesRaw : [];
       const removeRoles = Array.isArray(removeRolesRaw) ? removeRolesRaw : [];
 
@@ -2139,7 +2148,7 @@ export function registerSecTools(server, db) {
         out += '### Warnings\n' + warnings.map(w => `- ${w}`).join('\n') + '\n';
       }
 
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 
@@ -2153,10 +2162,11 @@ export function registerSecTools(server, db) {
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
         limit: z.number().int().min(1).max(500).optional().default(200).describe('Max access paths to return'),
+        format: formatTextParam,
       },
       outputSchema: secObjectAccessOutput.shape,
     },
-    async ({ object_name, limit: rawLimit }) => {
+    async ({ object_name, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
       const objName = object_name.trim();
 
@@ -2310,7 +2320,7 @@ export function registerSecTools(server, db) {
       }
 
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     }
   );
 

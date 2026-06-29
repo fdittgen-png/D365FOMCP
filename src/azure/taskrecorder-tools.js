@@ -119,7 +119,7 @@ export function registerTaskRecorderTools(server) {
 
       try {
         const markdown = parseTaskRecording(loaded.buffer, fileName);
-        return structuredResult({ markdown, file_name: fileName }, markdown);
+        return structuredResult({ markdown, file_name: fileName }, markdown, 'markdown');
       } catch (err) {
         return errorResult('parse-error', 'The .axtr file could not be parsed as a valid Task Recorder recording.', err);
       }
@@ -248,7 +248,7 @@ export function registerTaskRecorderTools(server) {
             `A self-contained MHTML web-archive was written to \`${structured.output_path}\`.`)
         : summaryMarkdown;
 
-      return structuredResult(structured, finalSummary);
+      return structuredResult(structured, finalSummary, 'markdown');
     }
   );
 }

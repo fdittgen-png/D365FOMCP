@@ -6,10 +6,25 @@
  */
 
 import { createRequire } from 'module';
+import { z } from 'zod';
 // resolve not needed — paths come from env vars or default mount path
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
+
+// ── Shared tool input params ─────────────────────────────────────────────────
+//
+// Standard text-channel rendering switch. Add `format: formatTextParam` to a
+// tool's inputSchema and pass the `format` arg as the 3rd argument to
+// structuredResult — the text channel then defaults to TOON (token-efficient)
+// and callers can opt into Markdown. structuredContent JSON is unchanged either
+// way. structuredResult treats any non-'markdown' value as TOON, so no
+// handler-level defensive default is required (rule #13 choke-point).
+export const formatTextParam = z
+  .enum(['markdown', 'toon'])
+  .optional()
+  .default('toon')
+  .describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way.');
 
 // ── Singleton databases ─────────────────────────────────────────────────────
 
@@ -221,6 +236,134 @@ function parseToonHeaderColumns(s) {
   return out;
 }
 
+// ── General TOON encoder ─────────────────────────────────────────────────────
+// `formatToonBlock` handles the flat "array of uniform rows" case only.
+// `encodeToon` is the GENERAL serializer used as the default text channel for
+// every tool (see structuredResult): it renders an arbitrary typed object — the
+// same object placed in structuredContent — into TOON so the model always reads
+// a compact, uniform shape whether the payload is tabular or nested.
+//
+// Shapes produced (2-space indent per nesting level):
+//   scalar field          key: value
+//   nested object         key:
+//                           child: …
+//   array of primitives   key[3]: a,b,c
+//   array of uniform      key[2]{c1,c2}:
+//     flat objects          v1,v2
+//                           v3,v4
+//   mixed / nested array  key[2]:
+//                           - childA: …
+//                             childB: …
+//                           - childA: …
+// Scalar quoting reuses toonField (RFC-4180-ish); keys additionally quote on ':'.
+
+const TOON_KEY_NEEDS_QUOTE = /[:,"\n\r]|^\s|\s$/;
+function toonKey(k) {
+  const s = String(k);
+  return TOON_KEY_NEEDS_QUOTE.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function isToonPrimitive(v) {
+  return v === null || v === undefined || typeof v !== 'object';
+}
+
+/**
+ * True when `arr` is a non-empty array of plain objects that all share the same
+ * key set (same keys, same order as the first element) and whose values are all
+ * primitives — i.e. it renders losslessly as a TOON table.
+ */
+function isUniformFlatObjectArray(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return false;
+  if (!arr.every(e => e && typeof e === 'object' && !Array.isArray(e))) return false;
+  const cols = Object.keys(arr[0]);
+  if (cols.length === 0) return false;
+  return arr.every(e => {
+    const k = Object.keys(e);
+    return k.length === cols.length
+      && cols.every((c, i) => k[i] === c)
+      && cols.every(c => isToonPrimitive(e[c]));
+  });
+}
+
+function encodeToonArray(lines, key, arr, depth) {
+  const pad = '  '.repeat(depth);
+  const n = arr.length;
+  if (n === 0) { lines.push(`${pad}${key}[0]:`); return; }
+
+  if (arr.every(isToonPrimitive)) {
+    lines.push(`${pad}${key}[${n}]: ${arr.map(toonField).join(',')}`);
+    return;
+  }
+
+  if (isUniformFlatObjectArray(arr)) {
+    const cols = Object.keys(arr[0]);
+    lines.push(`${pad}${key}[${n}]{${cols.map(toonKey).join(',')}}:`);
+    const rowPad = '  '.repeat(depth + 1);
+    for (const row of arr) {
+      lines.push(rowPad + cols.map(c => toonField(row[c])).join(','));
+    }
+    return;
+  }
+
+  // Mixed / nested array: one dash-led block per element.
+  lines.push(`${pad}${key}[${n}]:`);
+  const itemPad = '  '.repeat(depth + 1);
+  for (const el of arr) {
+    if (isToonPrimitive(el)) {
+      lines.push(`${itemPad}- ${toonField(el)}`);
+    } else {
+      const sub = [];
+      if (Array.isArray(el)) encodeToonArray(sub, 'items', el, 0);
+      else encodeToonObject(sub, el, 0);
+      if (sub.length === 0) { lines.push(`${itemPad}-`); continue; }
+      lines.push(`${itemPad}- ${sub[0]}`);
+      for (let i = 1; i < sub.length; i++) lines.push(`${itemPad}  ${sub[i]}`);
+    }
+  }
+}
+
+function encodeToonObject(lines, obj, depth) {
+  const pad = '  '.repeat(depth);
+  for (const [k, v] of Object.entries(obj)) {
+    const key = toonKey(k);
+    if (isToonPrimitive(v)) {
+      lines.push(`${pad}${key}: ${toonField(v)}`);
+    } else if (Array.isArray(v)) {
+      encodeToonArray(lines, key, v, depth);
+    } else if (Object.keys(v).length === 0) {
+      lines.push(`${pad}${key}:`);
+    } else {
+      lines.push(`${pad}${key}:`);
+      encodeToonObject(lines, v, depth + 1);
+    }
+  }
+}
+
+/**
+ * Serialize an arbitrary JSON-compatible value to a TOON string. Pure.
+ * Top-level scalars stringify directly; objects/arrays render per the shapes
+ * documented above.
+ */
+export function encodeToon(value) {
+  if (isToonPrimitive(value)) return toonField(value);
+  const lines = [];
+  if (Array.isArray(value)) encodeToonArray(lines, 'data', value, 0);
+  else encodeToonObject(lines, value, 0);
+  return lines.join('\n');
+}
+
+/**
+ * Pull a leading Markdown heading (`## …` / `# …` / `### …`) off a rendered
+ * text block so the TOON default can keep the one-line context header while
+ * replacing the body with TOON. Returns '' when the text doesn't open with a
+ * heading.
+ */
+export function extractLeadingHeading(text) {
+  if (typeof text !== 'string') return '';
+  const firstLine = text.split('\n', 1)[0];
+  return /^#{1,6}\s+\S/.test(firstLine) ? firstLine.trimEnd() : '';
+}
+
 // ── Read-only DB tool annotations ────────────────────────────────────────────
 // Frozen so a tool file can't accidentally flip a hint at registration time.
 export const READ_ONLY_DB_ANNOTATIONS = Object.freeze({
@@ -231,10 +374,33 @@ export const READ_ONLY_DB_ANNOTATIONS = Object.freeze({
 
 // ── Response shape helpers ───────────────────────────────────────────────────
 
-/** Typed payload in structuredContent, Markdown fallback rendered from it. */
-export function structuredResult(typed, fallbackText) {
+/**
+ * Typed payload in structuredContent + a text channel for the model.
+ *
+ * The text channel defaults to TOON (token-efficient, uniform) rendered from
+ * the typed object — the leading `## context` heading from `markdownText` is
+ * preserved so the model keeps the human-readable context line above the TOON
+ * body. Pass `format === 'markdown'` to emit the full Markdown rendering
+ * instead (the human-readable opt-out used by the back-office and debugging).
+ *
+ * `structuredContent` is always the typed JSON regardless of `format` — it is
+ * mandated by the MCP protocol whenever the tool declares an outputSchema.
+ *
+ * @param {object} typed         Typed payload (also returned as structuredContent).
+ * @param {string} markdownText  Full Markdown rendering (heading + body).
+ * @param {'toon'|'markdown'} [format='toon']  Text-channel rendering.
+ */
+export function structuredResult(typed, markdownText, format = 'toon') {
+  let text;
+  if (format === 'markdown' && markdownText) {
+    text = markdownText;
+  } else {
+    const heading = extractLeadingHeading(markdownText);
+    const toon = encodeToon(typed);
+    text = heading ? `${heading}\n\n${toon}` : toon;
+  }
   return {
-    content: [{ type: 'text', text: fallbackText }],
+    content: [{ type: 'text', text }],
     structuredContent: typed,
   };
 }

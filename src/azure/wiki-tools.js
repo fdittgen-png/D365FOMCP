@@ -100,7 +100,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           + `Pages in container \`${wiki.container}\`: **${pageCount}**\n\n`
           + `---\n\n`
           + idx.content;
-        return structuredResult(typed, md);
+        return structuredResult(typed, md, 'markdown');
       } catch (err) {
         return errorResult('db-error', `Could not read the ${wiki.title} index.`, err);
       }
@@ -178,7 +178,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           + `## ${wiki.title} — Pages (${typedPages.length}/${total})\n\n`
           + table;
         if (truncated) md += truncationNote('user', typedPages.length);
-        return structuredResult(typed, md);
+        return structuredResult(typed, md, 'markdown');
       } catch (err) {
         return errorResult('db-error', `Could not list pages in wiki:${wiki.name}.`, err);
       }
@@ -239,7 +239,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           + fmLines
           + `\n${page.body}`;
 
-        return structuredResult(typed, md);
+        return structuredResult(typed, md, 'markdown');
       } catch (err) {
         return errorResult('db-error', `Could not read page "${slug}".`, err);
       }
@@ -322,7 +322,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
         }
         if (truncated) md += truncationNote('user', matches.length);
 
-        return structuredResult(typed, md);
+        return structuredResult(typed, md, 'markdown');
       } catch (err) {
         return errorResult('db-error', `Could not search wiki:${wiki.name}.`, err);
       }

@@ -193,15 +193,25 @@ for (const file of TOOL_FILES) {
 
 // ── PM-11: shared helper contracts (runtime assertions) ──────────────────────
 
-test('given shared.js helpers, when imported, then structuredResult is a function that returns both content and structuredContent', async () => {
-  const { structuredResult } = await import('../src/azure/shared.js');
+test('given shared.js helpers, when imported, then structuredResult defaults to a TOON text channel and always carries structuredContent', async () => {
+  const { structuredResult, encodeToon } = await import('../src/azure/shared.js');
   assert.equal(typeof structuredResult, 'function');
-  const r = structuredResult({ a: 1 }, 'fallback');
+
+  // Default (no format): text channel is TOON rendered from the typed object.
+  const r = structuredResult({ a: 1 }, '## Context\n\n| a |\n|---|\n| 1 |');
   assert.ok(Array.isArray(r.content));
   assert.equal(r.content[0].type, 'text');
-  assert.equal(r.content[0].text, 'fallback');
+  assert.equal(r.content[0].text, `## Context\n\n${encodeToon({ a: 1 })}`);
   assert.deepEqual(r.structuredContent, { a: 1 });
   assert.equal(r.isError, undefined);
+
+  // Markdown opt-out: full Markdown rendering is emitted verbatim.
+  const md = structuredResult({ a: 1 }, '## Context\n\n| a |\n|---|\n| 1 |', 'markdown');
+  assert.equal(md.content[0].text, '## Context\n\n| a |\n|---|\n| 1 |');
+  assert.deepEqual(md.structuredContent, { a: 1 });
+
+  // No leading heading → TOON only.
+  assert.equal(structuredResult({ a: 1 }, 'plain').content[0].text, encodeToon({ a: 1 }));
 });
 
 test('given shared.js helpers, when errorResult/notFoundResult are called, then isError is true', async () => {
