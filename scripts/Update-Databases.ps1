@@ -339,33 +339,35 @@ if (-not $XrefOnly) {
 
         $kbOutput = Join-Path $OutputDir 'd365fo_kb.sqlite'
 
+        # Skip only the KB build on a locked file — do NOT abort the script
+        # (a bare `break` here exits past the XRef build, summary and backup).
         if (-not (Remove-DatabaseFile $kbOutput 'kb')) {
             $steps += @{ Step = 'KB Database'; Status = 'FAILED'; Detail = 'File locked' }
-            break
         }
+        else {
+            $combinedPaths = $sourcePaths -join ','
+            $kbStart = Get-Date
 
-        $combinedPaths = $sourcePaths -join ','
-        $kbStart = Get-Date
+            Write-Host "  Sources: $combinedPaths" -ForegroundColor DarkGray
+            Write-Host "  Output:  $kbOutput" -ForegroundColor DarkGray
+            Write-Host ""
 
-        Write-Host "  Sources: $combinedPaths" -ForegroundColor DarkGray
-        Write-Host "  Output:  $kbOutput" -ForegroundColor DarkGray
-        Write-Host ""
+            try {
+                & node (Join-Path $projectDir 'build\build-kb.js') $combinedPaths $kbOutput
+                if ($LASTEXITCODE -ne 0) {
+                    throw "KB build failed with exit code $LASTEXITCODE"
+                }
 
-        try {
-            & node (Join-Path $projectDir 'build\build-kb.js') $combinedPaths $kbOutput
-            if ($LASTEXITCODE -ne 0) {
-                throw "KB build failed with exit code $LASTEXITCODE"
+                $kbElapsed = ((Get-Date) - $kbStart).ToString('hh\:mm\:ss')
+                $kbSize = [math]::Round((Get-Item $kbOutput).Length / 1MB)
+                Write-Host "  [OK] KB database built: $kbSize MB in $kbElapsed" -ForegroundColor Green
+                $steps += @{ Step = 'KB Database'; Status = 'OK'; Detail = "$kbSize MB" }
+            } catch {
+                Write-Warning "KB build failed: $($_.Exception.Message)"
+                $steps += @{ Step = 'KB Database'; Status = 'FAILED'; Detail = $_.Exception.Message }
             }
-
-            $kbElapsed = ((Get-Date) - $kbStart).ToString('hh\:mm\:ss')
-            $kbSize = [math]::Round((Get-Item $kbOutput).Length / 1MB)
-            Write-Host "  [OK] KB database built: $kbSize MB in $kbElapsed" -ForegroundColor Green
-            $steps += @{ Step = 'KB Database'; Status = 'OK'; Detail = "$kbSize MB" }
-        } catch {
-            Write-Warning "KB build failed: $($_.Exception.Message)"
-            $steps += @{ Step = 'KB Database'; Status = 'FAILED'; Detail = $_.Exception.Message }
+            Write-Host ""
         }
-        Write-Host ""
     }
 }
 
@@ -382,39 +384,40 @@ if (-not $KbOnly) {
 
         $xrefOutput = Join-Path $OutputDir 'd365fo_xref.sqlite'
 
+        # Skip only the XRef build on a locked file — do NOT abort the script.
         if (-not (Remove-DatabaseFile $xrefOutput 'xref')) {
             $steps += @{ Step = 'XRef Database'; Status = 'FAILED'; Detail = 'File locked' }
-            break
         }
-
-        # Start LocalDB if needed
-        if ($xrefServer -match 'LocalDB') {
-            Write-Host "  Starting LocalDB instance..." -ForegroundColor DarkGray
-            SqlLocalDB start MSSQLLocalDB 2>$null | Out-Null
-        }
-
-        $xrefStart = Get-Date
-
-        Write-Host "  Server:   $xrefServer" -ForegroundColor DarkGray
-        Write-Host "  Database: $xrefDatabase" -ForegroundColor DarkGray
-        Write-Host "  Output:   $xrefOutput" -ForegroundColor DarkGray
-        Write-Host ""
-
-        try {
-            & node --max-old-space-size=8192 (Join-Path $projectDir 'build\build-xref-db.js') $xrefServer $xrefDatabase $xrefOutput
-            if ($LASTEXITCODE -ne 0) {
-                throw "XRef build failed with exit code $LASTEXITCODE"
+        else {
+            # Start LocalDB if needed
+            if ($xrefServer -match 'LocalDB') {
+                Write-Host "  Starting LocalDB instance..." -ForegroundColor DarkGray
+                SqlLocalDB start MSSQLLocalDB 2>$null | Out-Null
             }
 
-            $xrefElapsed = ((Get-Date) - $xrefStart).ToString('hh\:mm\:ss')
-            $xrefSize = [math]::Round((Get-Item $xrefOutput).Length / 1MB)
-            Write-Host "  [OK] XRef database built: $xrefSize MB in $xrefElapsed" -ForegroundColor Green
-            $steps += @{ Step = 'XRef Database'; Status = 'OK'; Detail = "$xrefSize MB" }
-        } catch {
-            Write-Warning "XRef build failed: $($_.Exception.Message)"
-            $steps += @{ Step = 'XRef Database'; Status = 'FAILED'; Detail = $_.Exception.Message }
+            $xrefStart = Get-Date
+
+            Write-Host "  Server:   $xrefServer" -ForegroundColor DarkGray
+            Write-Host "  Database: $xrefDatabase" -ForegroundColor DarkGray
+            Write-Host "  Output:   $xrefOutput" -ForegroundColor DarkGray
+            Write-Host ""
+
+            try {
+                & node --max-old-space-size=8192 (Join-Path $projectDir 'build\build-xref-db.js') $xrefServer $xrefDatabase $xrefOutput
+                if ($LASTEXITCODE -ne 0) {
+                    throw "XRef build failed with exit code $LASTEXITCODE"
+                }
+
+                $xrefElapsed = ((Get-Date) - $xrefStart).ToString('hh\:mm\:ss')
+                $xrefSize = [math]::Round((Get-Item $xrefOutput).Length / 1MB)
+                Write-Host "  [OK] XRef database built: $xrefSize MB in $xrefElapsed" -ForegroundColor Green
+                $steps += @{ Step = 'XRef Database'; Status = 'OK'; Detail = "$xrefSize MB" }
+            } catch {
+                Write-Warning "XRef build failed: $($_.Exception.Message)"
+                $steps += @{ Step = 'XRef Database'; Status = 'FAILED'; Detail = $_.Exception.Message }
+            }
+            Write-Host ""
         }
-        Write-Host ""
     }
 }
 

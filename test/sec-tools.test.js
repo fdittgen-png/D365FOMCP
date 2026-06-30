@@ -43,11 +43,15 @@ function createMockServer() {
   };
 }
 
+// Default the text channel to Markdown for renderer assertions; tests that
+// exercise the TOON default pass format:'toon' explicitly (args wins).
+const withFormat = (args) => ({ format: 'markdown', ...args });
+
 /** Call a tool handler and extract the text result */
 async function callTool(name, args) {
   const tool = toolHandlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
-  const result = await tool.handler(args);
+  const result = await tool.handler(withFormat(args));
   return result.content[0].text;
 }
 
@@ -55,7 +59,7 @@ async function callTool(name, args) {
 async function callToolFull(name, args) {
   const tool = toolHandlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
-  return await tool.handler(args);
+  return await tool.handler(withFormat(args));
 }
 
 /**

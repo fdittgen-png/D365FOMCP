@@ -51,7 +51,8 @@ function createMockServer() {
 async function callTool(handlers, name, args) {
   const tool = handlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
-  const result = await tool.handler(args);
+  // Default to Markdown for renderer assertions (TOON tests pass format:'toon').
+  const result = await tool.handler({ format: 'markdown', ...args });
   return { text: result.content[0].text, full: result };
 }
 

@@ -12,12 +12,12 @@
 import {
   query,
   formatMarkdownTable,
-  formatToonBlock,
   emptyResult,
   notFoundResult,
   errorResult,
   truncationNote,
   structuredResult,
+  formatTextParam,
   validateLikePattern,
   patternErrorResult,
   customLayerNote,
@@ -135,10 +135,11 @@ export function registerXrefTools(server, db) {
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind. Default: All'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefFindReferencesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit }) => {
+    async ({ object_name, kind, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
@@ -186,7 +187,7 @@ export function registerXrefTools(server, db) {
         ['Source', 'Kind', 'Line', 'Col', 'Module'],
       );
       if (baseTyped.truncated) out += truncationNote('user', limit);
-      return structuredResult(baseTyped, out);
+      return structuredResult(baseTyped, out, format);
     },
   );
 
@@ -203,10 +204,11 @@ export function registerXrefTools(server, db) {
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefFindUsagesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit }) => {
+    async ({ object_name, kind, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
@@ -252,7 +254,7 @@ export function registerXrefTools(server, db) {
         ['Target', 'Kind', 'Line', 'Col', 'Module'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -268,10 +270,11 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
         method_name: z.string().min(1).max(500).describe('Method name (e.g. "construct", "run")'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefFindMethodCallersOutput.shape,
     },
-    async ({ object_name, method_name, limit: rawLimit }) => {
+    async ({ object_name, method_name, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const methodPaths = [
         `/Classes/${object_name}/Methods/${method_name}`,
@@ -314,7 +317,7 @@ export function registerXrefTools(server, db) {
         ['Caller', 'Line', 'Col', 'Module'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -330,10 +333,11 @@ export function registerXrefTools(server, db) {
         class_name: z.string().min(1).max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
         direction: z.enum(['subclasses', 'parents']).default('subclasses')
           .describe('"subclasses" = who extends this (default), "parents" = what does this extend'),
+        format: formatTextParam,
       },
       outputSchema: xrefClassHierarchyOutput.shape,
     },
-    async ({ class_name, direction }) => {
+    async ({ class_name, direction, format }) => {
       const dir = direction || 'subclasses';
       const classPath = `/Classes/${class_name}`;
       const classResult = q('SELECT id FROM names WHERE path = ? LIMIT 1', [classPath]);
@@ -391,7 +395,7 @@ export function registerXrefTools(server, db) {
         typed.entries.map(r => ({ Class: r.class_name, Depth: r.depth })),
         ['Class', 'Depth'],
       );
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -405,10 +409,11 @@ export function registerXrefTools(server, db) {
       description: 'Find all classes that implement a given interface, including indirect implementors through inheritance. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         interface_name: z.string().min(1).max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
+        format: formatTextParam,
       },
       outputSchema: xrefInterfaceImplementorsOutput.shape,
     },
-    async ({ interface_name }) => {
+    async ({ interface_name, format }) => {
       let targetId = null;
       let targetPath = null;
       for (const prefix of ['/Classes/', '/ClrType/']) {
@@ -452,7 +457,7 @@ export function registerXrefTools(server, db) {
         typed.implementors.map(r => ({ Class: r.class_name, Type: r.relationship })),
         ['Class', 'Type'],
       );
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -469,10 +474,11 @@ export function registerXrefTools(server, db) {
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
           .default('All').describe('Filter by object type'),
         limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefSearchNamesOutput.shape,
     },
-    async ({ pattern, object_type, limit: rawLimit }) => {
+    async ({ pattern, object_type, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 50;
       const objType = object_type || 'All';
       const _v = validateLikePattern(pattern);
@@ -512,7 +518,7 @@ export function registerXrefTools(server, db) {
         ['Path', 'Module'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -529,10 +535,11 @@ export function registerXrefTools(server, db) {
         method_name: z.string().min(1).max(500).describe('Method name'),
         kind: z.enum(['All', 'Call', 'Read']).default('All').describe('Filter: All, Call (method invocations only), Read (type/field reads only)'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefMethodReferencesOutput.shape,
     },
-    async ({ object_name, method_name, kind, limit: rawLimit }) => {
+    async ({ object_name, method_name, kind, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const kindFilterLabel = kind || 'All';
       const methodPaths = [
@@ -582,7 +589,7 @@ export function registerXrefTools(server, db) {
         ['Target', 'Kind', 'Line', 'Col'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -599,10 +606,11 @@ export function registerXrefTools(server, db) {
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views'])
           .default('All').describe('Filter by object type'),
         limit: z.number().int().min(1).max(500).default(200).describe('Max results (default 200, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefModuleObjectsOutput.shape,
     },
-    async ({ module_name, object_type, limit: rawLimit }) => {
+    async ({ module_name, object_type, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
       const objType = object_type || 'All';
       let typeFilter = '';
@@ -640,7 +648,7 @@ export function registerXrefTools(server, db) {
         ['Path', 'Provider'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -657,10 +665,11 @@ export function registerXrefTools(server, db) {
         direction: z.enum(['depends_on', 'depended_by']).default('depends_on')
           .describe('"depends_on" = modules this module references, "depended_by" = modules that reference this one'),
         limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefCrossModuleDepsOutput.shape,
     },
-    async ({ module_name, direction, limit: rawLimit }) => {
+    async ({ module_name, direction, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 50;
       const dir = direction || 'depends_on';
       const params = [module_name, module_name, limit];
@@ -706,7 +715,7 @@ export function registerXrefTools(server, db) {
         ['Module', 'Reference Count'],
       );
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -751,9 +760,11 @@ export function registerXrefTools(server, db) {
         const columns = Object.keys(result[0]);
         const truncated = result.length >= limit;
         const typed = { row_count: result.length, truncated, columns, rows: result };
-        let out = fmt === 'toon' ? formatToonBlock('rows', result, columns) : formatMarkdownTable(result);
-        if (truncated) out += truncationNote('user', limit);
-        return structuredResult(typed, out);
+        // Markdown is the opt-out; structuredResult renders TOON from `typed`
+        // by default (fmt === 'toon').
+        let md = formatMarkdownTable(result);
+        if (truncated) md += truncationNote('user', limit);
+        return structuredResult(typed, md, fmt);
       } catch (err) {
         if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return errorResult('db-error', 'Check your SQL syntax and table/column names. Only read-only SELECT queries are supported.', err);
@@ -771,10 +782,11 @@ export function registerXrefTools(server, db) {
       description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
+        format: formatTextParam,
       },
       outputSchema: xrefImpactAnalysisOutput.shape,
     },
-    async ({ object_name }) => {
+    async ({ object_name, format }) => {
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
@@ -830,7 +842,7 @@ export function registerXrefTools(server, db) {
         ['Source', 'Kind', 'Module'],
       );
       if (typed.sample_truncated) out += truncationNote('cap', SAMPLE_CAP, DETAIL_CAP);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -842,10 +854,10 @@ export function registerXrefTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'List all D365FO modules in the XRef database with object counts. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: {},
+      inputSchema: { format: formatTextParam },
       outputSchema: xrefListModulesOutput.shape,
     },
-    async () => {
+    async ({ format }) => {
       const result = q(`
         SELECT m.module, COUNT(DISTINCT n.id) as object_count
         FROM modules m
@@ -865,7 +877,7 @@ export function registerXrefTools(server, db) {
         typed.modules.map(r => ({ Module: r.module, 'Object Count': r.object_count })),
         ['Module', 'Object Count'],
       );
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -879,10 +891,11 @@ export function registerXrefTools(server, db) {
       description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.",
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
+        format: formatTextParam,
       },
       outputSchema: xrefObjectSummaryOutput.shape,
     },
-    async ({ object_name }) => {
+    async ({ object_name, format }) => {
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
@@ -923,7 +936,7 @@ export function registerXrefTools(server, db) {
       for (const r of incomingByKind) out += `- ${r.kind}: ${r.count}\n`;
       out += `\n## Outgoing references (uses) — total ${typed.outgoing_total}\n`;
       for (const r of outgoingByKind) out += `- ${r.kind}: ${r.count}\n`;
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -940,10 +953,11 @@ export function registerXrefTools(server, db) {
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'DataEntityViews']).default('All')
           .describe('Object type to search for extensions. Default: All'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefFindExtensionsOutput.shape,
     },
-    async ({ object_name, object_type, limit: rawLimit }) => {
+    async ({ object_name, object_type, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const objType = object_type || 'All';
       const _v = validateLikePattern(object_name);
@@ -1014,7 +1028,7 @@ export function registerXrefTools(server, db) {
       out += section('Entity extensions', entityExtensions, 'path');
       out += section('Other', other, 'path');
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -1032,10 +1046,11 @@ export function registerXrefTools(server, db) {
         kind: z.enum(['All', 'Read', 'Write']).default('All')
           .describe('Filter: All, Read (field value reads), Write (field assignments). Default: All'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefFindFieldUsagesOutput.shape,
     },
-    async ({ table_name, field_name, kind, limit: rawLimit }) => {
+    async ({ table_name, field_name, kind, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const kindFilterLabel = kind || 'All';
       const _vt = validateLikePattern(table_name);
@@ -1093,7 +1108,7 @@ export function registerXrefTools(server, db) {
       out += section('Writes / Calls', typed.calls);
       out += section('Other references', typed.other);
       if (typed.truncated) out += truncationNote('user', limit);
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -1109,10 +1124,11 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
         method_name: z.string().min(1).max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        format: formatTextParam,
       },
       outputSchema: xrefFindEventHandlersOutput.shape,
     },
-    async ({ object_name, method_name, limit: rawLimit }) => {
+    async ({ object_name, method_name, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
@@ -1218,7 +1234,7 @@ export function registerXrefTools(server, db) {
           typed.overrides.map(r => ({ Override: r.path, Module: r.module ?? '' })), ['Override', 'Module']);
         if (typed.overrides_truncated) out += truncationNote('user', limit);
       }
-      return structuredResult(typed, out);
+      return structuredResult(typed, out, format);
     },
   );
 }

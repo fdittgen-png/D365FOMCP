@@ -13,7 +13,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatToonBlock, parseToonBlock } from '../src/azure/shared.js';
+import { formatToonBlock, parseToonBlock, encodeToon } from '../src/azure/shared.js';
 
 describe('formatToonBlock — encoding', () => {
   it('given an empty rows array, when encoded, then returns the canonical "No results found." sentinel', () => {
@@ -120,5 +120,62 @@ describe('TOON round-trip parity', () => {
       note: r.note == null ? '' : r.note,
     }));
     assert.deepEqual(parsed.rows, expected);
+  });
+});
+
+describe('encodeToon — general object encoder (default text channel)', () => {
+  it('renders scalar fields as key: value lines', () => {
+    assert.equal(
+      encodeToon({ table_name: 'CustTable', field_count: 2, is_customized: false }),
+      'table_name: CustTable\nfield_count: 2\nis_customized: false',
+    );
+  });
+
+  it('renders a uniform object array as a TOON table block', () => {
+    const out = encodeToon({
+      role: 'AccountsPayableClerk',
+      duties: [
+        { duty_id: 'D1', permission: 'Grant' },
+        { duty_id: 'D2', permission: 'Deny' },
+      ],
+    });
+    assert.match(out, /^role: AccountsPayableClerk$/m);
+    assert.match(out, /^duties\[2\]\{duty_id,permission\}:$/m);
+    assert.match(out, /^ {2}D1,Grant$/m);
+    assert.match(out, /^ {2}D2,Deny$/m);
+  });
+
+  it('renders an array of primitives inline', () => {
+    assert.match(encodeToon({ modules: ['ApplicationSuite', 'iExtension'] }),
+      /^modules\[2\]: ApplicationSuite,iExtension$/m);
+  });
+
+  it('renders an empty array with a [0] marker', () => {
+    assert.match(encodeToon({ rows: [] }), /^rows\[0\]:$/m);
+  });
+
+  it('renders a nested object under an indented key', () => {
+    const out = encodeToon({ summary: { total: 3, kind: 'Call' } });
+    assert.match(out, /^summary:$/m);
+    assert.match(out, /^ {2}total: 3$/m);
+    assert.match(out, /^ {2}kind: Call$/m);
+  });
+
+  it('renders a non-uniform / nested array as dash-led blocks', () => {
+    const out = encodeToon({
+      items: [
+        { name: 'a', tags: ['x', 'y'] },
+        { name: 'b', tags: [] },
+      ],
+    });
+    assert.match(out, /^items\[2\]:$/m);
+    assert.match(out, /^ {2}- name: a$/m);
+    assert.match(out, /^ {4}tags\[2\]: x,y$/m);
+  });
+
+  it('quotes scalar values containing commas/newlines and keys containing colons', () => {
+    const out = encodeToon({ note: 'has,comma', 'odd:key': 1 });
+    assert.match(out, /note: "has,comma"/);
+    assert.match(out, /"odd:key": 1/);
   });
 });

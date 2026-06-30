@@ -50,7 +50,9 @@ function createMockServer() {
 async function callTool(name, args) {
   const tool = toolHandlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
-  const validated = z.object(tool.schema).parse(args);
+  // Default the text channel to Markdown for renderer assertions; tests that
+  // exercise the TOON default pass format:'toon' explicitly (args wins).
+  const validated = z.object(tool.schema).parse({ format: 'markdown', ...args });
   const result = await tool.handler(validated);
   return result.content[0].text;
 }
@@ -60,7 +62,9 @@ async function callTool(name, args) {
 async function callToolFull(name, args) {
   const tool = toolHandlers[name];
   if (!tool) throw new Error(`Tool "${name}" not registered`);
-  const validated = z.object(tool.schema).parse(args);
+  // Default the text channel to Markdown for renderer assertions; tests that
+  // exercise the TOON default pass format:'toon' explicitly (args wins).
+  const validated = z.object(tool.schema).parse({ format: 'markdown', ...args });
   return await tool.handler(validated);
 }
 
@@ -184,6 +188,10 @@ before(async () => {
 
     -- Relations
     INSERT INTO relations VALUES ('CustTable', 'CustGroup', 'CustGroupRel', '[{"field":"CustGroup","relatedField":"CustGroup"}]', 'Association', 'Restricted');
+    -- Fixed-value relation: the constraint "field" is a numeric literal, not a field
+    -- name. Regression guard for the d365_lookup_table output-validation bug where a
+    -- non-string join field broke z.string() (CustTable/SalesTable failed on prod data).
+    INSERT INTO relations VALUES ('CustTable', 'TaxTable', 'FixedValueRel', '[{"field":1,"relatedField":"TaxType"}]', 'Association', 'Restricted');
     INSERT INTO relations VALUES ('SalesTable', 'CustTable', 'CustAccountRel', '[{"field":"CustAccount","relatedField":"AccountNum"}]', 'Association', 'Restricted');
 
     -- Enums
@@ -353,6 +361,17 @@ describe('d365_lookup_table', () => {
     const result = await callToolFull('d365_lookup_table', { table_name: 'NonExistentTable' });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /not found/);
+  });
+
+  it('coerces a numeric fixed-value relation field to string (regression: output validation)', async () => {
+    const { d365LookupTableOutput } = await import('../src/azure/output-schemas.js');
+    const result = await callToolFull('d365_lookup_table', { table_name: 'CustTable' });
+    assert.notEqual(result.isError, true, result.content?.[0]?.text);
+    // Before the fix, a numeric join field threw -32602 (expected string).
+    assert.doesNotThrow(() => d365LookupTableOutput.parse(result.structuredContent));
+    const joinFieldValues = result.structuredContent.outgoing_relations
+      .flatMap(r => r.join_fields.map(j => j.field));
+    assert.ok(joinFieldValues.includes('1'), 'numeric fixed-value join field should be coerced to "1"');
   });
 });
 
@@ -957,10 +976,19 @@ describe('d365_raw_sql', () => {
   });
 
   it('TOON: text channel defaults to TOON when format is omitted (feat/toon-default-on-raw-sql)', async () => {
-    const result = await callToolFull('d365_raw_sql', {
+    // Call handlers directly to bypass the markdown-injecting test harness and
+    // verify the SHIPPED default: omitted format → TOON text channel.
+    const result = await toolHandlers['d365_raw_sql'].handler({
       sql: 'SELECT table_name FROM tables ORDER BY table_name',
     });
     assert.match(result.content[0].text, /^rows\[\d+\]\{table_name\}:/m);
+
+    // A normal (non-raw_sql) tool also defaults to TOON: the H2 context heading
+    // is kept, the body is TOON (no Markdown pipe tables).
+    const lookup = await toolHandlers['d365_lookup_table'].handler({ table_name: 'CustTable' });
+    assert.match(lookup.content[0].text, /^## CustTable$/m);
+    assert.match(lookup.content[0].text, /^table_name: CustTable$/m);
+    assert.doesNotMatch(lookup.content[0].text, /^\| /m);
   });
 });
 
@@ -1510,7 +1538,7 @@ describe('issue #33 — d365_lookup_table on a table with zero fields', () => {
 
   it('given a table with zero fields, when d365_lookup_table runs, then the Fields section renders a no-results sentinel (no crash, no isError)', async () => {
     const tool = toolHandlers['d365_lookup_table'];
-    const result = await tool.handler({ table_name: 'IssueEmptyTable' });
+    const result = await tool.handler({ table_name: 'IssueEmptyTable', format: 'markdown' });
     // Shape: success channel (no isError flag).
     assert.notEqual(result.isError, true);
     const text = result.content[0].text;
@@ -1540,6 +1568,7 @@ describe('issue #33 — d365_check_field_exists on a table with zero fields', ()
     const result = await tool.handler({
       table_name: 'IssueFieldlessTable',
       field_names: ['SomeField', 'AnotherField'],
+      format: 'markdown',
     });
     // Shape: success channel.
     assert.notEqual(result.isError, true);
@@ -1719,7 +1748,7 @@ describe('d365_lookup_table — customization provenance', () => {
   after(() => { if (customDb) customDb.close(); });
 
   it('flags the table as customized and lists the contributing module', async () => {
-    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ table_name: 'CustTable' });
+    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ table_name: 'CustTable', format: 'markdown' });
     const res = await customTools['d365_lookup_table'].handler(validated);
     const t = res.structuredContent;
     assert.equal(t.is_customized, true);
@@ -1768,7 +1797,7 @@ describe('entity methods', () => {
   after(() => { if (edb) edb.close(); });
 
   it('d365_get_entity_sources reports the 4 entity methods', async () => {
-    const v = z.object(tools['d365_get_entity_sources'].schema).parse({ entity_name: 'TOC_Basware_PurchaseConfirmationHeaderEntity' });
+    const v = z.object(tools['d365_get_entity_sources'].schema).parse({ entity_name: 'TOC_Basware_PurchaseConfirmationHeaderEntity', format: 'markdown' });
     const res = await tools['d365_get_entity_sources'].handler(v);
     const t = res.structuredContent;
     assert.equal(t.method_count, 4);
