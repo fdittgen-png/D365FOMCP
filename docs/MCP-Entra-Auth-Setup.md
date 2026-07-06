@@ -40,6 +40,10 @@ avoid the `groups`-claim overage problem KJ would hit at scale).
 
 ## Part A — The ask for Aaron (forward this verbatim)
 
+> Stand-alone version: [`MCP-Entra-Auth-Handover.md`](MCP-Entra-Auth-Handover.md)
+> contains this ask as a ready-to-send email plus the full explanation —
+> the file to share outside the repo.
+
 > Hi Aaron — to put Entra OAuth in front of the D365FO MCP Function App
 > (`tis-d-mcpd365fo-func`, tenant `0f861177-7722-4f06-8db9-3384e5321a9f`), could you
 > set up the following? Same shape as `sp-tis-p-orion-mcp` /
