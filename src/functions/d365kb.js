@@ -11,6 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getKbDb } from '../azure/shared.js';
 import { registerKbTools } from '../azure/kb-tools.js';
 import { validateRequestSize } from '../azure/request-size.js';
+import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 
 function createKbServer() {
   const server = new McpServer({
@@ -31,6 +32,10 @@ app.http('d365kb', {
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
       return { status: 200, jsonBody: { name: 'd365fo-kb', version: '1.0.0', status: 'ok' } };
     }
+
+    // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
+    const denied = authorizeMcpRequest(request);
+    if (denied) return denied;
 
     try {
       const server = createKbServer();

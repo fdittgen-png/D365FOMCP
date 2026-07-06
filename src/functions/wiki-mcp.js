@@ -18,10 +18,11 @@
  * per-wiki tool-registration state isolated and lets us change the registry
  * without restarting the app.
  *
- * Auth: anonymous, matching the other MCP endpoints. Intended for internal
- * VPN use. If a specific wiki needs stricter auth, put it behind an APIM
- * instance rather than adding auth here — the app's design is "the Function
- * App is internal, trust comes from the network".
+ * Auth: same Entra App-Role gate as the other MCP endpoints
+ * (`authorizeMcpRequest`, docs/MCP-Entra-Auth-Setup.md) — Easy Auth validates
+ * the bearer token at the platform edge, the code requires the `Mcp.Access`
+ * app role on the MCP protocol path. The catalog + health GETs stay open in
+ * code (metadata only); Easy Auth covers them once enabled.
  */
 
 import { app } from '@azure/functions';
@@ -29,6 +30,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { registerWikiTools } from '../azure/wiki-tools.js';
+import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 
 /**
  * Registry loaded lazily on first request so module import never throws
@@ -141,6 +143,10 @@ app.http('wiki-mcp', {
         },
       };
     }
+
+    // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
+    const denied = authorizeMcpRequest(request);
+    if (denied) return denied;
 
     // MCP protocol path — spin up a fresh server + transport per request.
     try {

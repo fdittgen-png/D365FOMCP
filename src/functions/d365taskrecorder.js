@@ -18,6 +18,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
 import { validateRequestSize } from '../azure/request-size.js';
+import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 
 /**
  * Per-endpoint upload ceiling for Task Recorder recordings.
@@ -90,6 +91,10 @@ app.http('d365taskrecorder', {
       return { status: 200, jsonBody: { name: 'd365fo-taskrecorder', version: '1.0.0', status: 'ok' } };
     }
 
+    // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
+    const denied = authorizeMcpRequest(request);
+    if (denied) return denied;
+
     try {
       const server = createTaskRecorderServer();
       const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
@@ -138,6 +143,10 @@ app.http('d365taskrecorder-upload', {
     }
 
     // POST: parse uploaded file, return markdown as plain text
+    // Same Entra App-Role gate as the MCP endpoint — this route processes data.
+    const denied = authorizeMcpRequest(request);
+    if (denied) return denied;
+
     try {
       // Pre-check Content-Length BEFORE reading the body (issue #43).
       const sizeRejection = checkUploadSize(request.headers.get('content-length'));

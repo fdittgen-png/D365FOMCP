@@ -11,6 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getSecDb, query } from '../azure/shared.js';
 import { registerSecTools } from '../azure/sec-tools.js';
 import { validateRequestSize } from '../azure/request-size.js';
+import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 
 function createSecServer() {
   const server = new McpServer({
@@ -37,6 +38,10 @@ app.http('d365sec', {
       } catch { /* DB not loaded yet */ }
       return { status: 200, jsonBody: { name: 'd365fo-sec', version: '1.0.0', status: 'ok', lastUpdated } };
     }
+
+    // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
+    const denied = authorizeMcpRequest(request);
+    if (denied) return denied;
 
     try {
       const server = createSecServer();

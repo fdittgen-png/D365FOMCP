@@ -12,7 +12,8 @@ we use the simpler "protected resource" shape: client gets a user token → send
 
 - Tenant: `0f861177-7722-4f06-8db9-3384e5321a9f` (Trelleborg)
 - Function App: `tis-d-mcpd365fo-func` (RG `tis-d-mcpd365fo-rg`); prod analog `tis-p-…`
-- Endpoints to protect: `/api/d365kb`, `/api/d365xref`, `/api/d365sec`, `/api/d365taskrecorder`
+- Endpoints to protect: `/api/d365kb`, `/api/d365xref`, `/api/d365sec`,
+  `/api/d365taskrecorder` (+ its `/upload` route), `/api/wiki-mcp/{name}`
 - Leave **anonymous** (no auth): `/api/health` (deploy probes), admin pages as-is
 
 We gate access with an **app role** assigned to a **security group** (app roles
@@ -20,113 +21,124 @@ avoid the `groups`-claim overage problem KJ would hit at scale).
 
 ---
 
+## Status (2026-07-06)
+
+- **Code gate (Part C): implemented and merged** — see below.
+- **`REQUIRE_AUTH=false` is set on `tis-d-mcpd365fo-func`** so deploying the
+  fail-closed code does NOT break the (still anonymous) live endpoints.
+  Remove it at cutover — `scripts/Enable-McpAuth.ps1` does this.
+- **Easy Auth: still off** (verified via `az webapp auth show` — unconfigured).
+- **Directory work needs an admin**: creating app registrations and security
+  groups returns `Insufficient privileges` for our accounts (tenant restricts
+  both) → Part A goes to Aaron. ARM writes on the Function App work fine
+  non-interactively from the TIS.D365FO subscription.
+- **In-house precedent found**: `sp-tis-p-orion-mcp`, `sp-tis-p-busarch-mcp`,
+  `sp-tis-t-pulsar-mcp` all use a **single combined registration** — the MCP
+  is both resource (App ID URI + scope, token v2) and public client
+  (claude.ai callback redirect). We follow that shape: ONE app registration,
+  not two.
+
 ## Part A — The ask for Aaron (forward this verbatim)
 
 > Hi Aaron — to put Entra OAuth in front of the D365FO MCP Function App
 > (`tis-d-mcpd365fo-func`, tenant `0f861177-7722-4f06-8db9-3384e5321a9f`), could you
-> set up the following? Same shape as Karl-Johan's app, minus the OBO API hop
-> (this server is the resource itself).
+> set up the following? Same shape as `sp-tis-p-orion-mcp` /
+> `sp-tis-t-pulsar-mcp` (single registration: the MCP is the resource *and*
+> the public client — no OBO, no separate client app), plus one app role.
 >
-> **1. App registration "D365FO MCP API" (the protected resource)**
-> - Expose an API → Application ID URI: `api://<new-app-id>` (default is fine).
-> - Add a delegated scope: **`access_as_user`** (admin + user consent, "Access D365FO MCP as the signed-in user").
-> - App roles → add **`Mcp.Access`** (member types: *Users/Groups*), value `Mcp.Access`.
-> - Enterprise app → **Assignment required = Yes**.
-> - Assign the security group below to the `Mcp.Access` role.
-> - Token configuration: not needed if we rely on the `roles` claim (preferred). (If you'd rather use group claims, add `groupMembershipClaims: SecurityGroup` instead.)
+> **1. App registration `sp-tis-d-mcpd365fo-mcp`** (single tenant):
+> - **Expose an API** → Application ID URI: **`api://sp-tis-d-mcpd365fo-mcp`**;
+>   requested access token version **2**.
+> - Delegated scope **`user_impersonation`** (admins and users may consent).
+> - **App role**: display name "MCP Access", value **`Mcp.Access`**
+>   (exact casing — the code matches this string), member types *Users/Groups*.
+> - **Authentication**: *Allow public client flows = Yes*; Mobile/desktop
+>   redirect URIs: `https://claude.ai/api/mcp/auth_callback` and
+>   `http://localhost` (Claude Code loopback) — same as orion-mcp.
+> - API permissions: its own `user_impersonation` scope, **admin consent**.
 >
-> **2. Security group "D365FO-MCP-Users"** (or reuse an existing access group) — assign the people who may use the MCP services, and assign the group to the `Mcp.Access` app role above.
+> **2. Security group `D365FO-MCP-Users`**:
+> - Initial member: Florian Dittgen (oid `9495865f-c1c7-459f-87a6-4e9d8a20fb28`).
+> - Enterprise app → Users and groups → assign the group to the **Mcp.Access** role.
+> - Enterprise app → Properties → **Assignment required = Yes**.
 >
-> **3. App registration "D365FO MCP – Claude client" (the OAuth client)**
-> - Type: public/native client (Claude Code uses a loopback redirect; enable **Allow public client flows = Yes**).
-> - **Redirect URIs** — please add the ones I confirm from each client's connector UI; expected:
->   - claude.ai custom connector callback: `https://claude.ai/api/mcp/auth_callback` *(I will confirm the exact URI from the connector "Advanced settings" screen)*
->   - Claude Code (loopback): `http://localhost` *(plus the specific port/path it prints; enable loopback)*
-> - API permissions: delegated **`api://<MCP-API-app-id>/access_as_user`**, grant **admin consent**.
-> - If claude.ai needs a confidential client (client secret), generate one and send it to me securely; otherwise public-client is fine.
->
-> **What I need back:** the **API app (client) ID**, the **Application ID URI**, the **tenant ID** (have it), the **`Mcp.Access` value**, the **client app ID** (+ secret if confidential), and confirmation the group is assigned. Then I enable Easy Auth on the Function App and the group check in code.
+> **What I need back:** the app registration's **client ID** and confirmation
+> of the App ID URI + group assignment. I run the Easy Auth cutover on the
+> Function App myself (`scripts/Enable-McpAuth.ps1`).
 
-*(If we ever add a tool that calls **live D365** on the user's behalf, that's when we'd add KJ's second SP + OBO exchange — not now.)*
+*(If we ever add a tool that calls **live D365** on the user's behalf, that's
+when we'd add KJ's second SP + OBO exchange — not now. If claude.ai's
+connector turns out to require a confidential client, we'd additionally ask
+for a client secret on the same registration — pulsar/orion get by without.)*
 
 ---
 
-## Part B — Enable Easy Auth on the Function App (after Aaron returns the IDs)
+## Part B — Enable Easy Auth on the Function App (after Aaron returns the ID)
 
 App Service Authentication validates the bearer token at the platform edge and
 returns 401 for anonymous/invalid callers — no token-parsing code needed for authn.
 
-```bash
-RG=tis-d-mcpd365fo-rg ; APP=tis-d-mcpd365fo-func
-API_APP_ID=<MCP-API-app-id-from-Aaron>
-TENANT=0f861177-7722-4f06-8db9-3384e5321a9f
+**Scripted:** run [`scripts/Enable-McpAuth.ps1`](../scripts/Enable-McpAuth.ps1)
+with the client ID from Part A:
 
-# Microsoft provider + require auth; allow the API's own audience
-az webapp auth microsoft update -g $RG -n $APP \
-  --client-id "$API_APP_ID" \
-  --issuer "https://login.microsoftonline.com/$TENANT/v2.0" \
-  --allowed-audiences "api://$API_APP_ID" "$API_APP_ID"
-
-az webapp auth update -g $RG -n $APP \
-  --enabled true \
-  --action Return401 \
-  --unauthenticated-client-action Return401
+```powershell
+.\scripts\Enable-McpAuth.ps1 -ApiAppId <client-id-from-Aaron>
 ```
+
+It configures the Microsoft identity provider (issuer
+`https://login.microsoftonline.com/<tenant>/v2.0`, audiences
+`api://sp-tis-d-mcpd365fo-mcp` + the client ID), enables Easy Auth with
+**`Return401`**, excludes **`/api/health`** so deploy probes keep working,
+removes the temporary `REQUIRE_AUTH=false` app setting (use
+`-KeepRequireAuthOff` for a staged cutover), and smoke-tests
+401-for-anonymous / 200-for-health.
 
 > `Return401` (not `RedirectToLoginPage`) is essential — MCP clients send a bearer
 > token and expect a 401 challenge, not an HTML login redirect.
 >
-> Keep `/api/health` reachable: either leave it on its own (Easy Auth applies app-wide,
-> so the deploy health probe must then send a token) **or** exclude it via an auth
-> route rule. Simplest: have `Deploy.ps1` probe health with a token, or keep a separate
-> unauthenticated health path. Decide before flipping `Return401`.
+> Note the per-endpoint GET pings (`GET /api/d365kb` etc.) sit behind Easy Auth
+> after cutover — only `/api/health` is excluded. If `local-deploy/Deploy.ps1`
+> probes the per-endpoint pings, switch it to `/api/health` or add a token.
 
-This requires an ARM write — run it in an **interactive** `az` session (the tenant's
-Conditional-Access step-up blocks subprocess ARM writes).
+ARM writes on this Function App were verified to work non-interactively
+(2026-07-06); if Conditional Access ever demands step-up MFA, re-run the
+script in an interactive `az` session.
 
-## Part C — Group/role check in code (defense in depth)
+## Part C — Group/role check in code (defense in depth) — **IMPLEMENTED**
 
-Easy Auth injects the validated principal as a base64 JSON header
-`x-ms-client-principal`. Add a tiny shared guard that rejects callers lacking the
-`Mcp.Access` role, mirroring the existing fail-closed pattern in
-`src/azure/d365sec-upload.js` (`decideUploadAuthorization` / `isAuthRequired`).
+Implemented in [`src/azure/mcp-auth.js`](../src/azure/mcp-auth.js), tested by
+[`test/mcp-auth.test.js`](../test/mcp-auth.test.js) (a static scan there also
+asserts every MCP HTTP surface calls the gate).
 
-```js
-// src/azure/mcp-auth.js  (new) — fail-closed app-role check
-const REQUIRED_ROLE = 'Mcp.Access';
+Easy Auth validates the token at the platform edge (signature / issuer /
+audience / expiry) and injects the verified principal as the base64 JSON
+header `x-ms-client-principal`. The code half is `authorizeMcpRequest(request)`:
 
-export function isAuthEnforced() {
-  // Mirror WEBSITE_AUTH_ENABLED awareness already used elsewhere.
-  return /^true$/i.test(process.env.WEBSITE_AUTH_ENABLED || '');
-}
+- Requires the **`Mcp.Access`** app role (override via `MCP_REQUIRED_ROLE`) in
+  the principal's role claims — accepts both the short `roles` claim type and
+  the WS-Fed long form (`…/identity/claims/role`). Exact, case-sensitive match;
+  App Roles have no hierarchy.
+- Requires a principal id (`x-ms-client-principal-id`, the token's `oid`) —
+  needed for audit attribution; no id → 401.
+- **Fail-closed** (issues #27 + #28, same `REQUIRE_AUTH` lever as the upload
+  endpoints): when Easy Auth is NOT enabled, principal headers are spoofable,
+  so requests get **503** unless `REQUIRE_AUTH=false` (local-dev opt-out).
+  This is deliberately stricter than the earlier no-op-when-off sketch —
+  see the deploy-sequencing warning below.
+- 403 responses hint that a recent role assignment needs a fresh token
+  (role claims are baked in at issue time — sign out/in after a group change).
 
-/** Returns null if authorized, or an HTTP response object if not. */
-export function authorizeMcpRequest(request) {
-  if (!isAuthEnforced()) return null;              // local/dev: no Easy Auth
-  const header = request.headers.get('x-ms-client-principal');
-  if (!header) return { status: 401, body: 'Unauthenticated.' };
-  let principal;
-  try { principal = JSON.parse(Buffer.from(header, 'base64').toString('utf8')); }
-  catch { return { status: 401, body: 'Invalid principal.' }; }
-  const claims = principal.claims || [];
-  const roles = claims.filter(c => c.typ === 'roles' || c.typ?.endsWith('/role')).map(c => c.val);
-  if (!roles.includes(REQUIRED_ROLE)) return { status: 403, body: 'Not authorized for MCP.' };
-  return null;                                     // OK
-}
-```
+Wired at the top of every MCP HTTP handler: `d365kb.js`, `d365xref.js`,
+`d365sec.js`, `d365taskrecorder.js` (both the MCP route and the
+`/upload` route), and `wiki-mcp.js` (per-wiki MCP path). The cheap non-SSE
+GET health pings and the wiki catalog stay open in code (static metadata,
+used by deploy probes); Easy Auth covers them at the platform edge once on.
 
-Wire it at the top of each MCP HTTP handler (`d365kb.js`, `d365xref.js`,
-`d365sec.js`, `d365taskrecorder.js`):
-
-```js
-import { authorizeMcpRequest } from '../azure/mcp-auth.js';
-// inside the handler, before doing any work:
-const denied = authorizeMcpRequest(request);
-if (denied) return denied;
-```
-
-Gated by `WEBSITE_AUTH_ENABLED`, so it's a **no-op locally** and only enforces once
-Easy Auth is on — safe to commit ahead of the cutover.
+> **Deploy sequencing:** because the gate fails closed, deploying this code
+> while the Function App has neither Easy Auth enabled nor
+> `REQUIRE_AUTH=false` in app settings turns every MCP call into a 503.
+> Either complete Part B first, or set `REQUIRE_AUTH=false` as a temporary
+> app setting and remove it at cutover.
 
 ## Part D — Point the clients at OAuth
 
