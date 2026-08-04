@@ -106,9 +106,8 @@ explains real "why do I see no/limited rows" cases, so it's worth capturing.
 
 ## 1. Schema (`src/azure/sec-builder.js`, `SCHEMA` const ~line 23)
 
-Mirror the `sod_rules` block (sec-builder.js:153) — **two tables** (the role
-context is single-valued per policy, so it lives on the policies row; no
-separate `security_policy_roles` join table is needed):
+Add **two tables** (the role context is single-valued per policy, so it lives on
+the policies row; no separate `security_policy_roles` join table is needed):
 
 ```sql
 -- Extensible Data Security (XDS) policies. AOT-sourced (AxSecurityPolicy).
@@ -339,8 +338,8 @@ probe like the `rdep.resource_type` guard at sec-tools.js:252).
 
 ## 10. Export / docs
 
-XDS is **AOT-sourced** — no DMF export change, so no runbook / DTA manifest edit
-(unlike SoD #2). Update:
+XDS is **AOT-sourced** — no DMF export change, so no runbook / DTA manifest edit.
+Update:
 - This plan's Step-0 confirmed-shape section.
 - `docs/Sec-Service-Completeness-Concept.md` gap #1 → ✅ DONE with the final tag mapping.
 - Bump nothing in DMF docs.

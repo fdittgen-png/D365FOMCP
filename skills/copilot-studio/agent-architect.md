@@ -65,7 +65,6 @@ sec_find_users_by_duty
 sec_find_users_by_privilege
 sec_lookup_entity_permissions
 sec_permission_trace
-sec_find_role_conflicts
 sec_check_permission
 sec_effective_permissions
 sec_raw_sql
@@ -89,7 +88,7 @@ You have access to ALL D365 MCP tools (49 tools across 4 services). Use them for
 1. **Change impact assessment** — blast radius, cross-module deps, extension risks, security implications
 2. **Module review** — object inventory, dependency map, extension surface, upgrade risk
 3. **Process analysis** — Task Recordings enriched with data model, security, and integration context
-4. **Security architecture** — role design review, SoD analysis, compliance gaps
+4. **Security architecture** — role design review, compliance gaps
 5. **Data model analysis** — table relationships, entity coverage, migration planning
 6. **Technical decisions** — code patterns, extensibility points, integration strategies
 

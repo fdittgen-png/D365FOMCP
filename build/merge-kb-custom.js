@@ -19,6 +19,9 @@
  *   - classes/edts/entities/forms/views/menu items/methods/relations/indexes,
  *     labels, object paths, graph edges → upserted
  *
+ * kb_search is refreshed for the delta's own objects AND recomputed for the
+ * base objects that received custom members — see reindexExtendedBaseObjects().
+ *
  * Requires the live DB to be schema v1.1 (has the customization columns). On an
  * older DB it throws, directing the operator to do a full KB upload instead.
  */
@@ -34,10 +37,81 @@ function hasColumn(db, table, col) {
 }
 
 /**
+ * Recompute kb_search rows for base objects that received custom members.
+ *
+ * The content strings MUST stay byte-identical to build-kb.js buildFtsIndex()
+ * (:1331-1387), so that a delta-merged KB and a full rebuild index the same
+ * text. Any change to the formulas there has to be mirrored here.
+ *
+ * Only objects that exist in main are rewritten; a delta may carry members for
+ * an object the live DB has never seen (e.g. an extension of a model that was
+ * not part of the base build), and inventing a row for it would be wrong.
+ *
+ * @param {import('better-sqlite3').Database} db  live DB, cust already ATTACHed
+ * @param {string[]} enumNames  enums whose values_json this merge changed
+ * @returns {{tables:number, enums:number, entities:number}}
+ */
+function reindexExtendedBaseObjects(db, enumNames) {
+  const del = db.prepare('DELETE FROM main.kb_search WHERE object_type = ? AND object_name = ?');
+  const ins = db.prepare('INSERT INTO main.kb_search VALUES (?,?,?,?)');
+  const counts = { tables: 0, enums: 0, entities: 0 };
+
+  // ── Tables that received extension fields ────────────────────────────────
+  const fieldsOf = db.prepare('SELECT field_name, label, edt FROM main.fields WHERE table_name = ?');
+  for (const t of db.prepare(`
+    SELECT t.table_name, t.module_id, t.label, t.developer_doc
+      FROM main.tables t
+     WHERE t.table_name IN (SELECT DISTINCT table_name FROM cust.fields WHERE is_extension = 1)
+  `).all()) {
+    const f = fieldsOf.all(t.table_name);
+    let fieldContent = '';
+    if (f.length > 0) {
+      const fieldNames = f.map(x => x.field_name).join(', ');
+      const fieldLabels = f.map(x => x.label).filter(Boolean).join(', ');
+      const fieldEdts = f.map(x => x.edt).filter(Boolean).join(', ');
+      fieldContent = `${fieldNames} ${fieldLabels} ${fieldEdts}`;
+    }
+    del.run('table', t.table_name);
+    ins.run('table', t.table_name, t.module_id || '', `${t.label || ''} ${t.developer_doc || ''} ${fieldContent}`);
+    counts.tables++;
+  }
+
+  // ── Enums whose values were UNIONed ──────────────────────────────────────
+  const liveEnum = db.prepare('SELECT enum_name, module_id, label, values_json FROM main.enums WHERE enum_name = ?');
+  for (const name of enumNames) {
+    const e = liveEnum.get(name);
+    if (!e) continue;
+    let valNames = '';
+    try { valNames = JSON.parse(e.values_json).map(v => v.name).join(', '); } catch { /* keep '' */ }
+    del.run('enum', e.enum_name);
+    ins.run('enum', e.enum_name, e.module_id || '', `${e.label || ''} ${valNames}`);
+    counts.enums++;
+  }
+
+  // ── Entities that received extension fields/methods ──────────────────────
+  const entFields = db.prepare('SELECT field_name FROM main.entity_fields WHERE entity_name = ?');
+  const entMethods = db.prepare("SELECT method_name FROM main.methods WHERE owner_type = 'entity' AND owner_name = ?");
+  for (const e of db.prepare(`
+    SELECT d.entity_name, d.module_id, d.label, d.public_name
+      FROM main.data_entities d
+     WHERE d.entity_name IN (SELECT DISTINCT entity_name FROM cust.entity_fields)
+        OR d.entity_name IN (SELECT DISTINCT owner_name FROM cust.methods WHERE owner_type = 'entity')
+  `).all()) {
+    const fieldNames = entFields.all(e.entity_name).map(x => x.field_name).join(', ');
+    const methodNames = entMethods.all(e.entity_name).map(x => x.method_name).join(', ');
+    del.run('entity', e.entity_name);
+    ins.run('entity', e.entity_name, e.module_id || '', `${e.label || ''} ${e.public_name || ''} ${fieldNames} ${methodNames}`);
+    counts.entities++;
+  }
+
+  return counts;
+}
+
+/**
  * @param {string} liveDbPath   Path to the full KB DB to merge into (modified in place).
  * @param {string} customDbPath Path to the customizations-only KB DB.
  * @param {(msg:string)=>void} [log]
- * @returns {{added:object, customizedTables:number}} merge summary
+ * @returns {{added:object, customizedTables:number, reindexed:object}} merge summary
  */
 export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
   const db = new Database(liveDbPath);
@@ -84,12 +158,12 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     // ── Enums: UNION values rather than replace (preserve MS enum values) ─────
     const liveEnumStmt = db.prepare('SELECT module_id, label, values_json FROM main.enums WHERE enum_name = ?');
     const upsertEnum = db.prepare('INSERT OR REPLACE INTO main.enums VALUES (?,?,?,?)');
-    let enumsTouched = 0;
+    const enumNamesTouched = [];
     for (const ce of db.prepare('SELECT enum_name, module_id, label, values_json FROM cust.enums').all()) {
       const live = liveEnumStmt.get(ce.enum_name);
       if (!live) {
         upsertEnum.run(ce.enum_name, ce.module_id, ce.label, ce.values_json);
-        enumsTouched++;
+        enumNamesTouched.push(ce.enum_name);
         continue;
       }
       let liveVals = [];
@@ -104,9 +178,10 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
       }
       if (changed) {
         upsertEnum.run(ce.enum_name, live.module_id || ce.module_id, live.label, JSON.stringify(merged));
-        enumsTouched++;
+        enumNamesTouched.push(ce.enum_name);
       }
     }
+    const enumsTouched = enumNamesTouched.length;
     summary.added.enums = enumsTouched;
 
     // ── Flag base tables that received extension fields + refresh field_count ─
@@ -126,6 +201,15 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     // ── Search index: refresh rows for the objects we just merged ─────────────
     db.exec('DELETE FROM main.kb_search WHERE object_name IN (SELECT object_name FROM cust.kb_search)');
     db.exec('INSERT INTO main.kb_search SELECT * FROM cust.kb_search');
+
+    // cust.kb_search only covers the custom model's OWN objects. A Microsoft
+    // base object that merely RECEIVED an extension (fields onto a base table,
+    // values onto a base enum, fields onto a base entity) has no row there, so
+    // the copy above leaves its pre-merge content in place and d365_search can
+    // never surface the newly merged members. Recompute those rows from the
+    // post-merge main DB.
+    summary.reindexed = reindexExtendedBaseObjects(db, enumNamesTouched);
+
     try {
       db.exec(`INSERT INTO main.kb_search_fts(kb_search_fts) VALUES('rebuild')`);
     } catch { /* FTS5 not present — d365_search falls back to LIKE */ }
@@ -143,6 +227,7 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
 
     db.exec('COMMIT');
     log(`  KB custom merge: +${summary.added.tables} tables, +${summary.added.fields} fields, ${enumsTouched} enums, ${summary.customizedTables} base tables flagged customized`);
+    log(`  KB search reindex: ${summary.reindexed.tables} tables, ${summary.reindexed.enums} enums, ${summary.reindexed.entities} entities`);
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch { /* ignore */ }
     db.exec('DETACH DATABASE cust');

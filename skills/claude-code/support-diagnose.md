@@ -69,6 +69,27 @@ If the issue involves a specific action (posting, approval, workflow):
 - `xref_find_method_callers` — understand the call chain
 - `xref_find_extensions` — check for customizations that may cause the issue
 
+### Step 4b: Verify against LIVE OData when the ticket concerns invoices/postings (lessons 2026-07-31)
+
+When the issue involves vendor invoices, postings, or Basware transfers, do not diagnose from captures,
+tickets, or error-text alone — query the live environment:
+
+1. **Derive `$select` from entity metadata first**: `d365_get_entity_sources` on the AOT entity name →
+   `entity_fields[].field_name` are the exact OData field names. Guessing costs HTTP 400 round-trips.
+2. **Always scope `cross-company=true` with `and dataAreaId eq '<le>'`** — unscoped queries mix legal entities
+   (a PO-013036 line query returned 7 lines across 3 companies and nearly produced a wrong diagnosis).
+3. **`startswith()` is rejected** ("not Queryable") on these entities — probe exact values (`<inv>`, `<inv>_1`…).
+4. **Posted-vs-pending semantics**: PO-matched invoices — presence in `TBG_VendInvoiceJournals` = posted;
+   pending = `VendorInvoiceHeaders` (record disappears on posting). **Journal-type invoices** — only
+   `VendInvoiceJournalHeaders.IsPosted` is authoritative; `TBG_VendInvoiceJournals` also returns UNPOSTED journal
+   lines, and a `VI-xxxxxxx` voucher on a line is assigned at creation, NOT proof of posting.
+5. **"Voucher X" in a Basware error text ≠ posted.** Verify `IsPosted` before reporting an invoice as booked.
+6. **Client-side reconstructions are hypotheses, not measurements.** A repro harness's totals/VAT simulation
+   (e.g. the Invoke-D365BaswareTest TOTALS ANALYSIS block) prints candidate explanations unconditionally; the
+   authoritative gap for `VendInvoiceValidationTotalsError` is the pending invoice's UI **Totals** page.
+   Also re-check environment toggles (Tax Calculation on/off) at diagnosis time — they can change intra-day and
+   flip outcomes for identical payloads.
+
 ### Step 5: Present diagnosis
 
 **Diagnosis Report for: "$ARGUMENTS"**

@@ -15,7 +15,7 @@ D365FO MCP Services provides five AI-accessible intelligence services for Micros
 
 - **Knowledge Base (KB)** -- structured metadata (tables, fields, enums, classes, methods with full X++ source, entities, security objects, labels)
 - **Cross-Reference (XRef)** -- code dependency graph (who calls/reads/extends/implements what, with line-level precision)
-- **Security (Sec)** -- normalized security configuration (roles, duties, privileges, sub-roles, users, company scoping, Grant/Deny semantics) plus governance tools (licence assessment, SoD check, what-if, object access)
+- **Security (Sec)** -- normalized security configuration (roles, duties, privileges, sub-roles, users, company scoping, Grant/Deny semantics) plus governance tools (licence assessment, what-if, object access)
 - **Task Recorder** -- parses `.axtr` task recording artifacts into Markdown for downstream LLM consumption
 - **Wiki** -- multi-tenant blob-backed markdown wikis; one Function App hosts any number of wikis, each with its own container and MCP endpoint (see §10)
 
@@ -27,10 +27,10 @@ All five services expose tools via the **Model Context Protocol (MCP)** using St
 |-----------|-------|
 | KB tools | 17 |
 | XRef tools | 16 |
-| Security tools | 19 |
+| Security tools | 18 |
 | Task Recorder tools | 1 |
 | Wiki tools (per wiki) | 4 |
-| **Total tools** | **57 across 5 services** (excluding per-wiki multiplier) |
+| **Total tools** | **56 across 5 services** (excluding per-wiki multiplier) |
 | KB database size | ~1,063 MB |
 | XRef database size | ~3,300 MB |
 | Security database size | ~60 MB |

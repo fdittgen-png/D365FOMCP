@@ -951,7 +951,7 @@ describe('empty-result structured output (MCP -32602 regression)', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  New tools: sec_licence_assessment, sec_sod_check, sec_what_if, sec_object_access
+//  New tools: sec_licence_assessment, sec_what_if, sec_object_access
 // ═════════════════════════════════════════════════════════════════════════════
 
 describe('sec_licence_assessment', () => {
@@ -1005,126 +1005,7 @@ describe('sec_licence_assessment', () => {
   });
 });
 
-describe('sec_sod_check', () => {
-  // Inject SoD rules for testing
-  before(async () => {
-    const { _injectSodRuleset } = await import('../src/azure/sec-tools.js');
-    _injectSodRuleset({
-      rules: [
-        {
-          id: 'SOD-AP-003',
-          name: 'Invoice Processing vs Payment Processing',
-          category: 'accounts_payable',
-          risk_level: 'High',
-          duty_group_a: { name: 'Invoice Processing', duties: ['VendInvoiceProcess'] },
-          duty_group_b: { name: 'Payment Processing', duties: ['VendPaymentProcess'] },
-        },
-        {
-          id: 'SOD-GL-001',
-          name: 'Journal Entry vs Journal Approval',
-          category: 'general_ledger',
-          risk_level: 'Critical',
-          duty_group_a: { name: 'Journal Entry', duties: ['LedgerPostMaintain'] },
-          duty_group_b: { name: 'Journal Approval', duties: ['VendInvoiceProcess'] },
-        },
-      ],
-    });
-  });
-
-  after(async () => {
-    const { _clearSodRuleset } = await import('../src/azure/sec-tools.js');
-    _clearSodRuleset();
-  });
-
-  it('detects SoD violations for admin (has both duties in SOD-AP-003)', async () => {
-    // admin has R1 (SysAdmin) which has VendInvoiceProcess + VendPaymentProcess → violation
-    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com' });
-    assert.ok(result.structuredContent);
-    assert.equal(result.structuredContent.mode, 'single');
-    assert.ok(result.structuredContent.violation_count >= 1);
-    const violations = result.structuredContent.violations[0]?.violations || [];
-    const apViolation = violations.find(v => v.rule_id === 'SOD-AP-003');
-    assert.ok(apViolation, 'Expected SOD-AP-003 violation for admin');
-    assert.deepEqual(apViolation.group_a_matched, ['VendInvoiceProcess']);
-    assert.deepEqual(apViolation.group_b_matched, ['VendPaymentProcess']);
-  });
-
-  it('john.doe does NOT violate SOD-AP-003 (Deny role suppresses VendInvoiceProcess Grant)', async () => {
-    // john.doe has R2 (VendInvoiceProcess Grant), R3 (VendInvoiceProcess Deny), R4 (VendInvoiceProcess + VendPaymentProcess)
-    // After P4-02 Deny filter, VendInvoiceProcess is still granted via R2 and R4 (Grant).
-    // The Deny role R3 doesn't remove the grant from the duty set — it only removes from effective permissions.
-    // So john.doe actually DOES have both duties via Grant paths.
-    const result = await callToolFull('sec_sod_check', { user_id: 'john.doe@trelleborg.com' });
-    assert.ok(result.structuredContent);
-    // john.doe has VendInvoiceProcess via R2 Grant + R4 Grant, and VendPaymentProcess via R4 Grant
-    assert.ok(result.structuredContent.violation_count >= 1);
-  });
-
-  it('filters by category', async () => {
-    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com', category: 'accounts_payable' });
-    assert.ok(result.structuredContent);
-    // Only SOD-AP-003 should be checked, not SOD-GL-001
-    const violations = result.structuredContent.violations[0]?.violations || [];
-    for (const v of violations) {
-      assert.equal(v.category, 'accounts_payable');
-    }
-  });
-
-  it('all-users mode scans all enabled users', async () => {
-    const result = await callToolFull('sec_sod_check', {});
-    assert.ok(result.structuredContent);
-    assert.equal(result.structuredContent.mode, 'all');
-    assert.ok(result.structuredContent.user_count >= 2);
-  });
-
-  it('returns not-found for unknown user', async () => {
-    const result = await callToolFull('sec_sod_check', { user_id: 'no.such.user' });
-    assert.equal(result.isError, true);
-  });
-
-  it('structured output matches schema', async () => {
-    const { secSodCheckOutput } = await import('../src/azure/output-schemas.js');
-    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com' });
-    assert.ok(result.structuredContent);
-    assert.doesNotThrow(() => secSodCheckOutput.parse(result.structuredContent));
-  });
-
-  it('risk score uses correct weights', async () => {
-    const result = await callToolFull('sec_sod_check', { user_id: 'admin@trelleborg.com' });
-    assert.ok(result.structuredContent);
-    const ur = result.structuredContent.violations[0];
-    if (ur) {
-      // Verify risk_score is sum of weights (High=2, Critical=3)
-      const expectedScore = ur.violations.reduce((s, v) => {
-        const w = { Critical: 3, High: 2, Medium: 1 }[v.risk_level] || 1;
-        return s + w;
-      }, 0);
-      assert.equal(ur.risk_score, expectedScore);
-    }
-  });
-});
-
 describe('sec_what_if', () => {
-  // Inject SoD rules for testing
-  before(async () => {
-    const { _injectSodRuleset } = await import('../src/azure/sec-tools.js');
-    _injectSodRuleset({
-      rules: [{
-        id: 'SOD-AP-003',
-        name: 'Invoice Processing vs Payment Processing',
-        category: 'accounts_payable',
-        risk_level: 'High',
-        duty_group_a: { name: 'Invoice Processing', duties: ['VendInvoiceProcess'] },
-        duty_group_b: { name: 'Payment Processing', duties: ['VendPaymentProcess'] },
-      }],
-    });
-  });
-
-  after(async () => {
-    const { _clearSodRuleset } = await import('../src/azure/sec-tools.js');
-    _clearSodRuleset();
-  });
-
   it('simulates adding a role and shows licence tier change', async () => {
     // john.doe currently has R2 (TeamMembers), R3 (Deny), R4 (Enterprise)
     // Removing R4 (Enterprise) should reduce the tier
@@ -1139,21 +1020,6 @@ describe('sec_what_if', () => {
     assert.equal(result.structuredContent.projected_tier, 'TeamMembers');
     assert.ok(result.structuredContent.monthly_delta < 0, 'Expected negative cost delta');
     assert.ok(result.structuredContent.annual_delta < 0, 'Expected negative annual delta');
-  });
-
-  it('simulates adding a role and detects new SoD violations', async () => {
-    // admin has SysAdmin (all duties). Adding a role should not change SoD.
-    // john.doe removing AP Manager should resolve the SOD-AP-003 violation
-    // because VendPaymentProcess is only on R4 (which we remove)
-    const result = await callToolFull('sec_what_if', {
-      user_id: 'john.doe@trelleborg.com',
-      remove_roles: ['AccountsPayableManager'],
-    });
-    assert.ok(result.structuredContent);
-    // After removing R4, john.doe loses VendPaymentProcess → SOD-AP-003 should resolve
-    assert.ok(result.structuredContent.sod_resolved.length >= 1);
-    const resolved = result.structuredContent.sod_resolved.find(v => v.rule_id === 'SOD-AP-003');
-    assert.ok(resolved, 'Expected SOD-AP-003 to be resolved');
   });
 
   it('returns not-found for unknown user', async () => {
@@ -1452,84 +1318,6 @@ describe('issue #33 — sec_raw_sql on a SELECT that returns zero rows', () => {
     assert.equal(result.structuredContent.row_count, 0);
     assert.deepEqual(result.structuredContent.rows, []);
     assert.deepEqual(result.structuredContent.columns, []);
-  });
-});
-
-// ── gap #2: sec_sod_check prefers live D365 rules (sod_rules table) ──────────
-// A separate in-memory DB carrying the sod_rules table; registering tools
-// against it must make sec_sod_check use the D365 rules over any JSON ruleset.
-describe('sec_sod_check — D365 sod_rules table source (gap #2)', () => {
-  let sodHandlers;
-
-  before(async () => {
-    const sodDb = new Database(':memory:');
-    sodDb.pragma('journal_mode = OFF');
-    sodDb.exec(`
-      CREATE TABLE roles (role_id TEXT PRIMARY KEY, role_name TEXT NOT NULL);
-      CREATE TABLE role_subroles (parent_role_id TEXT, child_role_id TEXT, is_transitive INTEGER DEFAULT 0, PRIMARY KEY (parent_role_id, child_role_id));
-      CREATE TABLE duties (duty_id TEXT PRIMARY KEY, duty_name TEXT);
-      CREATE TABLE role_duties (role_id TEXT, duty_id TEXT, permission_type TEXT DEFAULT 'Grant', PRIMARY KEY (role_id, duty_id));
-      CREATE TABLE users (user_id TEXT PRIMARY KEY, person_name TEXT, enabled INTEGER DEFAULT 1);
-      CREATE TABLE user_roles (user_id TEXT, role_id TEXT, PRIMARY KEY (user_id, role_id));
-      CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
-      CREATE TABLE sod_rules (
-        rule_name TEXT PRIMARY KEY, duty_first TEXT NOT NULL, duty_second TEXT NOT NULL,
-        duty_first_name TEXT, duty_second_name TEXT, severity TEXT, risk TEXT,
-        mitigation TEXT, valid_from TEXT, valid_to TEXT
-      );
-      INSERT INTO sec_metadata VALUES ('build_date', '2026-06-18T00:00:00Z');
-      INSERT INTO roles VALUES ('R_BOTH', 'ApFullClerk');
-      INSERT INTO roles VALUES ('R_INV', 'ApInvoiceClerk');
-      INSERT INTO duties VALUES ('VendInvoiceProcess', 'Process vendor invoices');
-      INSERT INTO duties VALUES ('VendPaymentProcess', 'Process vendor payments');
-      INSERT INTO role_duties VALUES ('R_BOTH', 'VendInvoiceProcess', 'Grant');
-      INSERT INTO role_duties VALUES ('R_BOTH', 'VendPaymentProcess', 'Grant');
-      INSERT INTO role_duties VALUES ('R_INV', 'VendInvoiceProcess', 'Grant');
-      INSERT INTO users VALUES ('both@trelleborg.com', 'Both Duties', 1);
-      INSERT INTO users VALUES ('inv@trelleborg.com', 'Invoice Only', 1);
-      INSERT INTO user_roles VALUES ('both@trelleborg.com', 'R_BOTH');
-      INSERT INTO user_roles VALUES ('inv@trelleborg.com', 'R_INV');
-      INSERT INTO sod_rules VALUES (
-        'AP invoice vs payment', 'VendInvoiceProcess', 'VendPaymentProcess',
-        'Process vendor invoices', 'Process vendor payments', 'High',
-        'A clerk could pay a fictitious invoice they entered.',
-        'Monthly managerial review.', NULL, NULL
-      );
-    `);
-    const { registerSecTools } = await import('../src/azure/sec-tools.js');
-    const mockServer = createMockServer();
-    registerSecTools(mockServer, sodDb); // loads the D365 rules into the SoD ruleset
-    sodHandlers = mockServer.handlers;
-  });
-
-  after(async () => {
-    const { _clearSodRuleset } = await import('../src/azure/sec-tools.js');
-    _clearSodRuleset();
-  });
-
-  it('flags a user holding both duties of a D365 rule', async () => {
-    const result = await sodHandlers['sec_sod_check'].handler({ user_id: 'both@trelleborg.com' });
-    assert.ok(result.structuredContent);
-    assert.equal(result.structuredContent.violation_count, 1);
-    const v = result.structuredContent.violations[0].violations[0];
-    assert.equal(v.rule_id, 'AP invoice vs payment'); // rule name is the natural key
-    assert.equal(v.risk_level, 'High');               // mapped from severity
-    assert.equal(v.severity, 'High');
-    assert.match(v.mitigation, /managerial review/);
-    // markdown surfaces the mitigation column when present
-    assert.match(result.content[0].text, /managerial review/);
-  });
-
-  it('does not flag a user holding only one side', async () => {
-    const result = await sodHandlers['sec_sod_check'].handler({ user_id: 'inv@trelleborg.com' });
-    assert.ok(result.structuredContent);
-    assert.equal(result.structuredContent.violation_count, 0);
-  });
-
-  it('structured output still satisfies the schema with the extra fields', async () => {
-    const { secSodCheckOutput } = await import('../src/azure/output-schemas.js');
-    const result = await sodHandlers['sec_sod_check'].handler({ user_id: 'both@trelleborg.com' });
-    assert.doesNotThrow(() => secSodCheckOutput.parse(result.structuredContent));
   });
 });
 

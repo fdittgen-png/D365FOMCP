@@ -957,40 +957,6 @@ export const secLicenceAssessmentOutput = z.object({
   users: z.array(secLicenceUserRowSchema),
 });
 
-// ── sec_sod_check ───────────────────────────────────────────────────────────
-
-export const secSodViolationSchema = z.object({
-  rule_id: z.string(),
-  rule_name: z.string(),
-  risk_level: z.string(),
-  category: z.string(),
-  // Present for rules sourced from the D365 SoD export (not the JSON ruleset).
-  severity: z.string().optional(),
-  risk: z.string().optional(),
-  mitigation: z.string().optional(),
-  group_a_name: z.string(),
-  group_a_matched: z.array(z.string()),
-  group_a_roles: z.array(z.string()),
-  group_b_name: z.string(),
-  group_b_matched: z.array(z.string()),
-  group_b_roles: z.array(z.string()),
-});
-export const secSodCheckOutput = z.object({
-  user_id: z.string().nullable(),
-  mode: z.enum(['single', 'all']),
-  user_count: z.number(),
-  violation_count: z.number(),
-  risk_score: z.number(),
-  users_with_violations: z.number(),
-  violations: z.array(z.object({
-    user_id: z.string(),
-    person_name: z.string().nullable(),
-    violation_count: z.number(),
-    risk_score: z.number(),
-    violations: z.array(secSodViolationSchema),
-  })),
-});
-
 // ── sec_what_if ─────────────────────────────────────────────────────────────
 
 export const secWhatIfOutput = z.object({
@@ -1008,10 +974,6 @@ export const secWhatIfOutput = z.object({
   projected_role_count: z.number(),
   current_roles: z.array(z.string()),
   projected_roles: z.array(z.string()),
-  sod_current_violations: z.number(),
-  sod_projected_violations: z.number(),
-  sod_new: z.array(secSodViolationSchema),
-  sod_resolved: z.array(secSodViolationSchema),
   warnings: z.array(z.string()),
 });
 

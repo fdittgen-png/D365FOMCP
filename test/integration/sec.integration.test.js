@@ -68,11 +68,6 @@ const SCHEMA = `
   CREATE TABLE sec_search (
     object_type TEXT, object_name TEXT, module_id TEXT, content TEXT
   );
-  CREATE TABLE sod_rules (
-    rule_name TEXT PRIMARY KEY, duty_first TEXT NOT NULL, duty_second TEXT NOT NULL,
-    duty_first_name TEXT, duty_second_name TEXT, severity TEXT, risk TEXT,
-    mitigation TEXT, valid_from TEXT, valid_to TEXT
-  );
   CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
 `;
 

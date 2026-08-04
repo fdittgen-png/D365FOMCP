@@ -27,12 +27,6 @@ fields, and the one filter that matters.
 | 6 | User information | `User information.xml` | `users` |
 | 7 | Security user role association *(or `SystemSecurityUserRoleEntity`)* | `Security user role association.xml` | `user_roles` |
 | 8 | SystemSecurityUserRoleOrganizationEntity | `SystemSecurityUserRoleOrganizationEntity.xml` | `user_role_companies` |
-| 9 | Security segregation of duties rule *(`SystemSegregationOfDutiesRuleEntity`)* | `Security segregation of duties rule.xml` | `sod_rules` (gap #2 — live SoD rules) |
-
-> **Entity #9 (SoD rules)** is small and needs no filter. When present it
-> populates `sod_rules`, which `sec_sod_check`/`sec_what_if` prefer over the
-> external `SOD_RULES_FILE` JSON. `findDmfFile` matches the filename
-> case-insensitively, so label-casing differences between exports are tolerated.
 
 ### Do NOT include
 - **`Security privilege metadata customizations entity`** — the build has no parser for
@@ -72,10 +66,8 @@ Ensure these survive the export (XML-Element keeps all entity fields by default)
    npm run build:sec "<PackagesLocalDirectory>" "<extracted folder>"
    ```
 4. Read the build's **DATA QUALITY CHECKS** block — every line should be `[PASS]`:
-   - duties have privileges · entry points carry Invoke · direct entity permissions present · resource_type captured · labels loaded · SoD rules from D365.
-   A `[WARN]` means investigate before uploading. (The **SoD rules** check WARNs
-   until entity #9 is added to the export — until then `sec_sod_check` falls back
-   to the `SOD_RULES_FILE` JSON.)
+   - duties have privileges · entry points carry Invoke · direct entity permissions present · resource_type captured · labels loaded.
+   A `[WARN]` means investigate before uploading.
 5. Re-upload (now integrity-checked):
    ```
    .\local-deploy\Deploy.ps1 -SkipCode -SkipRoles -Databases sec

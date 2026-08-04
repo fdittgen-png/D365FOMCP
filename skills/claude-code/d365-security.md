@@ -101,6 +101,10 @@ If `TOC_ReadOnlyPrivilege` is the **only** privilege defining the menu item, no 
 
 `duty_privileges` contains the **expanded effective privilege set** for every (duty, privilege) pair, not just direct AOT assignments. A single duty can have 9000+ effective privileges through hierarchy expansion. When counting "how many privileges does duty X have", expect thousands, not dozens.
 
+### 4. Raw `@SYS…`/`@Module…` label IDs can leak instead of text (known gap, root-caused 2026-07-08)
+
+If `sec_lookup_role`/`sec_lookup_duty`/`sec_lookup_privilege` shows `label` or `duty_name` as a raw reference like `@SYS154926` or `@QMS:CAPAViewer` instead of human text, this is **not** a new bug to chase — it's a known sec-builder.js label-resolution gap (`resolveLabel()` historically only matched the colon-delimited form; ISV/custom modules like QMS/AssetLeasing/MainDataChange also miss their `AxLabelFile` resources entirely). The fix landed in code 2026-07-08 but requires a DB rebuild to take effect — check `sec_raw_sql: SELECT label FROM roles WHERE label LIKE '@%' LIMIT 5` (and the same for `duties.duty_name`, `privileges.label`) to see current leak counts before reporting this as a fresh finding.
+
 ---
 
 ### Always end with
@@ -115,6 +119,5 @@ If `TOC_ReadOnlyPrivilege` is the **only** privilege defining the menu item, no 
 These tools extend the analysis when needed:
 
 - **`sec_licence_assessment`** — assess a user's minimum required licence tier from their roles. Use when investigating cost optimization or over-provisioning. See also `/d365-licence-audit`.
-- **`sec_sod_check`** — check for Segregation of Duties violations using external rules. Use when auditing a user or investigating compliance. Requires `SOD_RULES_FILE`. See also `/d365-sod`.
-- **`sec_what_if`** — simulate role add/remove and see licence tier + SoD impact before making changes. Use when recommending remediation. See also `/d365-what-if`.
+- **`sec_what_if`** — simulate role add/remove and see the licence tier + cost impact before making changes. Use when recommending remediation. See also `/d365-what-if`.
 - **`sec_object_access`** — reverse permission chain: given an object, find all roles and users that can access it. Use when answering "who can access X?" questions.

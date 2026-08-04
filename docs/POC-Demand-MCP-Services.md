@@ -26,12 +26,12 @@ The platform provides AI coding assistants and business agents (Claude, Copilot,
 |---|---------|--------|-------|----------|------------|
 | 1 | **d365kb** -- Knowledge Base | Delivered | 17 | ~1,063 MB SQLite | Azure Functions + Local |
 | 2 | **d365xref** -- Cross-Reference | Delivered | 16 | ~3,300 MB SQLite | Azure Functions + Local |
-| 3 | **d365sec** -- Security | Delivered | 19 | ~30-60 MB SQLite | Azure Functions + Local |
+| 3 | **d365sec** -- Security | Delivered | 18 | ~30-60 MB SQLite | Azure Functions + Local |
 | 4 | **d365rag** -- Documentation & Blueprints | Delivered (docs), Planned (blueprints) | 8 | Cloud-hosted | Claude.ai infrastructure |
 | 5 | **otrs-rag** -- OTRS Ticket Knowledge | Planned | ~8 | Est. 100-500 MB SQLite | Azure Functions + Local |
 | 6 | **Microsoft Learn** | Delivered (3rd party) | 3 | Cloud (Microsoft) | Claude.ai integration |
 
-**Total tools across all services: ~67**
+**Total tools across all services: ~66**
 
 ---
 
@@ -58,7 +58,7 @@ The Security MCP service is designed and partially implemented. It merges AOT se
 | Deliverable | Description | Status |
 |-------------|-------------|--------|
 | build-sec.js | Build script: parse AOT XML + DMF XML + SecurityDatabaseCustomizations to SQLite | Implemented |
-| sec-tools.js | 19 security tools (lookup, trace, compare, effective permissions, search; plus governance: licence assessment, SoD check, what-if, object access) | Implemented |
+| sec-tools.js | 18 security tools (lookup, trace, compare, effective permissions, search; plus governance: licence assessment, what-if, object access) | Implemented |
 | d365sec.js | Azure Function endpoint | Implemented |
 | mcp-server-sec.js | Local stdio server | Implemented |
 | Unit tests | 38 tests for security tools | Implemented |
@@ -420,7 +420,7 @@ Total pipeline runtime: **~25-40 minutes** (including large database uploads).
     │                                              │
     │  ┌─────────┐ ┌─────────┐ ┌─────────┐       │
     │  │ d365kb  │ │d365xref │ │ d365sec │       │
-    │  │ 17 tools│ │16 tools │ │19 tools │       │
+    │  │ 17 tools│ │16 tools │ │18 tools │       │
     │  └────┬────┘ └────┬────┘ └────┬────┘       │
     │       │           │           │              │
     │  ┌─────────┐ ┌─────────┐ ┌─────────┐       │
@@ -545,7 +545,7 @@ Total pipeline runtime: **~25-40 minutes** (including large database uploads).
 | Criterion | Measurement |
 |-----------|------------|
 | All 6 MCP services operational and responding to health checks | `GET` returns `{"status":"ok"}` on all endpoints |
-| ~67 tools available across all services | Tool listing returns expected count per service |
+| ~66 tools available across all services | Tool listing returns expected count per service |
 | Query latency < 2 seconds for 95% of tool calls | Application Insights P95 metric |
 | Security service correctly reflects PROD role/user assignments | Spot-check 10 users against D365 PROD |
 | OTRS RAG returns relevant resolved tickets for known issues | Test with 5 known tickets, verify article content returned |

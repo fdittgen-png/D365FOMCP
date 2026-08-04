@@ -2,7 +2,7 @@
 
 **Canonical, current agent definition** (supersedes the older role-split files, which referenced a non-deployed host and several tool names that no longer exist). Wired to the live Azure Functions MCP endpoints and the actual 54-tool inventory.
 
-> **Auth note:** the endpoints below are currently **anonymous** (no key). If you later put Azure Easy Auth / Entra ID in front, add the OAuth client to each custom connection — the agent definition does not change.
+> **Auth note:** the endpoints below are currently **anonymous** — but only because the server-side Entra gate (implemented 2026-07-06, `src/azure/mcp-auth.js`) is dormant behind the `REQUIRE_AUTH=false` app setting. At cutover (`scripts/Enable-McpAuth.ps1`, see `docs/MCP-Entra-Auth-Setup.md`) every endpoint requires an Entra bearer token with the **`Mcp.Access`** app role: switch each custom connector to **OAuth 2.0 (Microsoft Entra ID)** — client = `sp-tis-d-mcpd365fo-mcp`, resource `api://sp-tis-d-mcpd365fo-mcp`, scope `user_impersonation` — and update the swagger `securityDefinitions`. The agent definition itself does not change.
 
 ---
 

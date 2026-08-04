@@ -1,6 +1,6 @@
 # Technical: Security Audit
 
-Comprehensive security audit of a D365 area: segregation of duties, over-provisioning, privilege escalation paths, and compliance gaps. For security architects and technical security reviewers.
+Comprehensive security audit of a D365 area: over-provisioning, privilege escalation paths, and compliance gaps. For security architects and technical security reviewers.
 
 ## Arguments
 - $ARGUMENTS: Audit scope (e.g., "Accounts Payable", "SalesTable access", "role SystemAdministrator", "user FDittgen vs JSmith", "all roles with Delete on CustTable")
@@ -31,7 +31,6 @@ Go to User Comparison workflow.
    SELECT DISTINCT r.role_name, ep.object_name, ep.grant_delete
    FROM roles r JOIN role_duties rd ON ... WHERE ep.object_name LIKE '%keyword%' AND ep.grant_delete = 1
    ```
-4. `sec_find_role_conflicts` for critical roles — check SoD conflicts
 
 ### Role Deep Dive
 1. `sec_lookup_role` — full role structure (duties, privileges, sub-roles)
@@ -65,19 +64,15 @@ Go to User Comparison workflow.
 - Roles that grant indirect access through duty chains
 - Sub-roles that inherit sensitive permissions
 
-**3. Segregation of Duties**
-| Conflict | Role 1 | Role 2 | Risk | Users Affected |
-|----------|--------|--------|------|----------------|
-
-**4. Over-Provisioning**
+**3. Over-Provisioning**
 - Users with roles broader than their job requires
 - Roles with unused Delete/Full control grants
 
-**5. Compliance Findings**
+**4. Compliance Findings**
 | Finding | Severity | Recommendation |
 |---------|----------|----------------|
 
-**6. Recommendations**
+**5. Recommendations**
 - Roles to split or restrict
 - Users to review
 - Duties to reassign

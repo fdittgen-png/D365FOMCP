@@ -63,7 +63,7 @@ USER=$(echo "$CREDS" | head -1)
 PASS=$(echo "$CREDS" | tail -1)
 ```
 
-If this errors with "AuthorizationFailed", the user's Azure session expired — they need to run `az login` interactively.
+If this errors with "AuthorizationFailed", check the **subscription first**: the Function App lives in **TIS.D365FO**, which is not the default az subscription — `az account set --subscription TIS.D365FO` fixes it (learned 2026-07-06). Only if the right subscription still fails is the session expired → the user runs `az login` interactively.
 
 ### Step 2 — Snapshot the current database state
 
@@ -168,6 +168,42 @@ page at **`/api/backoffice`** (KB tab) or programmatically:
 Building the full KB: **write to a fresh path, not the live `d365fo_kb.sqlite`** — the local `mcp-server-kb.js` respawns and re-locks it, failing the write (see the deploy skill). Set `KB_PACKAGES_PATHS` = MS `PackagesLocalDirectory` + `C:\Workspace\DEV\Metadata`.
 
 KB schema v1.1 captures customizations and entity methods: `fields.is_extension`/`source_module`, `tables.is_customized`, `data_entities.method_count`, and `methods` rows with `owner_type='entity'`. Query custom objects with `d365_raw_sql`, e.g. `SELECT * FROM fields WHERE is_extension=1`, or list entity methods via `d365_get_entity_sources` / `d365_get_class_methods`.
+
+## Session learnings (2026-07-08 — sec-builder.js label resolution)
+
+`resolveLabel()` in `src/azure/sec-builder.js` was silently leaking raw `@…`
+label IDs into `roles.label`/`duties.duty_name`/`privileges.label` for ~20-35%
+of rows (confirmed live). Two takeaways for anyone touching `build-sec.js` or
+diagnosing "why does this role/duty show a raw label" again:
+
+- **A PASS data-quality check only proves what it measures.** The old
+  `"labels loaded"` check asserted `labelMap.size > 0` — that label *files*
+  were found — and stayed green through the whole regression because
+  `resolveLabel()` degrades to "return the raw string" instead of throwing.
+  There is now a second check, `"labels resolved"`, that counts actual
+  `LIKE '@%'` leaks in the three label columns after the build. When adding
+  any future data-quality check, ask "does this check the file existed, or
+  that the transformation actually worked?" — those are different questions.
+- **D365 AOT label references have two shapes**, both real: colon-delimited
+  (`@Module:LabelId`, common for ISV/custom modules with alphanumeric ids)
+  and concatenated (`@ModuleLabelId`, the common Microsoft-standard shape,
+  e.g. `@SYS154926`). A regex that only matches one shape will silently
+  under-resolve — verify against `sec_raw_sql: SELECT label FROM roles WHERE
+  label LIKE '@%' LIMIT 20` on a live-ish DB, not just synthetic fixtures.
+- **No AOT-path test existed for `Label` properties at all** before this
+  session — every prior `buildSecurityDatabase` test in
+  `test/sec-builder.test.js` passed `packagesPathArg: 'skip'`. That's exactly
+  why the bug shipped undetected. If you add a new AOT-sourced field, add at
+  least one end-to-end build test that doesn't skip the AOT path.
+- **Full rebuild needs two inputs, only one of which lives in this repo's
+  config.** `KB_PACKAGES_PATHS` in `.env` covers the AOT side; the DMF export
+  directory (`System Security Duty.xml` etc., ~4 GB, from Eugene's CR 99351
+  pipeline) is not a standing local path — get it fresh from the user before
+  attempting `build/build-sec.js`. An AOT-only rebuild (`dmfInputDir:
+  'skip'`) is enough to validate label resolution but will under-report
+  duty/privilege counts.
+
+---
 
 ## Files in this project for DB admin
 

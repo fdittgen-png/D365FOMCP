@@ -53,7 +53,7 @@ C:\working\MCP\
 │   │   ├── shared.js             # DB singletons, query helper, response-contract helpers
 │   │   ├── kb-tools.js           # 17 KB tool implementations
 │   │   ├── xref-tools.js         # 16 XRef tool implementations
-│   │   ├── sec-tools.js          # 19 Security tool implementations
+│   │   ├── sec-tools.js          # 18 Security tool implementations
 │   │   ├── taskrecorder-tools.js # 1 Task Recorder tool
 │   │   ├── taskrecorder-parser.js # .axtr parser (ZIP/XML → Markdown)
 │   │   ├── wiki-tools.js         # 4 Wiki tool implementations (per-wiki)
@@ -266,7 +266,7 @@ node --max-old-space-size=8192 build/build-xref-db.js [server] [database] [outpu
 | 15 | `xref_find_field_usages` | Find all code locations that read or write a specific table field | `table_name`, `field_name`, `kind?`, `limit?` |
 | 16 | `xref_find_event_handlers` | Find event handlers/delegates: SubscribesTo, DataEventHandler, Pre/PostHandler | `object_name`, `method_name?`, `limit?` |
 
-### 4.3 Security Tools (19)
+### 4.3 Security Tools (18)
 
 | # | Tool Name | Description | Key Parameters |
 |---|-----------|-------------|----------------|
@@ -286,9 +286,8 @@ node --max-old-space-size=8192 build/build-xref-db.js [server] [database] [outpu
 | 14 | `sec_stats` | Summary counts (roles, users, duties, privileges, companies) | (none) |
 | 15 | `sec_raw_sql` | Read-only SQL against the Security database | `sql` |
 | 16 | `sec_licence_assessment` | Per-user licence-type assessment from assigned roles | `user_id?` |
-| 17 | `sec_sod_check` | Segregation-of-Duties violations for users / role pairs | varies |
-| 18 | `sec_what_if` | Effective-permission delta of adding/removing a role | `user_id`, `add_roles?`, `remove_roles?` |
-| 19 | `sec_object_access` | Reverse lookup: which roles/users can read/write an object | `object_name` |
+| 17 | `sec_what_if` | Licence-tier / cost-delta of adding/removing roles | `user_id`, `add_roles?`, `remove_roles?` |
+| 18 | `sec_object_access` | Reverse lookup: which roles/users can read/write an object | `object_name` |
 
 ### 4.4 Task Recorder Tool (1)
 

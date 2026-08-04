@@ -158,8 +158,7 @@ async function analyzeUser(userId) {
       `Steps:\n` +
       `1. Call sec_lookup_user to get their roles\n` +
       `2. Identify overly permissive or unusual roles\n` +
-      `3. Flag potential SoD conflicts (e.g., vendor maintenance + payment approval)\n` +
-      `4. Brief risk assessment: Low / Medium / High with justification\n\n` +
+      `3. Brief risk assessment: Low / Medium / High with justification\n\n` +
       `Be concise — this is one analysis in a batch.`,
   }];
 
@@ -224,9 +223,8 @@ const summaryResponse = await anthropic.messages.create({
       results.map(r => `### ${r.userId}\n${r.analysis}`).join('\n\n') +
       `\n\nProvide a concise security summary:\n` +
       `1. Users with excessive privileges\n` +
-      `2. SoD conflicts across users\n` +
-      `3. Overall risk posture\n` +
-      `4. Top 3 remediation actions`,
+      `2. Overall risk posture\n` +
+      `3. Top 3 remediation actions`,
   }],
 });
 
