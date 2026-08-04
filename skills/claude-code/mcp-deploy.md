@@ -259,7 +259,7 @@ curl -X PUT "https://tis-d-mcpd365fo-func.scm.azurewebsites.net/api/vfs/data/d36
 | `/upload/sas` returns 500 | `AzureWebJobsStorage` misconfigured | Check env var in Azure Portal → Function App → Configuration |
 | `prebuild-install` fails in deploy script | Network issue or Node version mismatch | Verify `--target 20.20.0` matches Azure Function runtime. Check proxy settings. |
 | All MCP POSTs 503 "Easy Auth is not enabled" | Fail-closed auth gate (`src/azure/mcp-auth.js`): Easy Auth off AND `REQUIRE_AUTH` app setting missing/not `false` | Pre-cutover: `az functionapp config appsettings set … --settings REQUIRE_AUTH=false`. Proper fix: complete the Entra cutover (`scripts/Enable-McpAuth.ps1`). |
-| All MCP calls 401 (post-cutover) | Easy Auth `Return401` — caller sent no/invalid bearer token | Expected for anonymous callers. Clients need OAuth (`docs/MCP-Entra-Auth-Setup.md` Part D); smoke tests need `az account get-access-token --resource api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp`. |
+| All MCP calls 401 (post-cutover) | Easy Auth `Return401` — caller sent no/invalid bearer token | Expected for anonymous callers (LIVE since 2026-08-04). Liveness = `GET /api/ping` (200, the only anonymous path). Clients need OAuth (`docs/MCP-Entra-Auth-Setup.md` Part D). Note: `az account get-access-token --scope api://…/user_impersonation` uses the *Azure CLI* client and hits `AADSTS65001` unless that client is consented — test with a real MCP client instead. |
 | 403 "app role is missing" for a signed-in user | Token predates the user's `D365FO-MCP-Users` group add (roles baked in at issue time) | User signs out/in for a fresh token; verify group membership. |
 | `AuthorizationFailed` on `Microsoft.Web/sites/read` | Wrong subscription — the app lives in **TIS.D365FO**, not the default az subscription | `az account set --subscription TIS.D365FO` (or pass `--subscription`). |
 
@@ -330,13 +330,16 @@ its `/upload` route, `wiki-mcp`) now calls `authorizeMcpRequest` from
   (TIS.BIandReporting). An `AuthorizationFailed … Microsoft.Web/sites/read`
   that looks like lost permissions is usually just the wrong subscription —
   `az account set --subscription TIS.D365FO` first.
-- **Post-cutover, Phase 2/4/5 probes change:** anonymous per-endpoint GETs
-  return 401 (only `/api/health` is excluded from Easy Auth). Health-check
-  with `/api/health`, and give the MCP `tools/call` probes a token:
-  ```bash
-  TOKEN=$(az account get-access-token --resource api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp --query accessToken -o tsv)
-  curl -s -H "Authorization: Bearer $TOKEN" … # rest as usual
-  ```
+- **Post-cutover, Phase 2/4/5 probes change** (LIVE since 2026-08-04):
+  anonymous per-endpoint GETs return **401**, and that IS the healthy signal
+  for gated endpoints. The only anonymous path is **`GET /api/ping`** →
+  200 proves the Functions host runs (`/api/health` is the admin backend
+  and fail-closes in code by design — a 401 there is correct, don't
+  "fix" it). `local-deploy/Deploy.ps1` Phase 5 encodes these expectations
+  (ping=200, everything else 401). Authenticated `tools/call` probes need a
+  token from a real MCP client flow — the Azure CLI client is not consented
+  for the API scope (`AADSTS65001`), so don't build probes on
+  `az account get-access-token` for this resource.
 - **Cutover is scripted:** `scripts/Enable-McpAuth.ps1 -ApiAppId <client-id>`
   (configures the identity provider, `Return401`, health exclusion, removes
   `REQUIRE_AUTH=false`, smoke-tests). Prerequisite Entra objects are
@@ -394,6 +397,75 @@ by hand in the portal surfaced traps not in the original runbook:
   response to that screen — verify it's already listed first, then hand the
   *same* API-permissions blade URL to an actual admin and ask them to click
   the button from their own session.
+
+---
+
+## Session learnings (2026-08-04 — Entra OAuth cutover went LIVE)
+
+The cutover is done: Easy Auth enforces on every MCP endpoint of
+`tis-d-mcpd365fo-func`. The **live registration is `sp-tis-d-d365fokb-mcp`
+(appId `54b1261c-352d-4772-b83a-001e529bd117`)** — Aaron created it (plus the
+Enterprise app and the `D365FO-MCP-Users` group, id `371b144a-…`) via
+Ticket#202607102005643 and made Florian **owner of all three**, so the whole
+Part A config is self-service: `scripts/Configure-McpAppRegistration.ps1`
+(idempotent) does registration + group + role assignment + assignment-required
+in one run. The earlier `sp-tis-p-D365metadata-mcp` (`5e8bc645-…`) is retired —
+ignore any doc/memory that still points at it.
+
+- **PIM before anything ARM.** Florian's Owner on `tis-d-mcpd365fo-rg` is
+  PIM-**eligible**, not permanent. Expired activation looks like total loss of
+  access: `AuthorizationFailed` even on `sites/read`, and the RG vanishes from
+  `az group list` ("or the scope is invalid"). Activate via portal PIM → My
+  roles → Azure resources (agents cannot self-activate — the permission
+  classifier blocks the elevation; the operator must do it). List
+  eligibilities with `Invoke-RestMethod` against
+  `roleEligibilityScheduleInstances?$filter=asTarget()` — `az rest` mangles
+  that querystring (cmd eats `&` and chokes on the parens).
+- **ARM *writes* additionally need an MFA-claim token** (tenant-mandatory MFA:
+  `RequestDisallowedByAzure` → aka.ms/MFAforAzure). The WAM-broker `az login`
+  signs in silently with `amr=[pwd,rsa]` — reads work, writes don't. Fix:
+  `az config set core.enable_broker_on_windows=false`, `az logout`,
+  browser `az login`. Verify by decoding the token's `amr` claim. A
+  Graph-scoped login does NOT carry MFA over to ARM writes — log in plain
+  (ARM) for cutover work, `--scope https://graph.microsoft.com/.default` for
+  `az ad *` work.
+- **`az webapp auth` quirks** (all handled inside `Enable-McpAuth.ps1` now):
+  a never-configured app reports auth config **v1** and the authV2 command
+  group refuses to run (`az webapp auth config-version upgrade` first);
+  `--allowed-audiences` accepts only ONE value (script merges the second via
+  an ARM `authsettingsV2` GET-modify-PUT); `--excluded-paths '[/api/health]'`
+  bracket syntax is stored as a **literal path** — pass plain `/api/ping`.
+- **`/api/ping` is the anonymous liveness probe** (`src/functions/d365ping.js`,
+  no data, no gate, the single Easy Auth excluded path). `/api/health` is the
+  admin dashboard backend and 401s anonymously **by design** — a body of
+  `{"error":"Authentication required."…}` with an `x-ms-invocation-id` header
+  means the request passed Easy Auth and our code rejected it; that's correct.
+- **MCP OAuth discovery is solved platform-side** (preview): app setting
+  `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES=api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation`
+  makes Easy Auth serve RFC 9728 metadata at
+  `/.well-known/oauth-protected-resource` and add `scope=` +
+  `resource_metadata=` to the 401 challenge. Entra still has **no dynamic
+  client registration**, so every MCP client needs the client ID pinned —
+  Claude Code:
+  `claude mcp add --transport http --client-id 54b1261c-352d-4772-b83a-001e529bd117 <name> <url>`
+  (a freshly added server only appears in `/mcp` after starting a NEW
+  `claude` session).
+- **Easy Auth *browser* login** (`/.auth/login/aad`, used by the admin pages)
+  is an OIDC `id_token` flow — it needs
+  `web.implicitGrantSettings.enableIdTokenIssuance=true` and the Web redirect
+  `https://…azurewebsites.net/.auth/login/aad/callback` on the registration,
+  else `AADSTS700054`. MCP bearer clients don't use this flow.
+- **Tenant policy disables user self-consent** — "Need admin approval" at
+  sign-in is the norm, not a config error, and being *owner* of the
+  registration does not include consent rights (`Authorization_RequestDenied`).
+  One-time unblock, Global Admin only:
+  `az ad app permission admin-consent --id 54b1261c-…` (route via Aaron,
+  quote the ticket ID). Until that grant lands, every OAuth flow — browser and
+  MCP — dead-ends at that page.
+- **az.cmd quoting traps on Windows:** JSON bodies to `az rest` via temp file
+  (`--body @file` — inline quotes get mangled); querystrings with `&`/parens
+  break batch parsing — prefer PowerShell `Invoke-RestMethod` with a token
+  from `az account get-access-token`.
 
 ---
 

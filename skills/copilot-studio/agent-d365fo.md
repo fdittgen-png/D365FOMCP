@@ -2,7 +2,7 @@
 
 **Canonical, current agent definition** (supersedes the older role-split files, which referenced a non-deployed host and several tool names that no longer exist). Wired to the live Azure Functions MCP endpoints and the actual 54-tool inventory.
 
-> **Auth note:** the endpoints below are currently **anonymous** — but only because the server-side Entra gate (implemented 2026-07-06, `src/azure/mcp-auth.js`) is dormant behind the `REQUIRE_AUTH=false` app setting. At cutover (`scripts/Enable-McpAuth.ps1`, see `docs/MCP-Entra-Auth-Setup.md`) every endpoint requires an Entra bearer token with the **`Mcp.Access`** app role: switch each custom connector to **OAuth 2.0 (Microsoft Entra ID)** — client = `sp-tis-d-mcpd365fo-mcp`, resource `api://sp-tis-d-mcpd365fo-mcp`, scope `user_impersonation` — and update the swagger `securityDefinitions`. The agent definition itself does not change.
+> **Auth note (cutover LIVE since 2026-08-04):** every endpoint below now requires an Entra bearer token with the **`Mcp.Access`** app role — anonymous connections no longer work. The connector swaggers in `connectors/*.swagger.json` already carry the Entra OAuth `securityDefinitions` (accessCode flow). Each custom connector's Security tab needs **OAuth 2.0 (Microsoft Entra ID)**: tenant `0f861177-7722-4f06-8db9-3384e5321a9f`, client `sp-tis-d-d365fokb-mcp` = `54b1261c-352d-4772-b83a-001e529bd117`, resource `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp` — plus two one-time registration additions (a client secret and the `https://global.consent.azure-apim.net/redirect` Web redirect; owner-doable, see `docs/MCP-Entra-Auth-Setup.md` Part D). Connections must be created by members of `D365FO-MCP-Users`. The agent definition itself does not change.
 
 ---
 

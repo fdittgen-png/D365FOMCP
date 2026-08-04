@@ -47,7 +47,7 @@ The build script generates exactly this (templated from the real `darsoohoo/inta
 
 **Import order:** connectors solution **first**, then this agent solution.
 
-**Still required after import — wire the 4 tools.** The agent zip carries the bot + instructions but **not** the connector tools/connection references (those bind to the connectors that live in the other solution). After import, open the agent → **Tools → + Add a tool** → add `D365KB`, `D365XRef`, `D365Security`, `D365TaskRecorder` (create the anonymous connection on first add) → **Publish**.
+**Still required after import — wire the 4 tools.** The agent zip carries the bot + instructions but **not** the connector tools/connection references (those bind to the connectors that live in the other solution). After import, open the agent → **Tools → + Add a tool** → add `D365KB`, `D365XRef`, `D365Security`, `D365TaskRecorder` (create the OAuth connection on first add — sign in as a `D365FO-MCP-Users` member) → **Publish**.
 
 ### If the agent zip is still rejected
 Hand-authored bots are version-sensitive. If your environment's Copilot Studio rejects it, fall back to: create the agent in the UI, paste `AGENT-INSTRUCTIONS.md`, add the 4 tools (the "Guaranteed path" below). To get a perfectly-matched reusable zip, build the agent once in the UI **inside a solution** (so the tool wiring + connection references are captured), then **Export → Unmanaged** — that export is your portable artifact.
@@ -71,7 +71,7 @@ Whether you imported the agent zip or built it manually, attach the connectors a
 
 1. In the agent, go to **Tools** → **Add a tool** → **Connector** (or **Model Context Protocol** if your tenant surfaces MCP tools directly).
 2. Pick each connector — **D365 KB**, **D365 XRef**, **D365 Security**, **D365 Task Recorder** — and add it.
-3. When prompted for a **connection**, create one. The connectors are **anonymous** (no key) for now, so just confirm — this changes at the Entra cutover (see the Auth note at the bottom).
+3. When prompted for a **connection**, create one — the connectors use **Entra OAuth** since the 2026-08-04 cutover, so sign in as a member of `D365FO-MCP-Users` (see the Auth note at the bottom).
 4. Repeat for all four. The instructions already tell the model which tool to use for which question.
 
 > **If you skipped the connector solution** and want to add them straight from OpenAPI: Power Apps → **Custom connectors** → **New custom connector** → **Import an OpenAPI file** → pick each `../connectors/*.swagger.json`. These are MCP-streamable (`x-ms-agentic-protocol: mcp-streamable-1.0`) and need no auth.
@@ -91,4 +91,4 @@ All four target the **dev** Function App:
 
 To target prod later, rebuild with `-Host_` and re-import — the agent definition doesn't change.
 
-> **Auth:** endpoints are currently anonymous, but the server-side Entra gate is already deployed (2026-07-06) and dormant behind the `REQUIRE_AUTH=false` app setting. When the cutover runs (`scripts/Enable-McpAuth.ps1`, see `docs/MCP-Entra-Auth-Setup.md`), the anonymous connections here stop working: each connector's swagger needs an Entra OAuth `securityDefinitions` block (client `sp-tis-d-mcpd365fo-mcp`, resource `api://sp-tis-d-mcpd365fo-mcp`, scope `user_impersonation`, tenant `0f861177-7722-4f06-8db9-3384e5321a9f`) and a re-import, and every connection must be recreated as an OAuth connection by a member of the `D365FO-MCP-Users` group.
+> **Auth (cutover LIVE since 2026-08-04):** the endpoints require an Entra bearer token with the `Mcp.Access` app role — anonymous connections no longer work. The connector swaggers now carry the Entra OAuth `securityDefinitions` block (tenant `0f861177-7722-4f06-8db9-3384e5321a9f`, scope `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation`) — re-import them, set each connector's Security tab to OAuth 2.0 (Microsoft Entra ID) with client `54b1261c-352d-4772-b83a-001e529bd117` + a client secret, add the `https://global.consent.azure-apim.net/redirect` Web redirect to the app registration (see `docs/MCP-Entra-Auth-Setup.md` Part D), and recreate every connection as an OAuth connection by a member of the `D365FO-MCP-Users` group.
