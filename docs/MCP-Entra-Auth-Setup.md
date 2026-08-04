@@ -418,17 +418,43 @@ used by deploy probes); Easy Auth covers them at the platform edge once on.
 
 ## Part D — Point the clients at OAuth
 
-- **Claude Code:** `claude mcp add --transport http d365sec https://…/api/d365sec` — it
-  performs the OAuth flow on first use (loopback redirect). For non-interactive use,
-  pass a token: `--header "Authorization: Bearer <token>"`.
-- **claude.ai connector:** Add custom connector → **Advanced settings** → enter the
-  **OAuth Client ID** (+ secret if confidential) and the scope
-  `api://<MCP-API-app-id>/access_as_user`. (Org-gated — the Owner adds it; see the
-  custom-connector note.)
-- **Copilot Studio:** the custom connector → Security → **OAuth 2.0 (Microsoft Entra ID)**;
-  enter tenant, client ID/secret, and resource `api://<MCP-API-app-id>`.
-- **Update the swaggers** in `skills/copilot-studio/connectors/*.json`: replace
-  `"securityDefinitions": {}, "security": []` with the Entra OAuth security definition.
+**Prerequisite (done 2026-08-04):** the app setting
+`WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES = api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation`
+on the Function App makes Easy Auth publish RFC 9728 protected-resource
+metadata at `/.well-known/oauth-protected-resource` and adds `scope=` +
+`resource_metadata=` to the 401 challenge — this is what lets MCP clients
+auto-discover the Entra authorization server (closes the "rough edge" below).
+
+- **Claude Code** (verified to reach the auth prompt 2026-08-04): Entra has no
+  dynamic client registration, so the client ID must be pinned — without it
+  `claude mcp list` reports *"Incompatible auth server: does not support
+  dynamic client registration"*:
+  ```
+  claude mcp add --transport http --client-id 54b1261c-352d-4772-b83a-001e529bd117 \
+      d365kb-azure https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb
+  ```
+  (same pattern for `/api/d365xref`, `/api/d365sec`, `/api/d365taskrecorder`).
+  Then `/mcp` → select the server → **Authenticate** (browser flow; the
+  registration's `http://localhost` loopback redirect covers any port).
+  Non-interactive fallback: `--header "Authorization: Bearer <token>"`.
+- **claude.ai connector** (org-gated — the Owner adds it): Add custom
+  connector → URL `https://tis-d-mcpd365fo-func.azurewebsites.net/api/<service>` →
+  **Advanced settings** → OAuth Client ID `54b1261c-352d-4772-b83a-001e529bd117`,
+  no client secret (public client + PKCE; the
+  `https://claude.ai/api/mcp/auth_callback` redirect is pre-registered).
+  If a scope field is offered:
+  `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation`.
+- **Copilot Studio:** the swaggers in `skills/copilot-studio/connectors/*.json`
+  (and the packaged solution copy) now carry the Entra `oauth2-auth`
+  security definition (accessCode flow, tenant v2.0 endpoints, the
+  `user_impersonation` scope). Power Platform's OAuth is a **confidential
+  client**, so two one-time additions to the app registration are needed
+  (owner-doable):
+  1. a **client secret** (`az ad app credential reset --id 54b1261c-… --append`),
+  2. a **Web** redirect URI `https://global.consent.azure-apim.net/redirect`.
+  Then custom connector → Security → OAuth 2.0 → Microsoft Entra ID: tenant
+  `0f861177-7722-4f06-8db9-3384e5321a9f`, client ID `54b1261c-…`, the secret,
+  resource `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp`.
 
 ## Part E — Test plan
 1. **Anonymous is rejected:** `curl -s -o /dev/null -w "%{http_code}" -X POST https://…/api/d365kb -d '{}'` → **401**.
@@ -437,11 +463,13 @@ used by deploy probes); Easy Auth covers them at the platform edge once on.
 4. **Health still probes:** confirm `Deploy.ps1` health phase passes (token or excluded path).
 5. **Each client connects:** Claude Code, claude.ai, Copilot Studio each complete the OAuth flow and list tools.
 
-## Known rough edge
+## Known rough edge — RESOLVED 2026-08-04
 The immature part (KJ's "many hoops", Aaron's "MS will make MCP security easier")
-is the **MCP OAuth *discovery* handshake** — the `.well-known/oauth-protected-resource`
-metadata that lets claude.ai auto-negotiate. Easy Auth protects the endpoint but
-doesn't advertise that metadata yet, so claude.ai may need explicit OAuth client
-config (above) rather than auto-discovery. Don't build custom discovery/OBO plumbing
-now — do this standards-aligned minimum and adopt Microsoft's MCP-auth support when
-it ships.
+was the **MCP OAuth *discovery* handshake** — the `.well-known/oauth-protected-resource`
+metadata that lets clients auto-negotiate. Microsoft shipped this as an App
+Service preview feature: the `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES` app
+setting (see Part D prerequisite) makes Easy Auth serve the RFC 9728 document
+and enrich the 401 challenge. Verified live on `tis-d-mcpd365fo-func`. The
+remaining Entra-specific quirk is **no dynamic client registration** — every
+MCP client must be told the client ID explicitly (Claude Code `--client-id`,
+claude.ai Advanced settings, Copilot Security tab).

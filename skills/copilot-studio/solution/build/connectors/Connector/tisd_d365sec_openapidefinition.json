@@ -25,6 +25,18 @@
       }
     }
   },
-  "securityDefinitions": {},
-  "security": []
+  "securityDefinitions": {
+    "oauth2-auth": {
+      "type": "oauth2",
+      "flow": "accessCode",
+      "authorizationUrl": "https://login.microsoftonline.com/0f861177-7722-4f06-8db9-3384e5321a9f/oauth2/v2.0/authorize",
+      "tokenUrl": "https://login.microsoftonline.com/0f861177-7722-4f06-8db9-3384e5321a9f/oauth2/v2.0/token",
+      "scopes": {
+        "api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation": "Access D365FO MCP as the signed-in user"
+      }
+    }
+  },
+  "security": [
+    { "oauth2-auth": ["api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation"] }
+  ]
 }
