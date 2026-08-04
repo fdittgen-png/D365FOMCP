@@ -69,7 +69,6 @@ Run in parallel:
 **5. Security Implications**
 - New privileges required: [list or "none"]
 - Roles affected: [list]
-- SoD considerations: [any]
 
 **6. Integration Risk**
 | Integration Point | Type | Risk | Action |

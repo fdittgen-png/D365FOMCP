@@ -2,13 +2,13 @@
 
 **MCP-based metadata intelligence for Microsoft Dynamics 365 Finance & Operations.**
 
-Exposes D365FO metadata (tables, classes, enums, methods, entities, security objects), cross-reference data (code dependencies, call graphs, inheritance), security configuration (roles, users, duties, privileges, permissions, licence/SoD/what-if governance), Task Recorder parsing, and a multi-tenant blob-backed wiki platform as **57 tools across 5 services** via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Designed for AI coding assistants (Claude, Copilot, ChatGPT, Gemini, Cursor) and any MCP-compatible client.
+Exposes D365FO metadata (tables, classes, enums, methods, entities, security objects), cross-reference data (code dependencies, call graphs, inheritance), security configuration (roles, users, duties, privileges, permissions, licence/what-if governance), Task Recorder parsing, and a multi-tenant blob-backed wiki platform as **56 tools across 5 services** via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Designed for AI coding assistants (Claude, Copilot, ChatGPT, Gemini, Cursor) and any MCP-compatible client.
 
 | Dimension | Value |
 |-----------|-------|
 | KB tools | 17 (table lookup, field check, join keys, search, X++ source, ...) |
 | XRef tools | 16 (find references, call hierarchy, impact analysis, ...) |
-| Security tools | 19 (role/duty/privilege lookup, permission trace, user assignments, licence assessment, SoD check, what-if, object access) |
+| Security tools | 18 (role/duty/privilege lookup, permission trace, user assignments, licence assessment, what-if, object access) |
 | Task Recorder tools | 1 (parse .axtr recordings to structured Markdown) |
 | Wiki tools (per wiki) | 4 (`wiki_index`, `wiki_list`, `wiki_read`, `wiki_search`) — multi-tenant blob-backed |
 | KB database | ~1,063 MB SQLite (17K tables, 63K classes, 820K methods with full source) |
@@ -92,7 +92,7 @@ src/
     shared.js             DB singletons, query helpers, response-contract helpers
     kb-tools.js           17 KB tool implementations
     xref-tools.js         16 XRef tool implementations
-    sec-tools.js          19 Security tool implementations (incl. licence/SoD/what-if/object-access governance)
+    sec-tools.js          18 Security tool implementations (incl. licence/what-if/object-access governance)
     taskrecorder-parser.js  .axtr file parser (ZIP/XML -> Markdown)
     taskrecorder-tools.js   Task Recorder MCP tool registration
     wiki-tools.js         4 Wiki tool implementations (registered per wiki)
@@ -250,7 +250,7 @@ Health check: `GET` to any MCP endpoint returns `{ name, version, status }`.
 | `xref_find_field_usages` | Code locations reading/writing a field |
 | `xref_find_event_handlers` | Event handlers and delegates |
 
-### Security (19 tools)
+### Security (18 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -270,8 +270,7 @@ Health check: `GET` to any MCP endpoint returns `{ name, version, status }`.
 | `sec_stats` | Role/user/duty/privilege summary counts |
 | `sec_raw_sql` | Read-only SQL against the Security database |
 | `sec_licence_assessment` | Per-user licence-type assessment from assigned roles |
-| `sec_sod_check` | Segregation-of-Duties check for users / role pairs |
-| `sec_what_if` | Simulate the effective permission delta of adding/removing a role |
+| `sec_what_if` | Simulate the licence-tier / cost delta of adding/removing a role |
 | `sec_object_access` | "Who can read/write object X" — reverse lookup from object to roles/users |
 
 ### Task Recorder (1 tool)

@@ -8,7 +8,7 @@ Practical guide for getting maximum value out of Claude Code on this codebase, b
 2. **Never use `LOWER()` on indexed columns**. Use `COLLATE NOCASE` or explicit `IN ('mixed', 'UPPER')`. The 34M-row `duty_privileges` table has both casings for the same logical duty.
 3. **Always run `tech-code-review` and `mcp-deploy`'s pre-flight checklist before any deploy.** A single `${var}` in a backtick template literal will take down all 5 endpoints with 404s.
 4. **For database maintenance, use `sqlite3` CLI via `mcp-db-admin` skill**, not Node.js scripts. The Kudu Node version doesn't match the function runtime.
-5. **For "also implement X" requests, ask one clarifying question** if X is more than ~15 minutes of work. The SoD generator script in this conversation was built and immediately discarded.
+5. **For "also implement X" requests, ask one clarifying question** if X is more than ~15 minutes of work. A generator script in this conversation was built and immediately discarded.
 
 ---
 
@@ -35,7 +35,6 @@ Practical guide for getting maximum value out of Claude Code on this codebase, b
 |---|---|---|
 | "User can't do X / lost access to Y" | `support-diagnose` | Step 0 enforces verifying the ticket's stated facts against live data. |
 | "What does this role do?" / "Who has this role?" | `d365-security` | Wraps `sec_lookup_role`, `sec_role_hierarchy`, `sec_find_users_by_role` in parallel. |
-| "Find SoD violations for user X" | `d365-security` (with user ID) | Pulls effective permissions; manual cross-check needed since SoD analysis isn't built-in yet. |
 | "Why is this query slow?" | `mcp-db-admin` | Use the indexes section to add the right one if needed. |
 
 ### For code changes to the MCP service itself
@@ -163,7 +162,7 @@ The `mcp-db-admin` skill has the full pattern. **Always wrap shell redirects in 
 
 **What goes wrong:** The user says "implement Y, and also create a script for X". You build both. The user immediately says "drop X, I don't actually need it."
 
-**Cost in this project:** Built a 150-line SoD generator, sample CSV, and README. Discarded.
+**Cost in this project:** Built a 150-line generator script, sample CSV, and README. Discarded.
 
 **Fix:** For any "also X" request where X is >15 minutes of work, ask one clarifying question first:
 - "Want me to start with Y now and circle back to X if needed?"
@@ -239,7 +238,7 @@ These are slow, error-prone, or out-of-scope on this project. If the user asks a
 | "Add SQL indexes via the MCP `sec_raw_sql` tool" | The tool blocks DDL (only SELECT/WITH/PRAGMA allowed) | Upload SQL script via Kudu VFS, run with `sqlite3` CLI |
 | "Push to GitHub from Claude Code" | The github remote needs interactive credential auth, no terminal in this environment | Push to Azure DevOps (`origin`); push to github manually |
 | "Build the production environment (`tis-p-mcpd365fo-rg`)" | Doesn't exist as of 2026-04-10. The tis-p URLs in docs are aspirational. | Use only the dev environment; ignore the prod URLs |
-| "Add SoD analysis tables to the security DB" | Was investigated and dropped. The DMF entity has too many rows to be useful in this DB. | Manual cross-checks via `sec_raw_sql` or import SoD rules to D365 directly |
+| "Add SoD analysis to the security DB" | Segregation of Duties has been extracted into a separate project — it is out of scope for the MCP Security service. | Use the dedicated SoD project |
 
 ---
 

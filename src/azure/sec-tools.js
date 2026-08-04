@@ -1,7 +1,7 @@
 /**
  * D365FO Security Configuration – SQLite MCP Tools
  *
- * Registers all 15 security tools on an McpServer instance, querying
+ * Registers all 18 security tools on an McpServer instance, querying
  * the normalized security database.
  *
  * Usage:
@@ -41,11 +41,9 @@ import {
   secStatsOutput,
   rawSqlOutput,
   secLicenceAssessmentOutput,
-  secSodCheckOutput,
   secWhatIfOutput,
   secObjectAccessOutput,
 } from './output-schemas.js';
-import { readFileSync } from 'fs';
 
 // ── Licence tier cost table (Microsoft published pricing, GBP, March 2026) ──
 // Sorted by monthly_cost ascending. The UserLicenseType enum value in D365's
@@ -85,164 +83,9 @@ function highestTier(tierNames) {
   return { name: best, cost: bestCost > 0 ? bestCost : 0 };
 }
 
-// ── SoD rules loader ────────────────────────────────────────────────────────
-
-let _sodRuleset = null;
-let _sodRulesetError = null;
-
-function loadSodRuleset() {
-  if (_sodRuleset !== null || _sodRulesetError !== null) return;
-  const path = process.env.SOD_RULES_FILE;
-  if (!path) { _sodRulesetError = 'SOD_RULES_FILE not configured'; return; }
-  try {
-    const raw = readFileSync(path, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (!parsed.rules || !Array.isArray(parsed.rules)) {
-      _sodRulesetError = 'SOD_RULES_FILE must contain a "rules" array';
-      return;
-    }
-    _sodRuleset = parsed;
-  } catch (e) {
-    _sodRulesetError = `Failed to load SOD_RULES_FILE (${path}): ${e.code || e.message}`;
-  }
-}
-
-/** Exported for tests to inject rules directly. */
-export function _injectSodRuleset(ruleset) {
-  _sodRuleset = ruleset;
-  _sodRulesetError = null;
-}
-export function _clearSodRuleset() {
-  _sodRuleset = null;
-  _sodRulesetError = null;
-}
-
-/** Map the D365 SegregationOfDutiesSeverity enum (Low/Medium/High, or its
- *  numeric form 0/1/2) onto the risk_level vocabulary the SoD scorer uses. */
-function severityToRiskLevel(severity) {
-  if (severity == null) return 'Medium';
-  const s = String(severity).trim().toLowerCase();
-  if (s === 'high' || s === '2') return 'High';
-  if (s === 'low' || s === '0') return 'Low';
-  if (s === 'medium' || s === '1') return 'Medium';
-  // Unknown value (e.g. a future enum member) — keep it verbatim so it surfaces.
-  return String(severity).trim() || 'Medium';
-}
-
-/**
- * Prefer SoD rules exported from D365 (`sod_rules` table) over the external
- * SOD_RULES_FILE JSON. Each D365 rule pairs two duties (by AOT identifier); a
- * violation occurs when a user holds BOTH. We adapt that pair onto the same
- * two-group shape detectSodViolations consumes (each group = one duty), so the
- * detector is source-agnostic. Returns true when DB rules were loaded.
- */
-function loadSodRulesFromDb(db) {
-  let rows;
-  try {
-    rows = db.prepare(`SELECT rule_name, duty_first, duty_second, duty_first_name,
-      duty_second_name, severity, risk, mitigation FROM sod_rules`).all();
-  } catch {
-    return false; // table absent (e.g. a pre-gap-#2 DB) — keep JSON behaviour
-  }
-  if (!rows || !rows.length) return false;
-  _sodRuleset = {
-    source: 'd365',
-    rules: rows.map((r) => ({
-      id: r.rule_name,
-      name: r.rule_name,
-      risk_level: severityToRiskLevel(r.severity),
-      category: '',
-      severity: r.severity || undefined,
-      risk: r.risk || undefined,
-      mitigation: r.mitigation || undefined,
-      duty_group_a: { name: r.duty_first_name || r.duty_first, duties: [r.duty_first] },
-      duty_group_b: { name: r.duty_second_name || r.duty_second, duties: [r.duty_second] },
-    })),
-  };
-  _sodRulesetError = null;
-  return true;
-}
-
-// ── Shared: expand roles through sub-role hierarchy ─────────────────────────
-
-function expandRoles(q, roleIds) {
-  if (!roleIds.length) return new Set();
-  const placeholders = roleIds.map(() => '?').join(',');
-  const expanded = q(`
-    WITH RECURSIVE role_tree AS (
-      SELECT role_id FROM roles WHERE role_id IN (${placeholders})
-      UNION ALL
-      SELECT rs.child_role_id FROM role_subroles rs
-      JOIN role_tree rt ON rs.parent_role_id = rt.role_id
-    )
-    SELECT DISTINCT role_id FROM role_tree
-  `, roleIds);
-  return new Set(expanded.map(r => r.role_id));
-}
-
-// ── Shared: collect effective duties for a set of role IDs ──────────────────
-
-function effectiveDuties(q, allRoleIds) {
-  if (!allRoleIds.size) return { dutySet: new Set(), dutyToRoles: new Map() };
-  const arr = [...allRoleIds];
-  const ph = arr.map(() => '?').join(',');
-  const rows = q(`
-    SELECT rd.duty_id, rd.role_id
-    FROM role_duties rd
-    WHERE rd.role_id IN (${ph}) AND rd.permission_type = 'Grant'
-  `, arr);
-  const dutySet = new Set();
-  const dutyToRoles = new Map();
-  for (const r of rows) {
-    dutySet.add(r.duty_id);
-    if (!dutyToRoles.has(r.duty_id)) dutyToRoles.set(r.duty_id, new Set());
-    dutyToRoles.get(r.duty_id).add(r.role_id);
-  }
-  return { dutySet, dutyToRoles };
-}
-
-// ── Shared: run SoD detection for a set of duties ───────────────────────────
-
-const RISK_WEIGHTS = { Critical: 3, High: 2, Medium: 1, Low: 1 };
-
-function detectSodViolations(dutySet, dutyToRoles, roleNameMap) {
-  if (!_sodRuleset) return [];
-  const violations = [];
-  for (const rule of _sodRuleset.rules) {
-    const matchedA = rule.duty_group_a.duties.filter(d => dutySet.has(d));
-    const matchedB = rule.duty_group_b.duties.filter(d => dutySet.has(d));
-    if (matchedA.length && matchedB.length) {
-      const rolesA = new Set();
-      for (const d of matchedA) for (const rid of (dutyToRoles.get(d) || [])) rolesA.add(roleNameMap.get(rid) || rid);
-      const rolesB = new Set();
-      for (const d of matchedB) for (const rid of (dutyToRoles.get(d) || [])) rolesB.add(roleNameMap.get(rid) || rid);
-      violations.push({
-        rule_id: rule.id,
-        rule_name: rule.name,
-        risk_level: rule.risk_level || 'Medium',
-        category: rule.category || '',
-        // Carried through from D365-sourced rules; absent for JSON rules.
-        ...(rule.severity ? { severity: rule.severity } : {}),
-        ...(rule.risk ? { risk: rule.risk } : {}),
-        ...(rule.mitigation ? { mitigation: rule.mitigation } : {}),
-        group_a_name: rule.duty_group_a.name,
-        group_a_matched: matchedA,
-        group_a_roles: [...rolesA],
-        group_b_name: rule.duty_group_b.name,
-        group_b_matched: matchedB,
-        group_b_roles: [...rolesB],
-      });
-    }
-  }
-  return violations;
-}
-
-// ── Register all 19 Security tools ──────────────────────────────────────────
+// ── Register all 18 Security tools ──────────────────────────────────────────
 
 export function registerSecTools(server, db) {
-
-  loadSodRuleset();          // external JSON ruleset (SOD_RULES_FILE), if any
-  loadSodRulesFromDb(db);    // prefer live D365 rules (sod_rules table) when present
 
   const q = (sql, params = []) => query(db, sql, params);
 
@@ -1860,144 +1703,13 @@ export function registerSecTools(server, db) {
     }
   );
 
-  // ── 17. sec_sod_check ─────────────────────────────────────────────────────
-
-  server.registerTool(
-    'sec_sod_check',
-    {
-      annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Check Segregation of Duties (SoD) violations for one or all users. Prefers the live D365 SoD rules captured at build time (sod_rules table, from SystemSegregationOfDutiesRuleEntity); falls back to an external JSON ruleset (SOD_RULES_FILE env var) when no D365 rules are present. A violation occurs when a user holds duties from both sides of a rule.',
-      inputSchema: {
-        user_id: z.string().min(1).max(500).optional().describe('Check a single user (omit for all enabled users)'),
-        category: z.string().min(1).max(200).optional().describe('Filter rules by category (e.g., accounts_payable)'),
-        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max users to return'),
-        format: formatTextParam,
-      },
-      outputSchema: secSodCheckOutput.shape,
-    },
-    async ({ user_id, category, limit: rawLimit, format }) => {
-      const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
-      if (!_sodRuleset) {
-        return errorResult('invalid-input', _sodRulesetError || 'SoD ruleset not loaded. Set SOD_RULES_FILE env var to a JSON file path.');
-      }
-
-      // Build role_id → role_name map
-      const allRoles = q('SELECT role_id, role_name FROM roles');
-      const roleNameMap = new Map(allRoles.map(r => [r.role_id, r.role_name]));
-
-      // Get target users
-      const single = !!user_id;
-      let userQuery = 'SELECT user_id, person_name FROM users WHERE enabled = 1 LIMIT ?';
-      let userParams = [limit];
-      if (single) {
-        userQuery = 'SELECT user_id, person_name FROM users WHERE user_id = ? COLLATE NOCASE';
-        userParams = [user_id.trim()];
-      }
-      const users = q(userQuery, userParams);
-      if (single && !users.length) return notFoundResult('User', user_id);
-      if (!users.length) return emptyResult('enabled users', {
-        user_id: user_id ?? null,
-        mode: single ? 'single' : 'all',
-        user_count: 0,
-        violation_count: 0,
-        risk_score: 0,
-        users_with_violations: 0,
-        violations: [],
-      });
-
-      // Filter rules by category if specified
-      let activeRules = _sodRuleset.rules;
-      if (category) {
-        activeRules = activeRules.filter(r => r.category?.toLowerCase() === category.toLowerCase());
-        if (!activeRules.length) return emptyResult(`SoD rules in category "${category}"`, {
-          user_id: user_id ?? null,
-          mode: single ? 'single' : 'all',
-          user_count: 0,
-          violation_count: 0,
-          risk_score: 0,
-          users_with_violations: 0,
-          violations: [],
-        });
-      }
-      const filteredRuleset = { rules: activeRules };
-      // Temporarily swap for detectSodViolations
-      const origRuleset = _sodRuleset;
-      _sodRuleset = filteredRuleset;
-
-      const allResults = [];
-      let totalViolations = 0;
-      let totalScore = 0;
-      let usersWithViolations = 0;
-
-      for (const user of users) {
-        const roleIds = q('SELECT role_id FROM user_roles WHERE user_id = ?', [user.user_id]).map(r => r.role_id);
-        const allRoleIds = expandRoles(q, roleIds);
-        const { dutySet, dutyToRoles } = effectiveDuties(q, allRoleIds);
-        const violations = detectSodViolations(dutySet, dutyToRoles, roleNameMap);
-        if (violations.length) {
-          const score = violations.reduce((s, v) => s + (RISK_WEIGHTS[v.risk_level] || 1), 0);
-          totalViolations += violations.length;
-          totalScore += score;
-          usersWithViolations++;
-          allResults.push({
-            user_id: user.user_id,
-            person_name: user.person_name ?? null,
-            violation_count: violations.length,
-            risk_score: score,
-            violations,
-          });
-        }
-      }
-
-      _sodRuleset = origRuleset; // restore
-
-      const typed = {
-        user_id: single ? users[0].user_id : null,
-        mode: single ? 'single' : 'all',
-        user_count: users.length,
-        violation_count: totalViolations,
-        risk_score: totalScore,
-        users_with_violations: usersWithViolations,
-        violations: allResults,
-      };
-
-      if (!allResults.length) {
-        let out = '## SoD Check\n';
-        out += `${users.length} user(s) checked — no violations found.\n`;
-        return structuredResult(typed, out, format);
-      }
-
-      let out = '## SoD Check\n';
-      out += `${typed.user_count} user(s) checked • ${typed.violation_count} violation(s) • Risk score: ${typed.risk_score}\n\n`;
-      for (const ur of allResults) {
-        out += `### ${ur.user_id} (${ur.person_name || 'N/A'}) — ${ur.violation_count} violation(s)\n`;
-        // D365-sourced rules carry a mitigation; only show that column when present.
-        const hasMitigation = ur.violations.some(v => v.mitigation);
-        const cols = ['rule_id', 'rule_name', 'risk', 'group_a', 'group_b'];
-        if (hasMitigation) cols.push('mitigation');
-        out += formatMarkdownTable(
-          ur.violations.map(v => ({
-            rule_id: v.rule_id,
-            rule_name: v.rule_name,
-            risk: v.risk_level,
-            group_a: `${v.group_a_name}: ${v.group_a_matched.join(', ')}`,
-            group_b: `${v.group_b_name}: ${v.group_b_matched.join(', ')}`,
-            ...(hasMitigation ? { mitigation: v.mitigation || '' } : {}),
-          })),
-          cols,
-        ) + '\n\n';
-      }
-      return structuredResult(typed, out, format);
-    }
-  );
-
-  // ── 18. sec_what_if ───────────────────────────────────────────────────────
+  // ── 17. sec_what_if ───────────────────────────────────────────────────────
 
   server.registerTool(
     'sec_what_if',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Simulate adding or removing roles from a user. Returns the projected licence tier change (with monthly/annual cost delta) and SoD impact (new vs resolved violations). SoD analysis uses the live D365 rules (sod_rules table) when present, otherwise the SOD_RULES_FILE JSON ruleset.',
+      description: 'Simulate adding or removing roles from a user. Returns the projected licence tier change with monthly/annual cost delta.',
       inputSchema: {
         user_id: z.string().min(1).max(500).describe('User ID to simulate changes for'),
         add_roles: z.array(z.string().min(1).max(500)).optional().default([]).describe('Role names to add'),
@@ -2061,25 +1773,6 @@ export function registerSecTools(server, db) {
       const monthlyDelta = projectedTier.cost - currentTier.cost;
       const annualDelta = Math.round(monthlyDelta * 12 * 100) / 100;
 
-      // SoD impact
-      let sodCurrent = [], sodProjected = [], sodNew = [], sodResolved = [];
-      if (_sodRuleset) {
-        const currentExpanded = expandRoles(q, currentRoleIds);
-        const { dutySet: currentDuties, dutyToRoles: currentDtr } = effectiveDuties(q, currentExpanded);
-        sodCurrent = detectSodViolations(currentDuties, currentDtr, roleNameMap);
-
-        const projectedExpanded = expandRoles(q, projectedRoleIds);
-        const { dutySet: projDuties, dutyToRoles: projDtr } = effectiveDuties(q, projectedExpanded);
-        sodProjected = detectSodViolations(projDuties, projDtr, roleNameMap);
-
-        const currentIds = new Set(sodCurrent.map(v => v.rule_id));
-        const projectedIds = new Set(sodProjected.map(v => v.rule_id));
-        sodNew = sodProjected.filter(v => !currentIds.has(v.rule_id));
-        sodResolved = sodCurrent.filter(v => !projectedIds.has(v.rule_id));
-      } else {
-        warnings.push('No SoD ruleset available (no sod_rules in the DB and SOD_RULES_FILE not configured) — SoD impact not computed.');
-      }
-
       const currentRoleNames = currentRoleIds.map(rid => roleNameMap.get(rid) || rid);
       const projectedRoleNames = projectedRoleIds.map(rid => roleNameMap.get(rid) || rid);
 
@@ -2098,10 +1791,6 @@ export function registerSecTools(server, db) {
         projected_role_count: projectedRoleIds.length,
         current_roles: currentRoleNames,
         projected_roles: projectedRoleNames,
-        sod_current_violations: sodCurrent.length,
-        sod_projected_violations: sodProjected.length,
-        sod_new: sodNew,
-        sod_resolved: sodResolved,
         warnings,
       };
 
@@ -2121,29 +1810,6 @@ export function registerSecTools(server, db) {
         out += 'No licence cost change.\n\n';
       }
 
-      if (_sodRuleset) {
-        out += '### SoD Impact\n';
-        out += `Current violations: ${sodCurrent.length} • Projected: ${sodProjected.length}\n`;
-        if (sodNew.length) {
-          out += `\n**New violations (${sodNew.length}):**\n`;
-          out += formatMarkdownTable(
-            sodNew.map(v => ({ rule_id: v.rule_id, rule_name: v.rule_name, risk: v.risk_level })),
-            ['rule_id', 'rule_name', 'risk'],
-          ) + '\n';
-        }
-        if (sodResolved.length) {
-          out += `\n**Resolved violations (${sodResolved.length}):**\n`;
-          out += formatMarkdownTable(
-            sodResolved.map(v => ({ rule_id: v.rule_id, rule_name: v.rule_name, risk: v.risk_level })),
-            ['rule_id', 'rule_name', 'risk'],
-          ) + '\n';
-        }
-        if (!sodNew.length && !sodResolved.length) {
-          out += 'No SoD impact.\n';
-        }
-        out += '\n';
-      }
-
       if (warnings.length) {
         out += '### Warnings\n' + warnings.map(w => `- ${w}`).join('\n') + '\n';
       }
@@ -2152,7 +1818,7 @@ export function registerSecTools(server, db) {
     }
   );
 
-  // ── 19. sec_object_access ─────────────────────────────────────────────────
+  // ── 18. sec_object_access ─────────────────────────────────────────────────
 
   server.registerTool(
     'sec_object_access',

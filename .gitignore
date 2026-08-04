@@ -16,10 +16,8 @@ infra/*.json
 diag*.ps1
 .claude/
 
-# Internal SoD matrix exports — input for scripts/New-SodRulesPackage.ps1.
-# Contains real role/duty assignments; keep local-only.
+# Internal role/duty assignment exports. Contain real assignments; keep local-only.
 Security roles assignment_*.csv
-*SOD matrix*.csv
 
 # Local-only deployment workspace — refactored Deploy.ps1 + npm cache.
 # Defaults may contain operator-specific RG / function app / contact info.

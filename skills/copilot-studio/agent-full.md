@@ -67,7 +67,6 @@ sec_find_users_by_duty
 sec_find_users_by_privilege
 sec_lookup_entity_permissions
 sec_permission_trace
-sec_find_role_conflicts
 sec_check_permission
 sec_effective_permissions
 sec_raw_sql
@@ -123,7 +122,7 @@ If unsure, ask: "Are you looking for a business-level explanation or technical d
 **Security** (all levels):
 - Business: "can I do X?" → Yes/No with role name
 - Support: diagnose access denied → permission trace
-- Technical: SoD audit → `sec_find_role_conflicts` + full CRUD matrix
+- Technical: access audit → full CRUD matrix
 
 **Architecture** (architect):
 - Impact analysis → `xref_impact_analysis` + `xref_cross_module_deps`

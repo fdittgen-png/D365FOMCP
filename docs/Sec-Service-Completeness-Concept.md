@@ -23,6 +23,9 @@ granted/partial/denied status. Build emits DATA QUALITY CHECKS. Validated to wit
 - Export/DMF change → update `docs/Sec-DMF-Export-Runbook.md` + `docs/dmf/SecAnalysis_MCP.dta.xml`.
 - Finish each gap green (`npm test`) before the next. Rebuild + re-validate at the end.
 
+> Note: gap #2 (live SoD rules) was descoped — SoD is now a separate project and
+> no longer a feature of the MCP Security service.
+
 ---
 
 ## #4 — Label resolution  (effort: S · do FIRST, quick win)
@@ -37,43 +40,11 @@ at build; `makeLabelResolver` handles `@SYS` at query time.
 **Acceptance:** build log `Labels loaded: > 0`; `sec_lookup_role/duty/privilege` show
 human text, no raw `@SYS…`. Add a DATA QUALITY CHECK `labels_loaded > 0`.
 
-## #2 — Live SoD rules from D365  (effort: S–M · ✅ DONE 2026-06-18)
-**Status:** Implemented. Builder parses `SystemSegregationOfDutiesRuleEntity`
-(DMF node `SYSTEMSEGREGATIONOFDUTIESRULEENTITY`) into a new `sod_rules` table
-(`rule_name, duty_first, duty_second, duty_first_name, duty_second_name,
-severity, risk, mitigation, valid_from, valid_to`); `findDmfFile` now matches
-filenames case-insensitively. `sec_sod_check`/`sec_what_if` prefer `sod_rules`
-when populated, falling back to `SOD_RULES_FILE` JSON otherwise. Severity
-(`SegregationOfDutiesSeverity`: Low/Medium/High — **no Critical**) maps to
-risk_level; `severity`/`risk`/`mitigation` carried into violations (optional
-output-schema fields). DATA QUALITY CHECK `SoD rules from D365` added (WARNs
-until entity #9 is in the export). Runbook + DTA manifest updated. Tests:
-builder parse (case-insensitive filename, skip-on-missing-duty) + tools
-DB-source preference. The **export file name is now confirmed handled** via
-case-insensitive candidate matching — a real export only needs the entity added.
-**Source (CONFIRMED via Microsoft Learn / CDM, 2026-06-17):** entity is
-`SystemSegregationOfDutiesRuleEntity` (SystemAdministration; DMF-enabled, not
-OData) — **NOT** `SystemSecuritySegregationOfDutiesRuleEntity` (that name does not
-exist; the original concept-doc name was wrong). Backing table
-`SecuritySegregationOfDutiesRule`. Optionally `SystemSegregationOfDutiesConflictEntity`
-(rule name = `SegregationOfDutiesRuleName`) for recorded conflicts.
-**Confirmed field names** (CDM `SystemSegregationOfDutiesRuleEntity.cdm.json`):
-`Name`, `FirstSecurityDutyIdentifier` / `SecondSecurityDutyIdentifier` (AOT duty
-identifiers → join to `duties`), `FirstSecurityDutyName` / `SecondSecurityDutyName`
-(labels), `Severity` (enum `SegregationOfDutiesSeverity`), `Risk`, `Mitigation`,
-`ValidFrom` / `ValidTo`.
-**Step 0 remaining:** the exact DMF **export file name** still needs a real export
-to confirm (DMF names files by entity label, likely `Security segregation of duties
-rule.xml`). `findDmfFile` matching should try a few candidate names case-insensitively.
-**Schema:** `sod_rules(rule_name, duty_first, duty_second, severity, risk, mitigation)`
-— map `duty_first` = `FirstSecurityDutyIdentifier`, `duty_second` =
-`SecondSecurityDutyIdentifier`; optional `sod_recorded_conflicts(user_id, rule_name, ...)`.
-**Build:** add a DMF parse branch (findDmfFile + entity tag) in Phase 2.
-**Tools:** `sec_sod_check` currently reads an external JSON file — change to prefer the
-`sod_rules` table when populated, JSON as fallback. Keep `sec_what_if` SoD logic in sync.
-**Export:** add the entity to the runbook + DTA manifest.
-**Acceptance:** `sod_rules` populated from D365; `sec_sod_check` flags real configured
-conflicts; DATA QUALITY CHECK `sod_rules > 0` (warn if SoD JSON still in use).
+## #2 — (descoped)
+Segregation of Duties (SoD) analysis has been **extracted into a separate
+project** and is no longer part of the MCP Security service. Gap #2 is
+intentionally left absent to avoid renumbering the other gaps and breaking
+cross-references.
 
 ## #6 — Field-level security  (effort: S · do THIRD — likely investigate-only)
 **Step 0:** determine whether FLS is actually used (rare). Check if the permission
@@ -135,7 +106,7 @@ grant/deny/Invoke picture; if the binding can't be resolved, say so explicitly.
 
 ## Suggested order for tomorrow
 1. **#4 labels** (root cause known — ~30 min, improves all readouts).
-2. ~~**#2 SoD rules**~~ ✅ DONE 2026-06-18 (parse + tool switch + tests landed).
+2. ~~**#2 SoD rules**~~ — descoped (SoD extracted to a separate project).
 3. **#6 field-level** (investigate; likely document-only).
 4. **#1 XDS** (the substantial piece: sample-read → schema → AOT parse → `sec_data_policies` tool → tests).
 5. **#3 Entra-group** (investigate storage; implement Phase A if a source exists).
@@ -145,5 +116,4 @@ grant/deny/Invoke picture; if the binding can't be resolved, say so explicitly.
 ## Open decisions (for the user)
 - **#3:** accept Phase-A-only (mappings, no Graph membership) for now? 
 - **#1:** is `sec_data_policies` a standalone tool, or folded into `sec_effective_permissions` as annotations, or both?
-- **Deploy cadence:** ship #4+#2 quickly (small, safe), or batch all 6 then one deploy?
-- **SoD source of truth:** replace the external JSON entirely with D365 rules, or keep JSON as an override layer?
+- **Deploy cadence:** ship #4 quickly (small, safe), or batch the remaining gaps then one deploy?

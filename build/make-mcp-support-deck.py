@@ -91,7 +91,7 @@ txt(s, Inches(0.8), Inches(2.2), Inches(11.7), Inches(1.6),
      [("Grounding Claude in real D365 metadata — for faster, accurate support", 22, RGBColor(0xBF,0xD6,0xEA), False)]],
     space_after=14)
 txt(s, Inches(0.8), Inches(5.0), Inches(11.7), Inches(1.2),
-    [[("54 AI-consumable tools · 4 local services · read-only · grounded in your environment", 15, ACCENT, True)],
+    [[("53 AI-consumable tools · 4 local services · read-only · grounded in your environment", 15, ACCENT, True)],
      [("Internal enablement overview · 2026", 12, GREY, False)]], space_after=8)
 
 # ── 2. The problem ────────────────────────────────────────────────────────────
@@ -113,11 +113,11 @@ txt(s, Inches(8.95), Inches(1.85), Inches(3.5), Inches(4.5),
 
 # ── 3. What is the platform ───────────────────────────────────────────────────
 s = slide()
-header(s, "WHAT", "One MCP platform, four services, 54 tools")
+header(s, "WHAT", "One MCP platform, four services, 53 tools")
 cards = [
     ("Knowledge Base", "17 tools", "Tables, fields, EDTs, enums,\nclasses, methods, labels", BLUE),
     ("Cross-Reference", "16 tools", "Callers, usages, extensions,\nevent handlers, impact", ACCENT),
-    ("Security", "19 tools", "Roles, duties, privileges,\neffective access, SoD, licence", RGBColor(0xB5,0x4D,0x2E)),
+    ("Security", "18 tools", "Roles, duties, privileges,\neffective access, licence", RGBColor(0xB5,0x4D,0x2E)),
     ("Task Recorder", "2 tools", "Recordings → enriched\nrepro & process docs", RGBColor(0x6B,0x4B,0xA3)),
 ]
 x = Inches(0.55); w = Inches(3.0); gap = Inches(0.13)
@@ -172,12 +172,12 @@ txt(s, Inches(8.95), Inches(1.85), Inches(3.5), Inches(4.5),
 
 # ── 6. Security ───────────────────────────────────────────────────────────────
 s = slide()
-header(s, "SERVICE 3 · SECURITY (19 tools)", "Explain any access decision — end to end")
+header(s, "SERVICE 3 · SECURITY (18 tools)", "Explain any access decision — end to end")
 bullets(s, Inches(0.7), Inches(1.5), Inches(7.7), Inches(5.4), [
     ("Who & what. ", "lookup_user/role/duty/privilege, find_users_by_role, company_users, role_hierarchy."),
     ("Effective access. ", "effective_permissions & permission_trace walk role→duty→privilege→entry point with Deny-wins."),
     ("“Can user X do Y?” ", "object_access shows grant/deny incl. Invoke; what_if simulates a role change."),
-    ("Governance. ", "sod_check (now from live D365 SoD rules), licence_assessment, compare_roles."),
+    ("Governance. ", "licence_assessment, compare_roles."),
 ], size=14, gap=12)
 rect(s, Inches(8.7), Inches(1.6), Inches(3.9), Inches(4.9), NAVY)
 txt(s, Inches(8.95), Inches(1.85), Inches(3.5), Inches(4.5),
@@ -249,7 +249,7 @@ for (name, desc, ) in [(g[0], g[1]) for g in gains]:
     x = x + w + gap
 txt(s, Inches(0.7), Inches(4.9), Inches(12), Inches(2.2),
     [[("From “confident guesses” to “traceable answers.”", 20, WHITE, True)],
-     [("4 services · 54 tools · running locally today — extensible as the D365 estate grows.", 14, GREY, False)]],
+     [("4 services · 53 tools · running locally today — extensible as the D365 estate grows.", 14, GREY, False)]],
     space_after=12)
 
 import os

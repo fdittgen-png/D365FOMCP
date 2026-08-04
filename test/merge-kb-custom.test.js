@@ -114,6 +114,96 @@ describe('mergeCustomKb', () => {
     assert.equal(summary.added.tables, 1);
   });
 
+  it('reindexes kb_search for base objects that received custom members', () => {
+    // A custom-only delta carries no kb_search row for a Microsoft object it
+    // merely EXTENDS, so copying cust.kb_search leaves those rows stale and
+    // d365_search never surfaces the merged members. Covers tables, enums and
+    // entities. Regression: TBG_EstimatedChargesAmount was invisible to
+    // d365_search after a delta merge even though the field row existed.
+    const dir2 = mkdtempSync(join(tmpdir(), 'kb-merge-reindex-'));
+    const liveP = join(dir2, 'live.sqlite');
+    const custP = join(dir2, 'cust.sqlite');
+
+    const live = new Database(liveP);
+    live.exec(SCHEMA);
+    live.prepare('INSERT INTO kb_metadata VALUES (?,?)').run('custom_packages_paths', '');
+    live.prepare('INSERT INTO tables (table_name,module_id,label,developer_doc,field_count) VALUES (?,?,?,?,?)').run('WHSShipmentTable', 'ApplicationSuite', 'Shipments', 'Warehouse', 1);
+    live.prepare('INSERT INTO fields (table_name,field_name,field_type,source_module,is_extension) VALUES (?,?,?,?,?)').run('WHSShipmentTable', 'ShipmentId', 'String', 'ApplicationSuite', 0);
+    live.prepare('INSERT INTO enums VALUES (?,?,?,?)').run('WHSWorkType', 'ApplicationSuite', 'Work type', JSON.stringify([{ name: 'Pick', value: 0 }]));
+    live.prepare('INSERT INTO data_entities (entity_name,module_id,label,public_name) VALUES (?,?,?,?)').run('CustCustomerV3Entity', 'ApplicationSuite', 'Customers', 'Customers');
+    live.prepare('INSERT INTO entity_fields VALUES (?,?,?,?,?)').run('CustCustomerV3Entity', 'CustomerAccount', null, null, 0);
+    // Pre-merge index rows — the state that used to survive the merge unchanged.
+    live.prepare('INSERT INTO kb_search VALUES (?,?,?,?)').run('table', 'WHSShipmentTable', 'ApplicationSuite', 'Shipments Warehouse ShipmentId');
+    live.prepare('INSERT INTO kb_search VALUES (?,?,?,?)').run('enum', 'WHSWorkType', 'ApplicationSuite', 'Work type Pick');
+    live.prepare('INSERT INTO kb_search VALUES (?,?,?,?)').run('entity', 'CustCustomerV3Entity', 'ApplicationSuite', 'Customers Customers CustomerAccount');
+    live.close();
+
+    const cust = new Database(custP);
+    cust.exec(SCHEMA);
+    cust.prepare('INSERT INTO kb_metadata VALUES (?,?)').run('custom_packages_paths', 'C:\\Workspace\\DEV\\Metadata\\iExtension');
+    // Extension field onto the base table, carrying a custom EDT.
+    cust.prepare('INSERT INTO fields (table_name,field_name,field_type,edt,label,source_module,is_extension) VALUES (?,?,?,?,?,?,?)').run('WHSShipmentTable', 'TBG_EstimatedChargesAmount', 'Real', 'TBG_EstimatedChargesAmount', 'Estimated charges amount', 'iExtension', 1);
+    // Enum value added to the MS enum.
+    cust.prepare('INSERT INTO enums VALUES (?,?,?,?)').run('WHSWorkType', 'iExtension', null, JSON.stringify([{ name: 'TBG_Rework', value: 99 }]));
+    // Entity extension: fields + a method, with NO data_entities row of its own.
+    cust.prepare('INSERT INTO entity_fields VALUES (?,?,?,?,?)').run('CustCustomerV3Entity', 'TBG_CrmRef', null, null, 0);
+    cust.prepare('INSERT INTO methods VALUES (?,?,?,?,?,?)').run('entity', 'CustCustomerV3Entity', 'tbgValidate', null, 0, 'public boolean tbgValidate() {}');
+    cust.close();
+
+    const summary = mergeCustomKb(liveP, custP, () => {});
+    const db = new Database(liveP, { readonly: true });
+    const contentOf = (type, name) => db.prepare('SELECT content FROM kb_search WHERE object_type=? AND object_name=?').get(type, name).content;
+
+    const tbl = contentOf('table', 'WHSShipmentTable');
+    assert.match(tbl, /TBG_EstimatedChargesAmount/, 'merged extension field is searchable');
+    assert.match(tbl, /ShipmentId/, 'base field still indexed');
+    assert.match(tbl, /Shipments/, 'table label still indexed');
+    assert.match(tbl, /Estimated charges amount/, 'extension field label indexed');
+
+    const enm = contentOf('enum', 'WHSWorkType');
+    assert.match(enm, /TBG_Rework/, 'merged enum value is searchable');
+    assert.match(enm, /Pick/, 'base enum value still indexed');
+
+    const ent = contentOf('entity', 'CustCustomerV3Entity');
+    assert.match(ent, /TBG_CrmRef/, 'merged entity field is searchable');
+    assert.match(ent, /tbgValidate/, 'merged entity method is searchable');
+    assert.match(ent, /CustomerAccount/, 'base entity field still indexed');
+
+    // Exactly one row per object — reindex replaces, never duplicates.
+    for (const [t, n] of [['table', 'WHSShipmentTable'], ['enum', 'WHSWorkType'], ['entity', 'CustCustomerV3Entity']]) {
+      assert.equal(db.prepare('SELECT COUNT(*) n FROM kb_search WHERE object_type=? AND object_name=?').get(t, n).n, 1, `${t} ${n} not duplicated`);
+    }
+
+    assert.deepEqual(summary.reindexed, { tables: 1, enums: 1, entities: 1 });
+    db.close();
+    try { rmSync(dir2, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('does not invent kb_search rows for objects absent from the live KB', () => {
+    // A delta may carry members for an object the base build never saw.
+    const dir3 = mkdtempSync(join(tmpdir(), 'kb-merge-absent-'));
+    const liveP = join(dir3, 'live.sqlite');
+    const custP = join(dir3, 'cust.sqlite');
+
+    const live = new Database(liveP);
+    live.exec(SCHEMA);
+    live.prepare('INSERT INTO kb_metadata VALUES (?,?)').run('custom_packages_paths', '');
+    live.close();
+
+    const cust = new Database(custP);
+    cust.exec(SCHEMA);
+    cust.prepare('INSERT INTO fields (table_name,field_name,field_type,source_module,is_extension) VALUES (?,?,?,?,?)').run('NeverBuiltTable', 'TBG_Orphan', 'String', 'iExtension', 1);
+    cust.prepare('INSERT INTO entity_fields VALUES (?,?,?,?,?)').run('NeverBuiltEntity', 'TBG_Orphan', null, null, 0);
+    cust.close();
+
+    const summary = mergeCustomKb(liveP, custP, () => {});
+    const db = new Database(liveP, { readonly: true });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM kb_search WHERE object_name LIKE 'NeverBuilt%'").get().n, 0);
+    assert.deepEqual(summary.reindexed, { tables: 0, enums: 0, entities: 0 });
+    db.close();
+    try { rmSync(dir3, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
   it('refuses to merge into a pre-customization (older schema) KB', () => {
     const oldPath = join(dir, 'old.sqlite');
     const old = new Database(oldPath);

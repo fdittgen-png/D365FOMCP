@@ -34,7 +34,6 @@ For the top 5 most expensive users:
 For each identified optimization:
 - `sec_what_if` — simulate removing the expensive role
 - Check the projected tier and monthly/annual savings
-- Check for SoD impact (would removing the role create or resolve conflicts?)
 
 ### Step 5: Present report
 
@@ -52,7 +51,6 @@ For each identified optimization:
 **Optimization Opportunities:**
 For each opportunity:
 - User, current tier, proposed change, projected tier, monthly saving
-- SoD impact if any
 
 **Recommendations:**
 1. Role consolidation opportunities

@@ -19,6 +19,7 @@ import {
   _streamParseLargeDmfXmlSync as streamParseLargeDmfXmlSync,
   getEffectivePermissionType,
   _loadLabels as loadLabels,
+  _resolveLabel as resolveLabel,
 } from '../src/azure/sec-builder.js';
 
 const require = createRequire(import.meta.url);
@@ -82,6 +83,53 @@ describe('loadLabels', () => {
   it('ignores non-en-US locales', () => {
     const labels = loadLabels(tmpDir);
     assert.equal(labels.get('FrId'), undefined);
+  });
+
+  it('namespaces keys by label-file prefix to avoid cross-module id collisions', () => {
+    const labels = loadLabels(tmpDir);
+    // "Foo.en-US.label.txt" -> fileModule "Foo"
+    assert.equal(labels.get('Foo:MyRole'), 'My Role Text');
+  });
+});
+
+// ── resolveLabel (gap #4 regression: colon form only, concatenated form and
+// standard `@SYS…` ids always fell through unresolved regardless of whether
+// the label text was loaded — confirmed live against the prod sec DB
+// 2026-07-08: 115/385 role labels, 1002/2855 duty names, 5077/23616
+// privilege labels were raw `@…` references) ────────────────────────────────
+
+describe('resolveLabel', () => {
+  it('resolves the concatenated form (@ModuleId, e.g. @SYS154926)', () => {
+    const labelMap = new Map([['154926', 'Some resolved text']]);
+    assert.equal(resolveLabel(labelMap, '@SYS154926'), 'Some resolved text');
+  });
+
+  it('resolves the colon-delimited form (@Module:LabelId)', () => {
+    const labelMap = new Map([['CAPAViewer', 'CAPA viewer']]);
+    assert.equal(resolveLabel(labelMap, '@QMS:CAPAViewer'), 'CAPA viewer');
+  });
+
+  it('prefers the module-namespaced key over a bare id to avoid collisions', () => {
+    const labelMap = new Map([
+      ['77', 'Wrong module text'],
+      ['QMS:77', 'Correct QMS text'],
+    ]);
+    assert.equal(resolveLabel(labelMap, '@QMS77'), 'Correct QMS text');
+    assert.equal(resolveLabel(labelMap, '@QMS:77'), 'Correct QMS text');
+  });
+
+  it('falls back to the raw reference when the id is not in the loaded map', () => {
+    assert.equal(resolveLabel(new Map(), '@QMS999999'), '@QMS999999');
+    assert.equal(resolveLabel(new Map(), '@QMS:Missing'), '@QMS:Missing');
+  });
+
+  it('passes plain text through unchanged', () => {
+    assert.equal(resolveLabel(new Map(), 'Already resolved text'), 'Already resolved text');
+  });
+
+  it('returns null for a null/empty raw value', () => {
+    assert.equal(resolveLabel(new Map(), null), null);
+    assert.equal(resolveLabel(new Map(), ''), null);
   });
 });
 
@@ -784,51 +832,56 @@ describe('buildSecurityDatabase — System Security Permissions.xml (CR-SEC-007)
   });
 });
 
-// ── buildSecurityDatabase — Segregation of Duties rules (gap #2) ──────────────
+// ── buildSecurityDatabase — AOT label resolution end-to-end (gap #4 regression) ──
+//
+// No prior test exercised the AOT path's Label properties through the full
+// build — every other AOT-path test here passes packagesPathArg: 'skip'. That
+// gap is exactly how the colon-only resolveLabel() regex shipped undetected:
+// "labels loaded" only checks that label FILES were found, never that a real
+// `@…` reference on a role/duty/privilege actually resolved to text.
 
-describe('buildSecurityDatabase — SystemSegregationOfDutiesRuleEntity (gap #2)', () => {
+describe('buildSecurityDatabase — AOT label resolution end-to-end', () => {
   let tmpDir;
   let dbPath;
+  let buildResult;
 
   before(() => {
-    tmpDir = join(tmpdir(), `sec-build-sod-${randomUUID().slice(0, 8)}`);
-    mkdirSync(tmpDir, { recursive: true });
-    const dmfDir = join(tmpDir, 'dmf');
-    mkdirSync(dmfDir, { recursive: true });
+    tmpDir = join(tmpdir(), `sec-build-labels-test-${randomUUID().slice(0, 8)}`);
+    const modelDir = join(tmpDir, 'PkgA', 'ModelA');
 
-    writeFileSync(join(dmfDir, 'System Security Role.xml'),
-      `<?xml version="1.0" encoding="utf-8"?><Document></Document>`, 'utf-8');
-    writeFileSync(join(dmfDir, 'System Security Role Duty.xml'),
-      `<?xml version="1.0" encoding="utf-8"?><Document></Document>`, 'utf-8');
+    const roleDir = join(modelDir, 'AxSecurityRole');
+    const dutyDir = join(modelDir, 'AxSecurityDuty');
+    const privDir = join(modelDir, 'AxSecurityPrivilege');
+    const sysLabelDir = join(modelDir, 'AxLabelFile', 'LabelResources', 'en-US');
+    const qmsLabelDir = join(modelDir, 'AxLabelFile', 'LabelResources', 'en-US');
+    mkdirSync(roleDir, { recursive: true });
+    mkdirSync(dutyDir, { recursive: true });
+    mkdirSync(privDir, { recursive: true });
+    mkdirSync(sysLabelDir, { recursive: true });
+    mkdirSync(qmsLabelDir, { recursive: true });
 
-    // Filename intentionally lower-cased to exercise the case-insensitive
-    // findDmfFile fallback (DMF names files by entity *label*; casing varies
-    // between exports). The canonical label is "Security segregation of duties rule".
-    writeFileSync(join(dmfDir, 'security segregation of duties rule.xml'),
-      `<?xml version="1.0" encoding="utf-8"?><Document>` +
-      `<SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
-        `<NAME>AP invoice vs payment</NAME>` +
-        `<FIRSTSECURITYDUTYIDENTIFIER>VendInvoiceProcess</FIRSTSECURITYDUTYIDENTIFIER>` +
-        `<SECONDSECURITYDUTYIDENTIFIER>VendPaymentProcess</SECONDSECURITYDUTYIDENTIFIER>` +
-        `<FIRSTSECURITYDUTYNAME>Process vendor invoices</FIRSTSECURITYDUTYNAME>` +
-        `<SECONDSECURITYDUTYNAME>Process vendor payments</SECONDSECURITYDUTYNAME>` +
-        `<SEVERITY>High</SEVERITY>` +
-        `<RISK>A clerk could pay a fictitious invoice they entered.</RISK>` +
-        `<MITIGATION>Monthly managerial review.</MITIGATION>` +
-        `<VALIDFROM>2020-01-01T00:00:00Z</VALIDFROM>` +
-        `<VALIDTO>2154-12-31T00:00:00Z</VALIDTO>` +
-      `</SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
-      `<SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
-        // missing second duty — must be skipped
-        `<NAME>Broken rule</NAME>` +
-        `<FIRSTSECURITYDUTYIDENTIFIER>SomeDuty</FIRSTSECURITYDUTYIDENTIFIER>` +
-      `</SYSTEMSEGREGATIONOFDUTIESRULEENTITY>` +
-      `</Document>`, 'utf-8');
+    // Concatenated form (@SYS154926) — the common Microsoft-standard shape.
+    writeFileSync(join(roleDir, 'TestRole.xml'),
+      `<?xml version="1.0" encoding="utf-8"?>` +
+      `<AxSecurityRole><Name>TESTROLE</Name><Label>@SYS154926</Label></AxSecurityRole>`, 'utf-8');
 
-    dbPath = join(tmpDir, 'sod-sec.sqlite');
-    buildSecurityDatabase({
-      packagesPathArg: 'skip',
-      dmfInputDir: dmfDir,
+    // Colon-delimited form (@QMS:CAPAViewer) — the common ISV/custom shape.
+    writeFileSync(join(dutyDir, 'TestDuty.xml'),
+      `<?xml version="1.0" encoding="utf-8"?>` +
+      `<AxSecurityDuty><Name>TESTDUTYID</Name><Label>@QMS:CAPAViewer</Label></AxSecurityDuty>`, 'utf-8');
+
+    // Concatenated form on a custom module (@QMS338).
+    writeFileSync(join(privDir, 'TestPriv.xml'),
+      `<?xml version="1.0" encoding="utf-8"?>` +
+      `<AxSecurityPrivilege><Name>TESTPRIVID</Name><Label>@QMS338</Label></AxSecurityPrivilege>`, 'utf-8');
+
+    writeFileSync(join(sysLabelDir, 'SYS.en-US.label.txt'), '154926=Resolved SYS Role Text\n', 'utf-8');
+    writeFileSync(join(qmsLabelDir, 'QMS.en-US.label.txt'), 'CAPAViewer=Resolved QMS Duty Text\n338=Resolved QMS Priv Text\n', 'utf-8');
+
+    dbPath = join(tmpDir, 'labels-sec.sqlite');
+    buildResult = buildSecurityDatabase({
+      packagesPathArg: tmpDir,
+      dmfInputDir: 'skip',
       outputPath: dbPath,
       log: () => {},
     });
@@ -838,27 +891,32 @@ describe('buildSecurityDatabase — SystemSegregationOfDutiesRuleEntity (gap #2)
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('parses SoD rules into sod_rules (case-insensitive filename match)', () => {
+  it('resolves a concatenated-form role label (@SYS154926)', () => {
     const db = new Database(dbPath, { readonly: true });
-    const row = db.prepare(
-      `SELECT duty_first, duty_second, duty_first_name, duty_second_name,
-              severity, risk, mitigation, valid_to
-         FROM sod_rules WHERE rule_name = 'AP invoice vs payment'`
-    ).get();
+    const row = db.prepare('SELECT label FROM roles WHERE role_id = ?').get('TESTROLE');
     db.close();
-    assert.ok(row, 'expected the AP rule in sod_rules');
-    assert.equal(row.duty_first, 'VendInvoiceProcess');
-    assert.equal(row.duty_second, 'VendPaymentProcess');
-    assert.equal(row.duty_first_name, 'Process vendor invoices');
-    assert.equal(row.severity, 'High');
-    assert.ok(row.mitigation.includes('managerial review'));
-    assert.ok(row.valid_to.startsWith('2154'));
+    assert.equal(row.label, 'Resolved SYS Role Text');
   });
 
-  it('skips rules missing a duty side', () => {
+  it('resolves a colon-form duty label into duty_name (@QMS:CAPAViewer)', () => {
     const db = new Database(dbPath, { readonly: true });
-    const c = db.prepare('SELECT COUNT(*) c FROM sod_rules').get().c;
+    const row = db.prepare('SELECT duty_name FROM duties WHERE duty_id = ?').get('TESTDUTYID');
     db.close();
-    assert.equal(c, 1); // only the well-formed rule survives
+    assert.equal(row.duty_name, 'Resolved QMS Duty Text');
+  });
+
+  it('resolves a concatenated-form privilege label on a custom module (@QMS338)', () => {
+    const db = new Database(dbPath, { readonly: true });
+    const row = db.prepare('SELECT label FROM privileges WHERE privilege_name = ?').get('TESTPRIVID');
+    db.close();
+    assert.equal(row.label, 'Resolved QMS Priv Text');
+  });
+
+  it('reports the "labels resolved" data-quality check as PASS with zero leaks', () => {
+    const check = buildResult.checks.find(c => c.name === 'labels resolved');
+    assert.ok(check, 'expected a "labels resolved" check');
+    assert.equal(check.pass, true);
+    assert.match(check.detail, /^0 role \/ 0 duty \/ 0 privilege/);
   });
 });
+

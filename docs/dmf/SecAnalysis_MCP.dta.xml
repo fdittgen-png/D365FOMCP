@@ -5,7 +5,7 @@
 
   WHAT THIS DOES
     Operation=Export + ConfigurationOnly=Yes  →  CREATES the project and adds the
-    9 entities below in XML-Element format, WITHOUT running an export.
+    8 entities below in XML-Element format, WITHOUT running an export.
 
   HOW TO IMPORT (creates the project)
     Data management workspace → Data task automation → Import (upload this file)
@@ -98,15 +98,6 @@
         <DisableEntity>No</DisableEntity>
       </Entity>
       <Entity name='SystemSecurityUserRoleOrganizationEntity'>
-        <SourceDataFormatName>XML-Element</SourceDataFormatName>
-        <DefaultRefreshType>Full push only</DefaultRefreshType>
-        <SelectFields>All fields</SelectFields>
-        <SkipStaging>Yes</SkipStaging>
-        <DisableEntity>No</DisableEntity>
-      </Entity>
-      <!-- Segregation of duties rules (gap #2) → sod_rules. Small entity; no
-           filter needed. When present, supersedes the SOD_RULES_FILE JSON. -->
-      <Entity name='Security segregation of duties rule'>
         <SourceDataFormatName>XML-Element</SourceDataFormatName>
         <DefaultRefreshType>Full push only</DefaultRefreshType>
         <SelectFields>All fields</SelectFields>

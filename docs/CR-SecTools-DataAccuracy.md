@@ -10,7 +10,7 @@
 
 ## Background
 
-During a comparative analysis of the MCP security service (`sec_lookup_user`, `sec_effective_permissions`) against the live D365 F&O system and the SoD analysis pipeline, several data accuracy gaps were identified. These gaps cause the MCP to return incomplete or misleading results, impacting security auditing, SoD analysis, and support troubleshooting.
+During a comparative analysis of the MCP security service (`sec_lookup_user`, `sec_effective_permissions`) against the live D365 F&O system, several data accuracy gaps were identified. These gaps cause the MCP to return incomplete or misleading results, impacting security auditing and support troubleshooting.
 
 ---
 

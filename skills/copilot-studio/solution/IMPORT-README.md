@@ -71,7 +71,7 @@ Whether you imported the agent zip or built it manually, attach the connectors a
 
 1. In the agent, go to **Tools** → **Add a tool** → **Connector** (or **Model Context Protocol** if your tenant surfaces MCP tools directly).
 2. Pick each connector — **D365 KB**, **D365 XRef**, **D365 Security**, **D365 Task Recorder** — and add it.
-3. When prompted for a **connection**, create one. The connectors are **anonymous** (no key), so just confirm.
+3. When prompted for a **connection**, create one. The connectors are **anonymous** (no key) for now, so just confirm — this changes at the Entra cutover (see the Auth note at the bottom).
 4. Repeat for all four. The instructions already tell the model which tool to use for which question.
 
 > **If you skipped the connector solution** and want to add them straight from OpenAPI: Power Apps → **Custom connectors** → **New custom connector** → **Import an OpenAPI file** → pick each `../connectors/*.swagger.json`. These are MCP-streamable (`x-ms-agentic-protocol: mcp-streamable-1.0`) and need no auth.
@@ -91,4 +91,4 @@ All four target the **dev** Function App:
 
 To target prod later, rebuild with `-Host_` and re-import — the agent definition doesn't change.
 
-> **Auth:** endpoints are currently anonymous. If you later put Entra ID / Easy Auth in front (see `docs/MCP-Entra-Auth-Setup.md`), add the OAuth client to each connector's security definition and re-import.
+> **Auth:** endpoints are currently anonymous, but the server-side Entra gate is already deployed (2026-07-06) and dormant behind the `REQUIRE_AUTH=false` app setting. When the cutover runs (`scripts/Enable-McpAuth.ps1`, see `docs/MCP-Entra-Auth-Setup.md`), the anonymous connections here stop working: each connector's swagger needs an Entra OAuth `securityDefinitions` block (client `sp-tis-d-mcpd365fo-mcp`, resource `api://sp-tis-d-mcpd365fo-mcp`, scope `user_impersonation`, tenant `0f861177-7722-4f06-8db9-3384e5321a9f`) and a re-import, and every connection must be recreated as an OAuth connection by a member of the `D365FO-MCP-Users` group.

@@ -7,6 +7,7 @@
 
 import { app } from '@azure/functions';
 import { validateRequestSize } from '../azure/request-size.js';
+import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getXrefDb } from '../azure/shared.js';
@@ -31,6 +32,10 @@ app.http('d365xref', {
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
       return { status: 200, jsonBody: { name: 'd365fo-xref', version: '1.0.0', status: 'ok' } };
     }
+
+    // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
+    const denied = authorizeMcpRequest(request);
+    if (denied) return denied;
 
     try {
       const server = createXrefServer();
