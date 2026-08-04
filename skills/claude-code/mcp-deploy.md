@@ -39,7 +39,7 @@ If not logged in, tell the user to run `! az login` and wait.
 Test EVERY function entry point — not just changed files. A transitive import failure (e.g., in shared.js or output-schemas.js) crashes all endpoints.
 
 ```bash
-for f in src/functions/d365kb.js src/functions/d365xref.js src/functions/d365sec.js src/functions/d365sec-upload.js src/functions/d365taskrecorder.js; do
+for f in src/functions/d365kb.js src/functions/d365xref.js src/functions/d365sec.js src/functions/d365sec-upload.js src/functions/d365taskrecorder.js src/functions/wiki-mcp.js; do
   node -e "import('./$f').then(() => console.log('OK: $f')).catch(e => console.error('FAIL: $f -', e.message))" 2>&1 | grep -v WARNING
 done
 ```
@@ -52,7 +52,7 @@ done
 npm test 2>&1 | tail -10
 ```
 
-Must show **948 pass, 0 fail** (or the current count — never lower than the previous deploy). If tests fail, stop and fix before deploying.
+Must show **0 fail** and a pass count never lower than the previous deploy (2026-07-06 baseline: **1005 pass**). If tests fail, stop and fix before deploying.
 
 ### 1d. Response contract validation
 
@@ -258,6 +258,10 @@ curl -X PUT "https://tis-d-mcpd365fo-func.scm.azurewebsites.net/api/vfs/data/d36
 | HTTP 502 | Worker OOM during build/merge | Restart function app. Reduce concurrent operations. |
 | `/upload/sas` returns 500 | `AzureWebJobsStorage` misconfigured | Check env var in Azure Portal → Function App → Configuration |
 | `prebuild-install` fails in deploy script | Network issue or Node version mismatch | Verify `--target 20.20.0` matches Azure Function runtime. Check proxy settings. |
+| All MCP POSTs 503 "Easy Auth is not enabled" | Fail-closed auth gate (`src/azure/mcp-auth.js`): Easy Auth off AND `REQUIRE_AUTH` app setting missing/not `false` | Pre-cutover: `az functionapp config appsettings set … --settings REQUIRE_AUTH=false`. Proper fix: complete the Entra cutover (`scripts/Enable-McpAuth.ps1`). |
+| All MCP calls 401 (post-cutover) | Easy Auth `Return401` — caller sent no/invalid bearer token | Expected for anonymous callers. Clients need OAuth (`docs/MCP-Entra-Auth-Setup.md` Part D); smoke tests need `az account get-access-token --resource api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp`. |
+| 403 "app role is missing" for a signed-in user | Token predates the user's `D365FO-MCP-Users` group add (roles baked in at issue time) | User signs out/in for a fresh token; verify group membership. |
+| `AuthorizationFailed` on `Microsoft.Web/sites/read` | Wrong subscription — the app lives in **TIS.D365FO**, not the default az subscription | `az account set --subscription TIS.D365FO` (or pass `--subscription`). |
 
 ---
 
@@ -296,6 +300,100 @@ The one-shot orchestrator is `local-deploy/Deploy.ps1` (auto-discovers the Funct
     -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"d365_raw_sql","arguments":{"sql":"SELECT value FROM kb_metadata WHERE key='\''schema_version'\''","format":"markdown"}}}'
   ```
+
+---
+
+## Session learnings (2026-07-06 — Entra auth gate)
+
+Every MCP HTTP surface (`d365kb`, `d365xref`, `d365sec`, `d365taskrecorder` +
+its `/upload` route, `wiki-mcp`) now calls `authorizeMcpRequest` from
+`src/azure/mcp-auth.js` — **fail-closed**. Full picture:
+`docs/MCP-Entra-Auth-Setup.md` (runbook) and `docs/MCP-Entra-Auth-Handover.md`
+(Entra-side ask + configuration map).
+
+- **Pre-flight: check the auth-gate state before every deploy.** The gate's
+  behavior depends on two app settings, so verify what the deployed code will
+  do the moment it lands:
+  ```bash
+  az functionapp config appsettings list --subscription TIS.D365FO -g tis-d-mcpd365fo-rg -n tis-d-mcpd365fo-func \
+    --query "[?name=='REQUIRE_AUTH' || name=='MCP_REQUIRED_ROLE']" -o table
+  az webapp auth show --subscription TIS.D365FO -g tis-d-mcpd365fo-rg -n tis-d-mcpd365fo-func \
+    --query "properties.platform.enabled" -o tsv
+  ```
+  Decision table: Easy Auth **on** → gate enforces `Mcp.Access` (healthy).
+  Easy Auth **off** + `REQUIRE_AUTH=false` → endpoints anonymous, gate dormant
+  (current state since 2026-07-06). Easy Auth **off** + `REQUIRE_AUTH`
+  missing → **every MCP call 503s after deploy**. Never "fix" a 503 by
+  reverting the code — set the app setting or run the cutover.
+- **Subscription trap:** the Function App is in the **TIS.D365FO**
+  subscription; the default `az` subscription is a different one
+  (TIS.BIandReporting). An `AuthorizationFailed … Microsoft.Web/sites/read`
+  that looks like lost permissions is usually just the wrong subscription —
+  `az account set --subscription TIS.D365FO` first.
+- **Post-cutover, Phase 2/4/5 probes change:** anonymous per-endpoint GETs
+  return 401 (only `/api/health` is excluded from Easy Auth). Health-check
+  with `/api/health`, and give the MCP `tools/call` probes a token:
+  ```bash
+  TOKEN=$(az account get-access-token --resource api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp --query accessToken -o tsv)
+  curl -s -H "Authorization: Bearer $TOKEN" … # rest as usual
+  ```
+- **Cutover is scripted:** `scripts/Enable-McpAuth.ps1 -ApiAppId <client-id>`
+  (configures the identity provider, `Return401`, health exclusion, removes
+  `REQUIRE_AUTH=false`, smoke-tests). Prerequisite Entra objects are
+  admin-only — `az ad app create` / `az ad group create` fail with
+  *Insufficient privileges* on this tenant; don't burn time retrying, forward
+  the handover doc.
+- **Static-scan coverage:** `test/mcp-auth.test.js` fails the suite if any MCP
+  function file stops calling the gate — a new MCP endpoint must import
+  `mcp-auth.js` and call `authorizeMcpRequest(request)` after its health ping.
+
+---
+
+## Session learnings (2026-07-20 — configuring the Entra app registration via portal)
+
+Aaron returned the registration as `sp-tis-p-D365metadata-mcp` (appId
+`5e8bc645-a8f6-4516-a4dc-9235d242a309`) — **not** the `sp-tis-d-mcpd365fo-mcp`
+name asked for in `docs/MCP-Entra-Auth-Setup.md` Part A, and only as a bare
+shell (no App ID URI/scope/app role/redirect URIs, just the portal-default
+Graph `User.Read`). **Decision: accept whatever name/appId a directory admin
+actually returns rather than pushing back for a rename** — update the script
+default and doc references to match instead. Configuring the rest of Part A
+by hand in the portal surfaced traps not in the original runbook:
+
+- **Bare-name Application ID URI is rejected by tenant policy.** Setting
+  `api://<name>` in Expose an API fails live: *"All newly added URIs must
+  contain a tenant verified domain, tenant ID, or app ID."* This is a
+  standard modern-tenant default, not specific to this app — don't trust an
+  older doc/precedent (e.g. an in-house app assumed to use `api://<name>`)
+  for the exact URI *format* without checking it actually saved. Fix: use
+  the verified-domain form, `api://<tenant-onmicrosoft-domain>/<name>` (here
+  `api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp`) — keeps a
+  readable name while satisfying the policy. `api://<appId>` or
+  `api://<appId>/<name>` also satisfy it if readability doesn't matter.
+- **The "Authentication (Preview)" blade replaced the old
+  Web/SPA/Mobile-tabs layout.** There's one "Add Redirect URI" action; it
+  first asks you to pick a platform (Web / SPA / iOS-macOS / Android /
+  generic "Mobile and desktop applications" — pick the last one for
+  loopback/PKCE public clients like Claude Code and claude.ai), then shows a
+  redirect-URI screen with a few **checkboxes** for canned URIs
+  (`https://login.microsoftonline.com/common/oauth2/nativeclient`, LiveSDK,
+  `msal<appid>://auth`) plus **one** freeform text box. Leave the checkboxes
+  unchecked (none apply here) and type the custom URI in the box. To add a
+  **second** custom URI, you have to close out and click **Add Redirect
+  URI** again — there's no "+" to add more than one freeform value per
+  visit. `Allow public client flows` lives under the separate **Settings**
+  tab on this blade now, not inline with the redirect URIs.
+- **Non-privileged admin-consent click hits an interactive "Need admin
+  approval" page — this is expected, not a sign the permission is
+  missing.** Clicking "Grant admin consent for <tenant>" as an account
+  without Global Administrator / Privileged Role Administrator always routes
+  through that consent-approval screen instead of completing directly, even
+  when the permission (e.g. a self-referencing `user_impersonation` scope,
+  `Admin consent required: No`) is already correctly configured on the App
+  registration's API permissions blade. Don't re-add the permission in
+  response to that screen — verify it's already listed first, then hand the
+  *same* API-permissions blade URL to an actual admin and ask them to click
+  the button from their own session.
 
 ---
 

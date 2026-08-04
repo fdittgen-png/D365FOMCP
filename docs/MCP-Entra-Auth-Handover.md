@@ -60,6 +60,35 @@ script run. Full runbook: [`MCP-Entra-Auth-Setup.md`](MCP-Entra-Auth-Setup.md).
 > Thanks!
 > Florian
 
+## Superseded — Aaron delivered a different (better) shape (2026-08-04)
+
+The ask above was overtaken by events. Via **Ticket#202607102005643** Aaron
+created a fresh trio and made Florian **owner** of all three objects:
+
+| Object | ID |
+|---|---|
+| App registration `sp-tis-d-d365fokb-mcp` | appId `54b1261c-352d-4772-b83a-001e529bd117`, object `6c08d606-df94-46af-adb6-d7974f3bda37` |
+| Enterprise application | object `5c2276ef-a699-4e1d-b3b3-f42b314eb86d` |
+| Security group `D365FO-MCP-Users` | `371b144a-234f-4df3-b99a-980a4f6eee4c` |
+
+All bare — "created, not configured" — but ownership makes the entire
+configuration self-service: `scripts/Configure-McpAppRegistration.ps1` does
+the full registration config **and** the group/role/assignment steps in one
+idempotent run. The earlier `sp-tis-p-D365metadata-mcp` (`5e8bc645-…`)
+registration is retired for this purpose.
+
+The only step that can still need an admin is the tenant-wide **admin
+consent** grant — and per Karl-Johan it is optional UX (the
+`user_impersonation` scope allows user consent; users just see a one-time
+Accept dialog). Only if a sign-in test shows **"Need admin approval"**, send
+a Global Admin (via Aaron, quoting the ticket ID):
+
+> Could you open **App registrations → sp-tis-d-d365fokb-mcp → API
+> permissions** and click **Grant admin consent for Trelleborg AB**?
+> CLI equivalent:
+> `az ad app permission admin-consent --id 54b1261c-352d-4772-b83a-001e529bd117`
+> Background: MCP POC for Aaron Teahan's project, Ticket#202607102005643.
+
 ---
 
 ## The big picture
@@ -184,7 +213,20 @@ to pre-registered addresses, so a phishing site can't intercept the flow.
 → `sp-tis-d-mcpd365fo-mcp`), then click **Grant admin consent**. This
 pre-approves the consent dialog for the whole tenant so users don't each
 see a "this app wants to access…" prompt on first connect. It's UX, not
-security — the security is step 2.
+security — the security is step 2. In this tenant it is more than UX:
+user self-consent is disabled, so without the admin grant every sign-in
+dead-ends at "Need admin approval".
+
+> **Blade trap (Aaron, 2026-07-20):** grant consent from the **App
+> registration → API permissions** blade, *not* from the Enterprise app →
+> Permissions blade. The Enterprise-app blade only displays grants after
+> they exist ("No admin consent permissions found" just means none granted
+> yet); consent granted on the registration transfers to the Enterprise app
+> automatically. Declare Graph `openid`, `profile`, `offline_access`
+> (refresh tokens for MCP clients) alongside the default `User.Read`, so
+> the single admin grant covers everything a sign-in requests —
+> `scripts/Add-McpApiPermissions.ps1` in the repo declares the full list
+> idempotently.
 
 > **App side:** nothing — consent state lives entirely in Entra.
 

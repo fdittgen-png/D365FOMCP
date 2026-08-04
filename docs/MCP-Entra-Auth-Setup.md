@@ -21,7 +21,7 @@ avoid the `groups`-claim overage problem KJ would hit at scale).
 
 ---
 
-## Status (2026-07-06)
+## Status (2026-08-04)
 
 - **Code gate (Part C): implemented and merged** — see below.
 - **`REQUIRE_AUTH=false` is set on `tis-d-mcpd365fo-func`** so deploying the
@@ -37,6 +37,60 @@ avoid the `groups`-claim overage problem KJ would hit at scale).
   is both resource (App ID URI + scope, token v2) and public client
   (claude.ai callback redirect). We follow that shape: ONE app registration,
   not two.
+- **Aaron returned the app registration on 2026-07-06** — as
+  `sp-tis-p-D365metadata-mcp` (appId `5e8bc645-a8f6-4516-a4dc-9235d242a309`,
+  object id `d32f6d4c-8a37-424d-9982-c5237c7cbdd1`), **not** the
+  `sp-tis-d-mcpd365fo-mcp` name asked for below — accepted as-is rather than
+  asking for a rename. It was created as a bare shell (no App ID URI, scope,
+  app role, or public-client redirect URIs yet — just the portal-default
+  Graph `User.Read` permission). The full Part A config (Expose an API +
+  `user_impersonation` scope + `Mcp.Access` role + public client redirects +
+  self-consent) has been assembled as a manifest for import; the security
+  group (`D365FO-MCP-Users`) and Enterprise App role assignment /
+  Assignment-required still need Aaron. `scripts/Enable-McpAuth.ps1`'s
+  `-AppIdUri` default now points at `api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp`.
+- **Tenant policy blocks bare-name Application ID URIs.** Attempting to set
+  `api://sp-tis-p-D365metadata-mcp` in Expose an API failed: *"All newly
+  added URIs must contain a tenant verified domain, tenant ID, or app ID"*.
+  Used the verified-domain form instead:
+  `api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp`. This means
+  the `sp-tis-p-orion-mcp`-style bare name assumed in Part A below either
+  predates this tenant policy or was never actually configured that way —
+  don't trust that precedent for the URI *format*, only for the
+  single-registration *shape*.
+- **2026-07-20 sign-in test hit "Need admin approval"; Aaron's diagnosis
+  (Teams, same day): wrong blade.** Consent was being chased on the
+  **Enterprise application → Permissions** blade, which is a read-only
+  *view* of grants that already exist — it showed "No admin consent
+  permissions found" simply because nothing has been granted yet. The
+  working direction is the opposite: declare the wanted permissions on the
+  **App registration → API permissions** blade (step 1d below), have an
+  admin grant consent *there*, and the grants propagate to the Enterprise
+  app automatically. The tenant disables user self-consent, so *every*
+  scope a sign-in requests (the self `user_impersonation`, plus OIDC
+  `openid`/`profile`/`offline_access`) must be covered by that one admin
+  grant — anything missing re-triggers the "Need admin approval" prompt.
+- **2026-08-04 — the target registration CHANGED.** The full Teams thread
+  revealed Aaron's link points at a **second, newer registration**: via
+  Ticket#202607102005643 he created the properly-named
+  **`sp-tis-d-d365fokb-mcp`** (appId `54b1261c-352d-4772-b83a-001e529bd117`,
+  app object `6c08d606-df94-46af-adb6-d7974f3bda37`, Enterprise app
+  `5c2276ef-a699-4e1d-b3b3-f42b314eb86d`) **plus the security group
+  `D365FO-MCP-Users`** (`371b144a-234f-4df3-b99a-980a4f6eee4c`) — all bare
+  ("created, not configured") and **all owned by Florian**. This supersedes
+  `sp-tis-p-D365metadata-mcp` (`5e8bc645-…`), which is retired for this
+  purpose. Ownership makes everything self-service except a possible
+  Global-Admin consent grant (per Karl-Johan, likely unnecessary — the
+  scope allows user consent, so a one-time Accept dialog is the expected
+  UX). **One script now does all of Part A + step 2:**
+  `scripts/Configure-McpAppRegistration.ps1` (idempotent; URI/token-v2/
+  scope/role/public-client/permissions on the registration, plus group
+  membership, role assignment, Assignment required = Yes). Run it from an
+  interactive `az` session (Graph sits behind the CA step-up:
+  `az login --tenant 0f861177-… --scope https://graph.microsoft.com/.default`),
+  then the sign-in smoke test it prints, then
+  `Enable-McpAuth.ps1 -ApiAppId 54b1261c-…` (its `-AppIdUri` default now
+  points at `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp`).
 
 ## Part A — The ask for Aaron (forward this verbatim)
 
@@ -197,7 +251,19 @@ to pre-registered addresses, so a phishing site can't intercept the flow.
 → `sp-tis-d-mcpd365fo-mcp`), then click **Grant admin consent**. This
 pre-approves the consent dialog for the whole tenant so users don't each
 see a "this app wants to access…" prompt on first connect. It's UX, not
-security — the security is step 2.
+security — the security is step 2. In *this* tenant it is more than UX:
+user self-consent is disabled, so without the admin grant every sign-in
+dead-ends at "Need admin approval".
+
+> **Blade trap (Aaron, 2026-07-20):** grant consent from the **App
+> registration → API permissions** blade, *not* from the Enterprise app →
+> Permissions blade. The Enterprise-app blade only displays grants after
+> they exist; consent granted on the registration transfers to the
+> Enterprise app automatically. Also declare Graph `openid`, `profile`,
+> `offline_access` (refresh tokens for MCP clients) alongside the default
+> `User.Read`, so the single admin grant covers everything a sign-in
+> requests. `scripts/Add-McpApiPermissions.ps1` declares the full list
+> idempotently.
 
 > **App side:** nothing — consent state lives entirely in Entra.
 
@@ -249,12 +315,24 @@ code's role check (`mcp-auth.js`).
 ### What Aaron sends back
 
 Just the registration's **Application (client) ID** — one GUID. Everything
-else is fixed by convention (`api://sp-tis-d-mcpd365fo-mcp`, tenant ID,
-role value). That GUID is the only parameter of the cutover:
+else is fixed by convention (App ID URI, tenant ID, role value). That GUID
+is the only parameter of the cutover:
 
 ```powershell
 .\scripts\Enable-McpAuth.ps1 -ApiAppId <that-guid>
 ```
+
+**Actual values returned (2026-07-06):** client ID
+`5e8bc645-a8f6-4516-a4dc-9235d242a309`, registration name
+`sp-tis-p-D365metadata-mcp` (not the `sp-tis-d-mcpd365fo-mcp` asked for
+above — accepted as-is), so the cutover command is:
+
+```powershell
+.\scripts\Enable-McpAuth.ps1 -ApiAppId 5e8bc645-a8f6-4516-a4dc-9235d242a309
+```
+
+(`-AppIdUri` defaults to `api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp` already — no
+override needed.)
 
 ### Why a directory admin and not us
 
@@ -280,12 +358,12 @@ returns 401 for anonymous/invalid callers — no token-parsing code needed for a
 with the client ID from Part A:
 
 ```powershell
-.\scripts\Enable-McpAuth.ps1 -ApiAppId <client-id-from-Aaron>
+.\scripts\Enable-McpAuth.ps1 -ApiAppId 5e8bc645-a8f6-4516-a4dc-9235d242a309
 ```
 
 It configures the Microsoft identity provider (issuer
 `https://login.microsoftonline.com/<tenant>/v2.0`, audiences
-`api://sp-tis-d-mcpd365fo-mcp` + the client ID), enables Easy Auth with
+`api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp` + the client ID), enables Easy Auth with
 **`Return401`**, excludes **`/api/health`** so deploy probes keep working,
 removes the temporary `REQUIRE_AUTH=false` app setting (use
 `-KeepRequireAuthOff` for a staged cutover), and smoke-tests
