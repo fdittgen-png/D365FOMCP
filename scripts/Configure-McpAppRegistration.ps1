@@ -46,7 +46,11 @@ param(
   [string]$AppIdUri       = 'api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp',
   [string]$GroupId        = '371b144a-234f-4df3-b99a-980a4f6eee4c',  # D365FO-MCP-Users
   [string]$FirstMemberOid = '9495865f-c1c7-459f-87a6-4e9d8a20fb28',  # Florian Dittgen
-  [string]$RoleValue      = 'Mcp.Access'
+  [string]$RoleValue      = 'Mcp.Access',
+  # Easy Auth's BROWSER login (admin pages, /api/health dashboard) is an OIDC
+  # id_token flow needing a Web redirect + ID token issuance — without these,
+  # /.auth/login/aad fails with AADSTS700054. MCP bearer clients don't use it.
+  [string]$EasyAuthCallback = 'https://tis-d-mcpd365fo-func.azurewebsites.net/.auth/login/aad/callback'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -131,6 +135,10 @@ Invoke-GraphWrite -Method PATCH -Url "$graph/applications/$($app.id)" -Body ([or
   appRoles               = $roles
   isFallbackPublicClient = $true
   publicClient           = @{ redirectUris = $redirects }
+  web                    = [ordered]@{
+    redirectUris          = @(@(@($app.web.redirectUris) + $EasyAuthCallback) | Where-Object { $_ } | Select-Object -Unique)
+    implicitGrantSettings = @{ enableIdTokenIssuance = $true }
+  }
   requiredResourceAccess = $rra
 })
 Write-Host "   PATCHed. scope user_impersonation = $scopeId, role $RoleValue = $roleId"
