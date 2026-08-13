@@ -80,6 +80,11 @@ before(async () => {
     CREATE TABLE providers (
       id INTEGER PRIMARY KEY, provider TEXT NOT NULL
     );
+
+    CREATE TABLE model_versions (
+      model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT,
+      publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT
+    );
   `);
 
   // ── Insert test fixture data ──
@@ -94,6 +99,10 @@ before(async () => {
     -- Providers
     INSERT INTO providers VALUES (1, 'Microsoft');
     INSERT INTO providers VALUES (2, 'ISV_Custom');
+
+    -- Model build provenance (Descriptor XML capture)
+    INSERT INTO model_versions VALUES ('Foundation', 'ApplicationSuite', 'Application Suite', 'Microsoft Corporation', 'SYS', 'microsoft', '10.0.2263.172', 'C:\\pkg');
+    INSERT INTO model_versions VALUES ('ApplicationPlatform', 'ApplicationPlatform', 'Application Platform', 'Microsoft Corporation', 'SYS', 'microsoft', '7.0.7521.60', 'C:\\pkg');
 
     -- Names: Tables
     INSERT INTO names VALUES (100, '/Tables/CustTable', 'CustTable', 0, 1, 1);
@@ -576,6 +585,37 @@ describe('xref_list_modules', () => {
   it('shows object count column', async () => {
     const result = await callTool('xref_list_modules', {});
     assert.ok(result.includes('Object Count'));
+  });
+
+  it('shows the scanned build version and origin per module', async () => {
+    const full = await callToolFull('xref_list_modules', {});
+    const suite = full.structuredContent.modules.find(m => m.module === 'ApplicationSuite');
+    assert.equal(suite.version, '10.0.2263.172');
+    assert.equal(suite.origin, 'microsoft');
+    // Module without a captured descriptor degrades to nulls, not an error.
+    const found = full.structuredContent.modules.find(m => m.module === 'ApplicationFoundation');
+    assert.equal(found.version, null);
+    assert.ok(full.content[0].text.includes('10.0.2263.172'));
+  });
+});
+
+describe('xref_search_names modules filter', () => {
+  it('limits results to the given modules (case-insensitive)', async () => {
+    const full = await callToolFull('xref_search_names', {
+      pattern: 'CustTable', object_type: 'All', limit: 50, modules: ['applicationfoundation'],
+    });
+    assert.equal(full.structuredContent.result_count, 1);
+    assert.equal(full.structuredContent.results[0].path, '/Tables/CustTable.Extension1');
+    assert.deepEqual(full.structuredContent.modules, ['applicationfoundation']);
+    assert.match(full.content[0].text, /Scope: modules applicationfoundation/);
+  });
+
+  it('reports modules: null when unfiltered and returns rows from all modules', async () => {
+    const full = await callToolFull('xref_search_names', {
+      pattern: 'CustTable', object_type: 'All', limit: 50,
+    });
+    assert.equal(full.structuredContent.modules, null);
+    assert.ok(full.structuredContent.result_count > 1);
   });
 });
 

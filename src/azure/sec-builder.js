@@ -14,6 +14,11 @@ import { createRequire } from 'module';
 import { readFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, copyFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, resolve, basename, dirname } from 'path';
 import { XMLParser } from 'fast-xml-parser';
+import {
+  readModelDescriptors,
+  insertModelVersions,
+  MODEL_VERSIONS_SCHEMA,
+} from './model-descriptors.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -169,6 +174,10 @@ CREATE TABLE IF NOT EXISTS sec_metadata (
   key              TEXT PRIMARY KEY,
   value            TEXT
 );
+
+-- Model build provenance: one row per model descriptor found in the scanned
+-- AOT metadata roots (Microsoft application, ISV models, customizations).
+${MODEL_VERSIONS_SCHEMA}
 
 -- ── Performance indexes ──────────────────────────────────────────────────────
 -- Case-insensitive lookups (sec-tools.js uses COLLATE NOCASE everywhere)
@@ -1386,11 +1395,24 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     `).all();
   } catch (e) { log(`  (security module breakdown unavailable: ${e.message})`); }
 
+  // Model build provenance: which build of each scanned model (Microsoft,
+  // ISV, customizations like iExtension) the security objects came from.
+  let modelVersions = [];
+  if (packagesPaths.length) {
+    modelVersions = readModelDescriptors(packagesPaths, (m) => log(`  descriptor-warn: ${m}`));
+    const mvTransaction = db.transaction(() => {
+      insertModelVersions((sql, params) => db.prepare(sql).run(...params), modelVersions);
+    });
+    mvTransaction();
+    log(`  Model build versions captured: ${modelVersions.length}`);
+  }
+
   const metaTransaction = db.transaction(() => {
     stmts.insertMeta.run('build_date', new Date().toISOString());
     stmts.insertMeta.run('aot_source', packagesPathArg || 'none');
     stmts.insertMeta.run('dmf_source', dmfInputDir || 'none');
     stmts.insertMeta.run('security_module_count', String(securityModules.length));
+    stmts.insertMeta.run('model_versions_count', String(modelVersions.length));
     // Persist the full module→count map (small; dozens of modules) so the
     // admin UI can show the MS-vs-custom split without re-querying.
     stmts.insertMeta.run('security_modules', JSON.stringify(

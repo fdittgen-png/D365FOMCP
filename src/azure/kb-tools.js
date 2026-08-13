@@ -19,6 +19,9 @@ import {
   makeLabelResolver,
   structuredResult,
   formatTextParam,
+  modulesFilterParam,
+  sanitizeModulesFilter,
+  queryModelVersions,
   numberSourceLines,
   validateLikePattern,
   patternErrorResult,
@@ -395,17 +398,19 @@ export function registerKbTools(server, db) {
     'd365_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release". Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release". Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see d365_list_modules for the scanned build versions). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query (keywords)'),
       object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
+      modules: modulesFilterParam,
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20)'),
       format: formatTextParam,
     },
       outputSchema: d365SearchOutput.shape,
     },
-    async ({ query: searchQuery, object_type, limit, format }) => {
+    async ({ query: searchQuery, object_type, modules, limit, format }) => {
       const lim = Number.isInteger(limit) && limit > 0 ? limit : 20;
+      const moduleFilter = sanitizeModulesFilter(modules);
       // issue #42: gate the wildcard LIKE scan on pattern length before the DB.
       const pv = validateLikePattern(searchQuery);
       if (pv) return patternErrorResult(pv);
@@ -428,6 +433,11 @@ export function registerKbTools(server, db) {
         likeParams.push(object_type);
       }
 
+      if (moduleFilter.length) {
+        sql += ` AND module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
+        likeParams.push(...moduleFilter);
+      }
+
       sql += ` LIMIT ?`;
       likeParams.push(lim);
 
@@ -442,6 +452,7 @@ export function registerKbTools(server, db) {
         return emptyResult(`matches for "${searchQuery}"`, {
           query: searchQuery,
           object_type: object_type ?? null,
+          modules: moduleFilter.length ? moduleFilter : null,
           limit: lim,
           result_count: 0,
           truncated: false,
@@ -452,6 +463,7 @@ export function registerKbTools(server, db) {
       const typed = {
         query: searchQuery,
         object_type: object_type ?? null,
+        modules: moduleFilter.length ? moduleFilter : null,
         limit: lim,
         result_count: rows.length,
         truncated: rows.length >= lim,
@@ -464,6 +476,7 @@ export function registerKbTools(server, db) {
       };
 
       let out = `## Search Results: "${typed.query}"\n\n`;
+      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
       out += formatMarkdownTable(typed.results.map(r => ({
         object_type: r.object_type ?? '',
         object_name: r.object_name,
@@ -915,6 +928,18 @@ export function registerKbTools(server, db) {
 
       const { module_id: mid, table_count: tc, class_count: cc, enum_count: ec, entity_count: dc, form_count: fc } = mod[0];
 
+      // Build provenance of the models in this package ([] on KB databases
+      // built before model_versions capture).
+      const models = queryModelVersions(q, mid).map(v => ({
+        model_name: v.model_name,
+        module_id: v.module_id ?? null,
+        display_name: v.display_name ?? null,
+        publisher: v.publisher ?? null,
+        layer: v.layer ?? null,
+        origin: v.origin ?? null,
+        version: v.version ?? null,
+      }));
+
       const tableRows = q(
         `SELECT table_name, label, field_count, save_per_company, table_group
          FROM tables WHERE module_id = ? COLLATE NOCASE ORDER BY field_count DESC LIMIT ?`, [mid, tLim]
@@ -926,6 +951,7 @@ export function registerKbTools(server, db) {
 
       const typed = {
         module_id: mid,
+        models,
         table_count: tc ?? 0,
         class_count: cc ?? 0,
         enum_count: ec ?? 0,
@@ -948,6 +974,20 @@ export function registerKbTools(server, db) {
       };
 
       let out = `## Module: ${typed.module_id}\n\n`;
+      if (typed.models.length) {
+        out += '## Model Build Versions\n';
+        out += formatMarkdownTable(
+          typed.models.map(m => ({
+            Model: m.model_name,
+            Version: m.version ?? '',
+            Layer: m.layer ?? '',
+            Origin: m.origin ?? '',
+            Publisher: m.publisher ?? '',
+          })),
+          ['Model', 'Version', 'Layer', 'Origin', 'Publisher'],
+        );
+        out += '\n\n';
+      }
       out += `|Type|Count|\n|---|---|\n`;
       out += `|Tables|${typed.table_count}|\n|Classes|${typed.class_count}|\n|Enums|${typed.enum_count}|\n|Entities|${typed.entity_count}|\n|Forms|${typed.form_count}|\n\n`;
 
@@ -1397,7 +1437,7 @@ export function registerKbTools(server, db) {
     'd365_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List all D365FO modules/packages with object counts. The Level-0 directory of the entire knowledge base. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'List all D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the entire knowledge base. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: { format: formatTextParam },
       outputSchema: d365ListModulesOutput.shape,
     },
@@ -1412,6 +1452,20 @@ export function registerKbTools(server, db) {
           modules: [],
         });
       }
+      // Build provenance per package: a package can hold several models
+      // (e.g. ApplicationSuite), so distinct values are joined with ', '.
+      const byModule = new Map();
+      for (const v of queryModelVersions(q)) {
+        const key = (v.module_id ?? '').toLowerCase();
+        if (!byModule.has(key)) byModule.set(key, []);
+        byModule.get(key).push(v);
+      }
+      const provenance = (moduleId, field) => {
+        const vals = [...new Set(
+          (byModule.get(moduleId.toLowerCase()) || []).map(r => r[field]).filter(Boolean),
+        )];
+        return vals.length ? vals.join(', ') : null;
+      };
       const typed = {
         module_count: result.length,
         modules: result.map(r => ({
@@ -1421,19 +1475,25 @@ export function registerKbTools(server, db) {
           enum_count: r.enum_count ?? null,
           entity_count: r.entity_count ?? null,
           form_count: r.form_count ?? null,
+          version: provenance(r.module_id, 'version'),
+          origin: provenance(r.module_id, 'origin'),
+          publisher: provenance(r.module_id, 'publisher'),
+          layer: provenance(r.module_id, 'layer'),
         })),
       };
       let out = `## D365FO Modules (${typed.module_count} total)\n\n`;
       out += formatMarkdownTable(
         typed.modules.map(m => ({
           Module: m.module_id,
+          Version: m.version ?? '',
+          Origin: m.origin ?? '',
           Tables: m.table_count ?? '',
           Classes: m.class_count ?? '',
           Enums: m.enum_count ?? '',
           Entities: m.entity_count ?? '',
           Forms: m.form_count ?? '',
         })),
-        ['Module', 'Tables', 'Classes', 'Enums', 'Entities', 'Forms'],
+        ['Module', 'Version', 'Origin', 'Tables', 'Classes', 'Enums', 'Entities', 'Forms'],
       );
       return structuredResult(typed, out, format);
     }

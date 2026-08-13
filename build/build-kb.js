@@ -15,6 +15,11 @@ import { pathToFileURL } from 'url';
 import { XMLParser } from 'fast-xml-parser';
 import initSqlJs from 'sql.js';
 import { releaseOutputLock } from './release-output-lock.js';
+import {
+  readModelDescriptors,
+  insertModelVersions,
+  MODEL_VERSIONS_SCHEMA,
+} from '../src/azure/model-descriptors.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -88,7 +93,7 @@ const stats = {
   modules: 0, tables: 0, fields: 0, indexes: 0, relations: 0,
   enums: 0, enumValues: 0, edts: 0, classes: 0, methods: 0,
   entities: 0, forms: 0, securityRoles: 0, securityDuties: 0,
-  securityPrivileges: 0, menuItems: 0, views: 0, errors: 0,
+  securityPrivileges: 0, menuItems: 0, views: 0, errors: 0, modelVersions: 0,
   tableExtensions: 0, enumExtensions: 0, formExtensions: 0, dataEntityExtensions: 0,
 };
 
@@ -353,6 +358,10 @@ CREATE TABLE IF NOT EXISTS kb_metadata (
   key TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- Model build provenance: one row per model descriptor found in the scanned
+-- metadata roots (Microsoft application, ISV models, customizations).
+${MODEL_VERSIONS_SCHEMA}
 
 -- Modules
 CREATE TABLE IF NOT EXISTS modules (
@@ -1654,6 +1663,15 @@ async function main() {
   buildFtsIndex();
   importCuratedData();
 
+  // Model build provenance: capture each scanned model's version/publisher/
+  // layer from its Descriptor XML so the MCP services can report which build
+  // the data came from (and callers can scope queries per model).
+  console.log('[Ver] Model descriptor versions...');
+  const modelVersions = readModelDescriptors(packagesPaths);
+  insertModelVersions((sql, params) => db.run(sql, params), modelVersions);
+  stats.modelVersions = modelVersions.length;
+  console.log(`  ${modelVersions.length} model descriptors captured`);
+
   // KB metadata
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('d365fo_version', ?)`, [D365FO_VERSION]);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('build_date', ?)`, [new Date().toISOString()]);
@@ -1664,6 +1682,7 @@ async function main() {
     [(customPackagesPaths.length > 0 || stats.tableExtensions > 0 || stats.enumExtensions > 0) ? '1' : '0']
   );
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.1')`);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('model_versions_count', ?)`, [String(modelVersions.length)]);
 
   db.run('COMMIT');
 
@@ -1696,7 +1715,7 @@ async function main() {
   console.log(`  Duration: ${((t2 - t0) / 1000).toFixed(1)}s`);
   console.log('');
   console.log('  Objects extracted:');
-  console.log(`    Modules:      ${stats.modules}`);
+  console.log(`    Modules:      ${stats.modules} (${stats.modelVersions} model build versions captured)`);
   console.log(`    Tables:       ${stats.tables}`);
   console.log(`    Fields:       ${stats.fields}`);
   console.log(`    Indexes:      ${stats.indexes}`);

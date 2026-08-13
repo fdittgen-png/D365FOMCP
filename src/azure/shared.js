@@ -26,6 +26,58 @@ export const formatTextParam = z
   .default('toon')
   .describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way.');
 
+// Standard per-model scope filter. Add `modules: modulesFilterParam` to a
+// search tool's inputSchema to let callers limit the investigation to specific
+// models/packages — e.g. only the Microsoft application, only an ISV model,
+// or only a customization like iExtension. The list-modules/stats tool of each
+// service shows the scanned modules together with their build versions.
+export const modulesFilterParam = z
+  .array(z.string().min(1).max(200))
+  .min(1)
+  .max(50)
+  .optional()
+  .describe('Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service\'s list-modules/stats tool to see the scanned modules and their build versions.');
+
+/** Defensive counterpart of modulesFilterParam (rule #13 — the test mock
+ *  server bypasses Zod): trims, drops non-strings/empties, dedupes, caps at 50.
+ *  Returns [] when no usable filter was passed. */
+export function sanitizeModulesFilter(modules) {
+  if (!Array.isArray(modules)) return [];
+  return [...new Set(
+    modules
+      .filter(m => typeof m === 'string' && m.trim().length > 0)
+      .map(m => m.trim()),
+  )].slice(0, 50);
+}
+
+// ── Model build provenance ───────────────────────────────────────────────────
+
+/**
+ * Read the model_versions provenance table (written by the DB builders from
+ * the models' Descriptor XMLs). Returns [] when the database predates the
+ * table, so callers degrade gracefully on older snapshots.
+ *
+ * @param {(sql:string, params?:any[])=>object[]} q  Bound query helper.
+ * @param {string|null} [moduleId]  Optional: only models of this package.
+ */
+export function queryModelVersions(q, moduleId = null) {
+  try {
+    if (moduleId != null) {
+      return q(
+        `SELECT model_name, module_id, display_name, publisher, layer, origin, version
+         FROM model_versions WHERE module_id = ? COLLATE NOCASE ORDER BY model_name`,
+        [moduleId],
+      );
+    }
+    return q(
+      `SELECT model_name, module_id, display_name, publisher, layer, origin, version
+       FROM model_versions ORDER BY module_id, model_name`,
+    );
+  } catch {
+    return [];
+  }
+}
+
 // ── Singleton databases ─────────────────────────────────────────────────────
 
 let kbDb;

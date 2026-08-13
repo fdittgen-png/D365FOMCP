@@ -136,6 +136,11 @@ before(async () => {
       entity_count INTEGER DEFAULT 0, form_count INTEGER DEFAULT 0
     );
 
+    CREATE TABLE model_versions (
+      model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT,
+      publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT
+    );
+
     CREATE TABLE hallucination_traps (
       object_name TEXT, trap_type TEXT, wrong_value TEXT,
       correct_value TEXT, explanation TEXT
@@ -227,10 +232,15 @@ before(async () => {
     INSERT INTO kb_search VALUES ('class', 'SalesFormLetter', 'ApplicationSuite', 'SalesFormLetter Sales order posting form letter');
     INSERT INTO kb_search VALUES ('enum', 'StatusIssue', 'ApplicationSuite', 'StatusIssue Issue status inventory');
     INSERT INTO kb_search VALUES ('entity', 'CustCustomerEntity', 'ApplicationSuite', 'CustCustomerEntity Customer entity OData');
+    INSERT INTO kb_search VALUES ('table', 'TBG_CustomTable', 'iExtension', 'TBG_CustomTable Customer extension table custom fields');
 
     -- Modules
     INSERT INTO modules VALUES ('ApplicationSuite', 50, 100, 30, 10, 20);
     INSERT INTO modules VALUES ('ApplicationFoundation', 15, 40, 10, 5, 8);
+
+    -- Model build provenance (Descriptor XML capture)
+    INSERT INTO model_versions VALUES ('Foundation', 'ApplicationSuite', 'Application Suite', 'Microsoft Corporation', 'SYS', 'microsoft', '10.0.2263.172', 'C:\\pkg');
+    INSERT INTO model_versions VALUES ('iExtension', 'iExtension', 'iExtension', 'Trelleborg', 'USR', 'custom', '10.0.32.7', 'C:\\custom');
 
     -- Hallucination traps
     INSERT INTO hallucination_traps VALUES ('CustTable', 'wrong_field', 'CustomerName', 'Party.Name via DirPartyTable', 'CustTable does not have a CustomerName field. The customer name comes from DirPartyTable via the Party relation.');
@@ -786,7 +796,9 @@ describe('d365_get_module_summary', () => {
 
   it('P2-07: table_limit=2 returns exactly 2 key tables and emits a cap truncation note', async () => {
     const result = await callTool('d365_get_module_summary', { module_name: 'ApplicationSuite', table_limit: 2 });
-    const tablesSection = result.split('## Key Classes')[0];
+    // Slice from '## Key Tables' — the Model Build Versions table above it
+    // would otherwise be counted as key-table rows.
+    const tablesSection = result.split('## Key Tables')[1].split('## Key Classes')[0];
     const bodyRows = tablesSection.split('\n').filter(l => /^\|\s+\S/.test(l) && !/---/.test(l) && !/\bTable\b/.test(l.split('|')[1] || ''));
     assert.equal(bodyRows.length, 2, `expected 2 body rows, got:\n${tablesSection}`);
     assert.match(tablesSection, /Showing first 2 results \(default cap/);
@@ -1083,6 +1095,47 @@ describe('d365_list_modules', () => {
   it('shows total count in heading', async () => {
     const result = await callTool('d365_list_modules', {});
     assert.match(result, /3 total/);
+  });
+});
+
+describe('model build provenance (model_versions)', () => {
+  it('d365_list_modules shows the scanned build version and origin per module', async () => {
+    const full = await callToolFull('d365_list_modules', {});
+    const suite = full.structuredContent.modules.find(m => m.module_id === 'ApplicationSuite');
+    assert.equal(suite.version, '10.0.2263.172');
+    assert.equal(suite.origin, 'microsoft');
+    assert.equal(suite.layer, 'SYS');
+    // Module without a captured descriptor degrades to nulls, not an error.
+    const found = full.structuredContent.modules.find(m => m.module_id === 'ApplicationFoundation');
+    assert.equal(found.version, null);
+    assert.ok(full.content[0].text.includes('10.0.2263.172'));
+  });
+
+  it('d365_get_module_summary lists the models of the package with their versions', async () => {
+    const full = await callToolFull('d365_get_module_summary', { module_name: 'ApplicationSuite' });
+    assert.equal(full.structuredContent.models.length, 1);
+    assert.equal(full.structuredContent.models[0].model_name, 'Foundation');
+    assert.equal(full.structuredContent.models[0].version, '10.0.2263.172');
+    assert.match(full.content[0].text, /Model Build Versions/);
+  });
+
+  it('d365_search modules filter limits results to the given models', async () => {
+    const full = await callToolFull('d365_search', { query: 'Customer', modules: ['iExtension'] });
+    assert.equal(full.structuredContent.result_count, 1);
+    assert.equal(full.structuredContent.results[0].object_name, 'TBG_CustomTable');
+    assert.deepEqual(full.structuredContent.modules, ['iExtension']);
+    assert.match(full.content[0].text, /Scope: modules iExtension/);
+  });
+
+  it('d365_search modules filter matches case-insensitively', async () => {
+    const full = await callToolFull('d365_search', { query: 'Customer', modules: ['IEXTENSION'] });
+    assert.equal(full.structuredContent.result_count, 1);
+  });
+
+  it('d365_search without a modules filter reports modules: null', async () => {
+    const full = await callToolFull('d365_search', { query: 'Customer' });
+    assert.equal(full.structuredContent.modules, null);
+    assert.ok(full.structuredContent.result_count > 1);
   });
 });
 

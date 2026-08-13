@@ -148,6 +148,10 @@ before(async () => {
       object_type TEXT, object_name TEXT, module_id TEXT, content TEXT
     );
     CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE model_versions (
+      model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT,
+      publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT
+    );
   `);
 
   // Insert test data
@@ -217,6 +221,11 @@ before(async () => {
     INSERT INTO sec_search VALUES ('role', 'AccountsPayableClerk', 'ApplicationSuite', 'AccountsPayableClerk AP Clerk AP processing');
     INSERT INTO sec_search VALUES ('duty', 'VendInvoiceProcess', 'ApplicationSuite', 'VendInvoiceProcess Process vendor invoices');
     INSERT INTO sec_search VALUES ('user', 'john.doe@trelleborg.com', NULL, 'john.doe@trelleborg.com John Doe TAB');
+    INSERT INTO sec_search VALUES ('role', 'TBG Deny AP Posting', 'iExtension', 'TBG Deny AP Posting Denies AP posting administrator lockdown');
+
+    -- Model build provenance (Descriptor XML capture)
+    INSERT INTO model_versions VALUES ('Foundation', 'ApplicationSuite', 'Application Suite', 'Microsoft Corporation', 'SYS', 'microsoft', '10.0.2263.172', 'C:\\pkg');
+    INSERT INTO model_versions VALUES ('iExtension', 'iExtension', 'iExtension', 'Trelleborg', 'USR', 'custom', '10.0.32.7', 'C:\\custom');
 
     -- Metadata
     INSERT INTO sec_metadata VALUES ('build_date', '2026-03-25T12:00:00Z');
@@ -515,6 +524,32 @@ describe('sec_stats', () => {
     // The Build Info section itself must not contain a |...| table row.
     const buildInfoSection = result.split('## Build Info')[1]?.split('## Breakdown')[0] || '';
     assert.doesNotMatch(buildInfoSection, /^\|/m);
+  });
+
+  it('reports the scanned model build versions', async () => {
+    const full = await callToolFull('sec_stats', {});
+    const iext = full.structuredContent.model_versions.find(m => m.model_name === 'iExtension');
+    assert.equal(iext.version, '10.0.32.7');
+    assert.equal(iext.origin, 'custom');
+    assert.equal(iext.layer, 'USR');
+    const text = full.content[0].text;
+    assert.match(text, /## Scanned Model Versions/);
+    assert.ok(text.includes('10.0.2263.172'));
+  });
+});
+
+describe('sec_search modules filter', () => {
+  it('limits results to the given modules (case-insensitive)', async () => {
+    const full = await callToolFull('sec_search', { query: 'administrator', modules: ['IEXTENSION'] });
+    assert.equal(full.structuredContent.result_count, 1);
+    assert.equal(full.structuredContent.results[0].object_name, 'TBG Deny AP Posting');
+    assert.deepEqual(full.structuredContent.modules, ['IEXTENSION']);
+  });
+
+  it('reports modules: null when unfiltered and spans all modules', async () => {
+    const full = await callToolFull('sec_search', { query: 'administrator' });
+    assert.equal(full.structuredContent.modules, null);
+    assert.ok(full.structuredContent.result_count > 1);
   });
 });
 

@@ -18,6 +18,11 @@ import { execSync } from 'child_process';
 import { createRequire } from 'module';
 import sql from 'mssql';
 import { releaseOutputLock } from './release-output-lock.js';
+import {
+  readModelDescriptors,
+  insertModelVersions,
+  MODEL_VERSIONS_SCHEMA,
+} from '../src/azure/model-descriptors.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -31,6 +36,14 @@ const DEFAULT_OUTPUT = join(process.env.USERPROFILE || process.env.HOME || '.', 
 const serverInstance = process.argv[2] || DEFAULT_INSTANCE;
 const database = process.argv[3] || DEFAULT_DATABASE;
 const outputPath = process.argv[4] || DEFAULT_OUTPUT;
+
+// Metadata roots used to enrich the XRef modules with build provenance. The
+// cross-reference SQL database carries no version info, so the model build
+// numbers are read from the Descriptor XMLs on disk — the same roots the KB
+// build scans. Optional: when unset (or the paths don't exist on this box),
+// the model_versions table is created but stays empty.
+const descriptorPaths = (process.env.XREF_PACKAGES_PATHS || process.env.KB_PACKAGES_PATHS || '')
+  .split(/[,;]/).map(p => p.trim()).filter(Boolean);
 
 if (!database) {
   console.error('ERROR: No database name provided.');
@@ -84,6 +97,8 @@ const SCHEMA_STATEMENTS = [
     key TEXT PRIMARY KEY,
     value TEXT
   )`,
+  // Model build provenance, read from Descriptor XMLs (not from SQL Server).
+  MODEL_VERSIONS_SCHEMA,
 ];
 
 const INDEX_STATEMENTS = [
@@ -365,6 +380,21 @@ async function build() {
   }
   log('  Indexes created.');
 
+  // ── Model build provenance ─────────────────────────────────────────────────
+  log('Capturing model build versions from descriptors...');
+  let modelVersionCount = 0;
+  if (descriptorPaths.length) {
+    const modelVersions = readModelDescriptors(descriptorPaths, (m) => log(`  descriptor-warn: ${m}`));
+    const mvTransaction = db.transaction(() => {
+      insertModelVersions((s, params) => db.prepare(s).run(...params), modelVersions);
+    });
+    mvTransaction();
+    modelVersionCount = modelVersions.length;
+    log(`  ${modelVersionCount} model descriptors captured`);
+  } else {
+    log('  No XREF_PACKAGES_PATHS / KB_PACKAGES_PATHS set — model_versions left empty.');
+  }
+
   // ── Metadata ───────────────────────────────────────────────────────────────
   log('Writing metadata...');
   const stmtMeta = db.prepare('INSERT INTO xref_metadata (key, value) VALUES (?, ?)');
@@ -373,6 +403,8 @@ async function build() {
   stmtMeta.run('build_date', new Date().toISOString());
   stmtMeta.run('name_count', String(nameCount));
   stmtMeta.run('ref_count', String(refCount));
+  stmtMeta.run('descriptor_paths', descriptorPaths.join(';'));
+  stmtMeta.run('model_versions_count', String(modelVersionCount));
 
   // ── Close database (writes are already on disk) ────────────────────────────
   db.close();

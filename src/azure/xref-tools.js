@@ -18,6 +18,9 @@ import {
   truncationNote,
   structuredResult,
   formatTextParam,
+  modulesFilterParam,
+  sanitizeModulesFilter,
+  queryModelVersions,
   validateLikePattern,
   patternErrorResult,
   customLayerNote,
@@ -468,32 +471,39 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see xref_list_modules for the scanned build versions). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         pattern: z.string().min(1).max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
           .default('All').describe('Filter by object type'),
+        modules: modulesFilterParam,
         limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
         format: formatTextParam,
       },
       outputSchema: xrefSearchNamesOutput.shape,
     },
-    async ({ pattern, object_type, limit: rawLimit, format }) => {
+    async ({ pattern, object_type, modules, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 50;
       const objType = object_type || 'All';
+      const moduleFilter = sanitizeModulesFilter(modules);
       const _v = validateLikePattern(pattern);
       if (_v) return patternErrorResult(_v);
       const likePattern = pattern.includes('%') ? pattern : `%${pattern}%`;
       let typeFilter = '';
       const params = [likePattern];
       if (objType !== 'All') { typeFilter = ` AND n.path LIKE ?`; params.push(`/${objType}/%`); }
+      let moduleClause = '';
+      if (moduleFilter.length) {
+        moduleClause = ` AND m.module COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
+        params.push(...moduleFilter);
+      }
       params.push(limit);
 
       const result = q(`
         SELECT n.path, m.module
         FROM names n
         JOIN modules m ON n.module_id = m.id
-        WHERE n.path LIKE ? ${typeFilter}
+        WHERE n.path LIKE ? ${typeFilter} ${moduleClause}
           AND n.path NOT LIKE '%/Methods/%'
           AND n.path NOT LIKE '%/Fields/%'
           AND n.path NOT LIKE '%/Controls/%'
@@ -505,6 +515,7 @@ export function registerXrefTools(server, db) {
       const typed = {
         pattern,
         object_type: objType,
+        modules: moduleFilter.length ? moduleFilter : null,
         limit,
         result_count: result.length,
         truncated: result.length >= limit,
@@ -513,6 +524,7 @@ export function registerXrefTools(server, db) {
       if (!result.length) return emptyResult(`objects matching "${pattern}"`, typed, customLayerNote(pattern));
 
       let out = `## Objects matching "${pattern}"\n${typed.result_count} result(s)\n\n`;
+      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
       out += formatMarkdownTable(
         typed.results.map(r => ({ Path: r.path, Module: r.module ?? '' })),
         ['Path', 'Module'],
@@ -853,7 +865,7 @@ export function registerXrefTools(server, db) {
     'xref_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List all D365FO modules in the XRef database with object counts. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'List all D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots configured). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: { format: formatTextParam },
       outputSchema: xrefListModulesOutput.shape,
     },
@@ -866,16 +878,43 @@ export function registerXrefTools(server, db) {
         ORDER BY object_count DESC
       `);
 
+      // Build provenance per package: a package can hold several models,
+      // so distinct values are joined with ', '.
+      const byModule = new Map();
+      for (const v of queryModelVersions(q)) {
+        const key = (v.module_id ?? '').toLowerCase();
+        if (!byModule.has(key)) byModule.set(key, []);
+        byModule.get(key).push(v);
+      }
+      const provenance = (moduleName, field) => {
+        const vals = [...new Set(
+          (byModule.get(moduleName.toLowerCase()) || []).map(r => r[field]).filter(Boolean),
+        )];
+        return vals.length ? vals.join(', ') : null;
+      };
+
       const typed = {
         module_count: result.length,
-        modules: result.map(r => ({ module: r.module, object_count: num(r.object_count) ?? 0 })),
+        modules: result.map(r => ({
+          module: r.module,
+          object_count: num(r.object_count) ?? 0,
+          version: provenance(r.module, 'version'),
+          origin: provenance(r.module, 'origin'),
+          publisher: provenance(r.module, 'publisher'),
+          layer: provenance(r.module, 'layer'),
+        })),
       };
       if (!result.length) return emptyResult('modules in the XRef database', typed);
 
       let out = `## XRef Modules (${typed.module_count} total)\n\n`;
       out += formatMarkdownTable(
-        typed.modules.map(r => ({ Module: r.module, 'Object Count': r.object_count })),
-        ['Module', 'Object Count'],
+        typed.modules.map(r => ({
+          Module: r.module,
+          Version: r.version ?? '',
+          Origin: r.origin ?? '',
+          'Object Count': r.object_count,
+        })),
+        ['Module', 'Version', 'Origin', 'Object Count'],
       );
       return structuredResult(typed, out, format);
     },

@@ -27,12 +27,21 @@
  */
 
 import { createRequire } from 'module';
+import { MODEL_VERSIONS_SCHEMA } from '../src/azure/model-descriptors.js';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
 function hasColumn(db, table, col) {
   try {
     return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+  } catch { return false; }
+}
+
+function hasTable(db, schema, table) {
+  try {
+    return !!db.prepare(
+      `SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`
+    ).get(table);
   } catch { return false; }
 }
 
@@ -193,6 +202,18 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     `).run();
     summary.customizedTables = customizedInfo.changes;
 
+    // ── Model build provenance ────────────────────────────────────────────────
+    // A provenance-aware delta carries the custom models' descriptor versions
+    // (model_versions); upsert them so the merged KB reports which build of
+    // iExtension/ISV models the refreshed data was scanned from. Guarded:
+    // either side may predate the model_versions table.
+    if (hasTable(db, 'cust', 'model_versions')) {
+      if (!hasTable(db, 'main', 'model_versions')) db.exec(MODEL_VERSIONS_SCHEMA);
+      const mvBefore = before('model_versions');
+      db.exec('INSERT OR REPLACE INTO main.model_versions SELECT * FROM cust.model_versions');
+      summary.added.model_versions = before('model_versions') - mvBefore;
+    }
+
     // ── Labels / object paths / graph edges ──────────────────────────────────
     db.exec('INSERT OR IGNORE INTO main.labels SELECT * FROM cust.labels');
     db.exec('INSERT OR REPLACE INTO main.object_paths SELECT * FROM cust.object_paths');
@@ -224,6 +245,10 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     setMeta.run('has_customizations', '1');
     setMeta.run('build_date', new Date().toISOString());
     setMeta.run('last_custom_merge', new Date().toISOString());
+    if (hasTable(db, 'main', 'model_versions')) {
+      setMeta.run('model_versions_count',
+        String(db.prepare('SELECT COUNT(*) AS n FROM main.model_versions').get().n));
+    }
 
     db.exec('COMMIT');
     log(`  KB custom merge: +${summary.added.tables} tables, +${summary.added.fields} fields, ${enumsTouched} enums, ${summary.customizedTables} base tables flagged customized`);

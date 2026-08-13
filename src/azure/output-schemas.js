@@ -24,6 +24,21 @@
 
 import { z } from 'zod';
 
+// ── Shared: model build provenance row ───────────────────────────────────────
+// One scanned model's descriptor data (model_versions table). Shared by
+// d365_get_module_summary, sec_stats, and the list-modules tools. All fields
+// except model_name are nullable — a descriptor may omit any of them, and
+// databases built before provenance capture have no rows at all.
+export const modelVersionRowSchema = z.object({
+  model_name: z.string(),
+  module_id: z.string().nullable(),
+  display_name: z.string().nullable(),
+  publisher: z.string().nullable(),
+  layer: z.string().nullable(),
+  origin: z.string().nullable(),   // 'microsoft' | 'isv' | 'custom' | 'unknown'
+  version: z.string().nullable(),  // VersionMajor.Minor.Build.Revision
+});
+
 // ── Pilot 1: d365_lookup_table ───────────────────────────────────────────────
 
 export const d365LookupTableFieldSchema = z.object({
@@ -272,6 +287,7 @@ export const d365SearchResultSchema = z.object({
 export const d365SearchOutput = z.object({
   query: z.string(),
   object_type: z.string().nullable(),
+  modules: z.array(z.string()).nullable(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
@@ -351,6 +367,9 @@ export const d365ModuleKeyClassSchema = z.object({
 });
 export const d365GetModuleSummaryOutput = z.object({
   module_id: z.string(),
+  // Build provenance of the models in this package (empty on KB databases
+  // built before model_versions capture).
+  models: z.array(modelVersionRowSchema),
   table_count: z.number(),
   class_count: z.number(),
   enum_count: z.number(),
@@ -463,6 +482,12 @@ export const d365ModuleRowSchema = z.object({
   enum_count: z.number().nullable(),
   entity_count: z.number().nullable(),
   form_count: z.number().nullable(),
+  // Build provenance (null on KB databases built before model_versions
+  // capture). version joins distinct model versions in the package.
+  version: z.string().nullable(),
+  origin: z.string().nullable(),
+  publisher: z.string().nullable(),
+  layer: z.string().nullable(),
 });
 export const d365ListModulesOutput = z.object({
   module_count: z.number(),
@@ -565,6 +590,7 @@ export const xrefSearchNameRowSchema = z.object({
 export const xrefSearchNamesOutput = z.object({
   pattern: z.string(),
   object_type: z.string(),
+  modules: z.array(z.string()).nullable(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
@@ -621,6 +647,12 @@ export const xrefCrossModuleDepsOutput = z.object({
 export const xrefListModuleRowSchema = z.object({
   module: z.string(),
   object_count: z.number(),
+  // Build provenance from Descriptor XMLs (null when the XRef DB was built
+  // without XREF_PACKAGES_PATHS / KB_PACKAGES_PATHS, or predates capture).
+  version: z.string().nullable(),
+  origin: z.string().nullable(),
+  publisher: z.string().nullable(),
+  layer: z.string().nullable(),
 });
 export const xrefListModulesOutput = z.object({
   module_count: z.number(),
@@ -910,6 +942,7 @@ export const secSearchRowSchema = z.object({
 export const secSearchOutput = z.object({
   query: z.string(),
   object_type: z.string().nullable(),
+  modules: z.array(z.string()).nullable(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
@@ -923,6 +956,9 @@ export const secStatsMetadataEntrySchema = z.object({
 });
 export const secStatsOutput = z.object({
   build_info: z.array(secStatsMetadataEntrySchema),
+  // Build provenance of every scanned model (empty on sec databases built
+  // before model_versions capture).
+  model_versions: z.array(modelVersionRowSchema),
   grant_roles: z.number(),
   deny_roles: z.number(),
   total_duties: z.number(),

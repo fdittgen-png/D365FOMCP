@@ -21,6 +21,9 @@ import {
   formatCrudFlag,
   contextAround,
   formatTextParam,
+  modulesFilterParam,
+  sanitizeModulesFilter,
+  queryModelVersions,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
 import { z } from 'zod';
@@ -1389,17 +1392,19 @@ export function registerSecTools(server, db) {
     'sec_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across roles, duties, privileges, and users. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Full-text search across roles, duties, privileges, and users. Scope with `modules` to search only security objects from specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see sec_stats for the scanned build versions). Note: users carry no module and are excluded when the filter is set. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
       query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
+      modules: modulesFilterParam,
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
       format: formatTextParam,
     },
       outputSchema: secSearchOutput.shape,
     },
-    async ({ query: searchQuery, object_type, limit: rawLimit, format }) => {
+    async ({ query: searchQuery, object_type, modules, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 20;
+      const moduleFilter = sanitizeModulesFilter(modules);
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
       if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
 
@@ -1419,6 +1424,10 @@ export function registerSecTools(server, db) {
           ftsSql += ' AND s.object_type = ?';
           ftsParams.push(object_type);
         }
+        if (moduleFilter.length) {
+          ftsSql += ` AND s.module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
+          ftsParams.push(...moduleFilter);
+        }
         ftsSql += ' LIMIT ?';
         ftsParams.push(limit);
         results = q(ftsSql, ftsParams);
@@ -1433,6 +1442,10 @@ export function registerSecTools(server, db) {
           sql += ' AND object_type = ?';
           likeParams.push(object_type);
         }
+        if (moduleFilter.length) {
+          sql += ` AND module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
+          likeParams.push(...moduleFilter);
+        }
         sql += ' LIMIT ?';
         likeParams.push(limit);
         results = q(sql, likeParams);
@@ -1440,6 +1453,7 @@ export function registerSecTools(server, db) {
       if (!results.length) return emptyResult(`matches for "${searchQuery}"`, {
         query: searchQuery,
         object_type: object_type ?? null,
+        modules: moduleFilter.length ? moduleFilter : null,
         limit,
         result_count: 0,
         truncated: false,
@@ -1454,6 +1468,7 @@ export function registerSecTools(server, db) {
       const typed = {
         query: searchQuery,
         object_type: object_type ?? null,
+        modules: moduleFilter.length ? moduleFilter : null,
         limit,
         result_count: results.length,
         truncated: results.length >= limit,
@@ -1485,7 +1500,7 @@ export function registerSecTools(server, db) {
     'sec_stats',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get summary statistics for the security database: role counts, user counts, company count, etc. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML provenance: version, layer, origin microsoft/isv/custom). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: { format: formatTextParam },
       outputSchema: secStatsOutput.shape,
     },
@@ -1494,6 +1509,17 @@ export function registerSecTools(server, db) {
 
       const typed = {
         build_info: meta.map(r => ({ key: r.key, value: String(r.value) })),
+        // Which build of each scanned model the security objects came from
+        // ([] on sec databases built before model_versions capture).
+        model_versions: queryModelVersions(q).map(v => ({
+          model_name: v.model_name,
+          module_id: v.module_id ?? null,
+          display_name: v.display_name ?? null,
+          publisher: v.publisher ?? null,
+          layer: v.layer ?? null,
+          origin: v.origin ?? null,
+          version: v.version ?? null,
+        })),
         grant_roles: q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Grant'`)[0]?.n || 0,
         deny_roles: q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Deny'`)[0]?.n || 0,
         total_duties: q(`SELECT COUNT(*) as n FROM duties`)[0]?.n || 0,
@@ -1527,6 +1553,22 @@ export function registerSecTools(server, db) {
       out += `| Disabled Users | ${typed.disabled_users} |\n`;
       out += `| User-Role Assignments | ${typed.user_role_assignments} |\n`;
       out += `| Companies | ${typed.companies} |\n`;
+
+      if (typed.model_versions.length) {
+        out += '\n## Scanned Model Versions\n';
+        out += formatMarkdownTable(
+          typed.model_versions.map(m => ({
+            Model: m.model_name,
+            Module: m.module_id ?? '',
+            Version: m.version ?? '',
+            Layer: m.layer ?? '',
+            Origin: m.origin ?? '',
+            Publisher: m.publisher ?? '',
+          })),
+          ['Model', 'Module', 'Version', 'Layer', 'Origin', 'Publisher'],
+        );
+        out += '\n';
+      }
 
       return structuredResult(typed, out, format);
     }
