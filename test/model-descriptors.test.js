@@ -176,6 +176,16 @@ describe('readModelDescriptors (on-disk scan)', () => {
     assert.match(warnings[0], /Broken/);
   });
 
+  it('handles a root that IS a single package (Descriptor directly under it)', () => {
+    // Real-world shape: KB_PACKAGES_PATHS entry pointing straight at
+    // C:\Workspace\DEV\Metadata\iExtension — Descriptor sits at root level.
+    const rows = readModelDescriptors([join(root, 'iExtension')]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].model_name, 'iExtension');
+    assert.equal(rows[0].module_id, 'iExtension');  // root-basename fallback
+    assert.equal(rows[0].version, '10.0.32.7');
+  });
+
   it('dedupes the same model across two roots (first root wins)', () => {
     const rows = readModelDescriptors([root, root]);
     assert.equal(rows.filter(r => r.model_name === 'iExtension').length, 1);

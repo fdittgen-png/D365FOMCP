@@ -99,12 +99,28 @@ export function parseModelDescriptor(xmlContent) {
   };
 }
 
+/** Find a direct child directory named Descriptor (case-insensitive — AOT
+ *  dirs are stored with inconsistent casing, like the builders' findAxDirs()). */
+function findDescriptorDir(dirPath) {
+  let entries;
+  try {
+    entries = readdirSync(dirPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const hit = entries.find(e => e.isDirectory() && e.name.toLowerCase() === 'descriptor');
+  return hit ? join(dirPath, hit.name) : null;
+}
+
 /**
  * Scan metadata roots for model descriptors.
  *
- * Layout handled: `<root>/<Package>/Descriptor/<Model>.xml` — this covers both
- * the Microsoft PackagesLocalDirectory and customization metadata roots
- * (e.g. C:\Workspace\DEV\Metadata\iExtension\Descriptor\iExtension.xml).
+ * Layouts handled:
+ *   1. `<root>/<Package>/Descriptor/<Model>.xml` — the Microsoft
+ *      PackagesLocalDirectory shape (packages under the root).
+ *   2. `<root>/Descriptor/<Model>.xml` — a root that IS a single package,
+ *      e.g. KB_PACKAGES_PATHS entries pointing straight at a model folder
+ *      like C:\Workspace\DEV\Metadata\iExtension.
  *
  * @param {string[]} packagesPaths  Metadata roots to scan.
  * @param {(msg:string)=>void} [warn]  Warning sink (defaults to console.warn).
@@ -125,19 +141,16 @@ export function readModelDescriptors(packagesPaths, warn = (m) => console.warn('
       warn(`descriptor scan skipped root ${root}: ${err.message}`);
       continue;
     }
-    for (const pkg of packages) {
-      const pkgPath = join(root, pkg.name);
-      let entries;
-      try {
-        entries = readdirSync(pkgPath, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      // AOT dirs are stored with inconsistent casing across models — match
-      // Descriptor case-insensitively like the builders' findAxDirs() does.
-      const descDir = entries.find(e => e.isDirectory() && e.name.toLowerCase() === 'descriptor');
-      if (!descDir) continue;
-      const descPath = join(pkgPath, descDir.name);
+    // Layout 2: the root itself is a package (Descriptor directly under it).
+    // The root's own basename is the package-name fallback.
+    const candidates = packages.map(p => ({ path: join(root, p.name), name: p.name }));
+    if (packages.some(p => p.name.toLowerCase() === 'descriptor')) {
+      const rootName = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+      candidates.unshift({ path: root, name: rootName });
+    }
+    for (const pkg of candidates) {
+      const descPath = findDescriptorDir(pkg.path);
+      if (!descPath) continue;
       let files;
       try {
         files = readdirSync(descPath).filter(f => f.toLowerCase().endsWith('.xml'));
