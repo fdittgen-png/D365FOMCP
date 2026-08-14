@@ -12,7 +12,7 @@ import { app } from '@azure/functions';
 
 app.http('d365ping', {
   methods: ['GET'],
-  route: 'ping',
+  route: 'api/ping',
   authLevel: 'anonymous',
   handler: async () => ({
     status: 200,

@@ -649,7 +649,7 @@ const PAGE_HTML = `<!DOCTYPE html>
 
 app.http('otrs-admin-page', {
   methods: ['GET'],
-  route: 'otrs-admin',
+  route: 'api/otrs-admin',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -689,7 +689,7 @@ app.http('otrs-admin-page', {
 
 app.http('otrs-admin-extract', {
   methods: ['POST'],
-  route: 'otrs-admin/extract',
+  route: 'api/otrs-admin/extract',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -781,7 +781,7 @@ app.http('otrs-admin-extract', {
 
 app.http('otrs-admin-extract-single', {
   methods: ['POST'],
-  route: 'otrs-admin/extract-single',
+  route: 'api/otrs-admin/extract-single',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -838,7 +838,7 @@ app.http('otrs-admin-extract-single', {
 
 app.http('otrs-admin-ingest', {
   methods: ['POST'],
-  route: 'otrs-admin/ingest',
+  route: 'api/otrs-admin/ingest',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -883,7 +883,7 @@ app.http('otrs-admin-ingest', {
 
 app.http('otrs-admin-convert-to-pdf', {
   methods: ['POST'],
-  route: 'otrs-admin/convert-to-pdf',
+  route: 'api/otrs-admin/convert-to-pdf',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -1039,7 +1039,7 @@ async function collectXmlInputs(request) {
  */
 app.http('otrs-admin-upload-to-rag', {
   methods: ['POST'],
-  route: 'otrs-admin/upload-to-rag',
+  route: 'api/otrs-admin/upload-to-rag',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {

@@ -174,7 +174,7 @@ export function buildHealthReport({ env = process.env, getDbs, statFn = statSync
 
 app.http('d365health', {
   methods: ['GET'],
-  route: 'health',
+  route: 'api/health',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     const user = getAuthUser(request);

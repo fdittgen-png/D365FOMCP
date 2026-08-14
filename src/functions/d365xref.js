@@ -25,7 +25,7 @@ function createXrefServer() {
 
 app.http('d365xref', {
   methods: ['GET', 'POST', 'DELETE'],
-  route: 'd365xref',
+  route: 'api/d365xref',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header

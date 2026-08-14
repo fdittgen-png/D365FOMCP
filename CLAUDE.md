@@ -27,6 +27,7 @@ npm run start:taskrecorder     # Local Task Recorder server (stdio)
 - `src/azure/` — Shared tool implementations (used by both local and Azure)
   - `shared.js` — DB singletons, query helper, formatMarkdownTable
   - `model-descriptors.js` — build provenance: reads each scanned model's `Descriptor/*.xml` (publisher, layer, origin `microsoft`/`isv`/`custom`, version `Major.Minor.Build.Revision`) into a `model_versions` table shared by all three DBs. Builders call `readModelDescriptors()`/`insertModelVersions()`; tools read it via `queryModelVersions()` (shared.js, returns `[]` on pre-provenance DBs). Exposed by `d365_list_modules`/`d365_get_module_summary`/`xref_list_modules`/`sec_stats`; the shared `modules: modulesFilterParam` input (sanitized via `sanitizeModulesFilter`, rule #13) scopes `d365_search`/`xref_search_names`/`sec_search` to specific models. XRef's SQL source has no versions — its builder reads descriptors from `XREF_PACKAGES_PATHS`/`KB_PACKAGES_PATHS`
+  - `oauth-proxy-core.js` — MCP OAuth compatibility layer (strips the RFC 8707 `resource` param Entra rejects, AADSTS9010010); endpoints in `src/functions/oauth-proxy.js`, docs in `docs/MCP-Entra-Auth-Setup.md`. NOTE: `host.json` `routePrefix` is `''` — every function route must self-prefix `api/` (static-scan enforced in `test/oauth-proxy.test.js`)
   - `kb-tools.js` — 17 KB tools, exports `registerKbTools(server, db)`
   - `xref-tools.js` — 16 XRef tools, exports `registerXrefTools(server, db)`
   - `sec-tools.js` — 18 Security tools, exports `registerSecTools(server, db)`

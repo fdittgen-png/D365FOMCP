@@ -19,3 +19,4 @@ import './wiki-mcp.js';
 import './d365health.js';
 import './d365ping.js';
 import './d365admin-pages.js';
+import './oauth-proxy.js';

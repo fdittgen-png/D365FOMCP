@@ -61,7 +61,7 @@ function pageHandler(redirectTarget) {
 
 app.http('d365backoffice', {
   methods: ['GET'],
-  route: 'backoffice',
+  route: 'api/backoffice',
   authLevel: 'anonymous',
   handler: pageHandler('/api/backoffice'),
 });

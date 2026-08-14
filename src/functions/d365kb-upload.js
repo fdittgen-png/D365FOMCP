@@ -291,7 +291,7 @@ async function runRebuildAsync(jobId, context) {
 
 app.http('d365kb-upload', {
   methods: ['GET'],
-  route: 'd365kb/upload',
+  route: 'api/d365kb/upload',
   authLevel: 'anonymous',
   handler: async () => ({ status: 302, headers: { Location: '/api/backoffice#kb' } }),
 });
@@ -300,7 +300,7 @@ app.http('d365kb-upload', {
 
 app.http('d365kb-upload-sas', {
   methods: ['GET'],
-  route: 'd365kb/upload/sas',
+  route: 'api/d365kb/upload/sas',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     // Reuse the fail-closed decision: only proceed when authorized.
@@ -331,7 +331,7 @@ app.http('d365kb-upload-sas', {
 
 app.http('d365kb-upload-apply', {
   methods: ['POST'],
-  route: 'd365kb/upload/apply',
+  route: 'api/d365kb/upload/apply',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     const user = getAuthUser(request);
@@ -378,7 +378,7 @@ app.http('d365kb-upload-apply', {
 
 app.http('d365kb-upload-rebuild', {
   methods: ['POST'],
-  route: 'd365kb/upload/rebuild',
+  route: 'api/d365kb/upload/rebuild',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     const user = getAuthUser(request);
@@ -423,7 +423,7 @@ app.http('d365kb-upload-rebuild', {
 
 app.http('d365kb-upload-status', {
   methods: ['GET'],
-  route: 'd365kb/upload/status',
+  route: 'api/d365kb/upload/status',
   authLevel: 'anonymous',
   handler: async (request) => {
     const jobId = new URL(request.url).searchParams.get('job_id');

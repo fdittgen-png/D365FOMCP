@@ -17,7 +17,9 @@
     - delegated scope user_impersonation (admins AND users may consent)
     - app role "MCP Access" value Mcp.Access (Users/Groups)
     - public client flows + redirect URIs
-      https://claude.ai/api/mcp/auth_callback and http://localhost
+      https://claude.ai/api/mcp/auth_callback, http://localhost, and
+      http://localhost/callback (Entra ignores the loopback PORT but matches
+      the PATH — Claude Code redirects to /callback: AADSTS50011 otherwise)
     - declared API permissions: its own user_impersonation + Graph
       openid/profile/offline_access/User.Read (one consent covers everything a
       sign-in requests; offline_access = refresh tokens for MCP clients)
@@ -63,7 +65,7 @@ $GraphScopes = [ordered]@{
   'offline_access' = '7427e0e9-2fba-42fe-b0c0-848c9e6a8182'
   'User.Read'      = 'e1fe6dd8-ba31-4d61-89e7-88639da4683d'
 }
-$RedirectUris = @('https://claude.ai/api/mcp/auth_callback', 'http://localhost')
+$RedirectUris = @('https://claude.ai/api/mcp/auth_callback', 'http://localhost', 'http://localhost/callback')
 
 # az.cmd mangles embedded quotes in inline JSON on Windows — pass bodies via temp file.
 function Invoke-GraphWrite([string]$Method, [string]$Url, [object]$Body) {

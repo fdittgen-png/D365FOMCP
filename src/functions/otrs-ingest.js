@@ -25,7 +25,7 @@ const DEFAULT_WIKI = 'otrs';
 
 app.http('otrs-ingest', {
   methods: ['POST'],
-  route: 'otrs/ingest',
+  route: 'api/otrs/ingest',
   authLevel: 'function',
   handler: async (request, context) => {
     try {

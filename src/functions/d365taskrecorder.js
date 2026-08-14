@@ -83,7 +83,7 @@ function createTaskRecorderServer() {
 
 app.http('d365taskrecorder', {
   methods: ['GET', 'POST', 'DELETE'],
-  route: 'd365taskrecorder',
+  route: 'api/d365taskrecorder',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     // Health check
@@ -134,7 +134,7 @@ app.http('d365taskrecorder', {
 
 app.http('d365taskrecorder-upload', {
   methods: ['GET', 'POST'],
-  route: 'd365taskrecorder/upload',
+  route: 'api/d365taskrecorder/upload',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     // GET: serve the test UI

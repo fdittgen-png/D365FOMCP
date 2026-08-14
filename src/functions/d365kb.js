@@ -25,7 +25,7 @@ function createKbServer() {
 
 app.http('d365kb', {
   methods: ['GET', 'POST', 'DELETE'],
-  route: 'd365kb',
+  route: 'api/d365kb',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header

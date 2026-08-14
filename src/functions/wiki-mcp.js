@@ -70,7 +70,7 @@ function buildServer(wiki) {
 
 app.http('wiki-mcp-catalog', {
   methods: ['GET'],
-  route: 'wiki-mcp',
+  route: 'api/wiki-mcp',
   authLevel: 'anonymous',
   handler: async (_request, context) => {
     try {
@@ -104,7 +104,7 @@ app.http('wiki-mcp-catalog', {
 
 app.http('wiki-mcp', {
   methods: ['GET', 'POST', 'DELETE'],
-  route: 'wiki-mcp/{name}',
+  route: 'api/wiki-mcp/{name}',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     const name = request.params.name;

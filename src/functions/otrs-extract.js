@@ -44,7 +44,7 @@ const VALID_MODES = new Set(['incremental', 'full', 'preview']);
 
 app.http('otrs-extract', {
   methods: ['POST'],
-  route: 'otrs/extract',
+  route: 'api/otrs/extract',
   // Function-key auth — Power Automate's HTTP action supports this out of
   // the box. Simpler than Easy Auth + RBAC for a pipeline endpoint that
   // isn't user-facing.

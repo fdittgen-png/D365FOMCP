@@ -14,20 +14,96 @@ we use the simpler "protected resource" shape: client gets a user token → send
 - Function App: `tis-d-mcpd365fo-func` (RG `tis-d-mcpd365fo-rg`); prod analog `tis-p-…`
 - Endpoints to protect: `/api/d365kb`, `/api/d365xref`, `/api/d365sec`,
   `/api/d365taskrecorder` (+ its `/upload` route), `/api/wiki-mcp/{name}`
-- Leave **anonymous** (no auth): `/api/health` (deploy probes), admin pages as-is
+- Leave **anonymous** (no auth): `/api/ping` (liveness probe,
+  `src/functions/d365ping.js` — the single Easy Auth excluded path).
+  `/api/health` is the admin dashboard backend and sits **behind** Easy Auth;
+  its code fail-closes via `decideAdminAccess` anyway.
 
 We gate access with an **app role** assigned to a **security group** (app roles
 avoid the `groups`-claim overage problem KJ would hit at scale).
 
 ---
 
-## Status (2026-08-04)
+## Why not OBO — this service vs. the Orion deck
 
+The Orion engineering deck ("OAuth On-Behalf-Of in the Orion Platform")
+describes KJ's **two-hop** topology: Claude → MCP bridge (Container App) →
+downstream Function API. There, the MCP server must *swap audiences* — it
+receives Token A (audience: MCP) and performs an OBO exchange for Token B
+(audience: the API) — and it proxies the whole OAuth flow, so the Container
+App exposes five unauthenticated OAuth endpoints (`/.well-known/*`,
+`/register`, `/authorize`, `/token`).
+
+This service is **single-hop**: the Function App *is* the resource server
+(local SQLite, no downstream API), so there is no second audience and nothing
+for OBO to exchange. Mapping the deck's elements onto this project:
+
+| Orion deck element | This project | Why |
+|---|---|---|
+| Identity preservation — API sees the user's `oid`, never an SP | Same invariant, enforced directly: `mcp-auth.js` requires the principal id (`oid`); no id → 401 | Single hop — no bridge to lose identity behind |
+| Audience binding | Same invariant: Easy Auth validates `aud` against the App ID URI + client ID, issuer pinned to tenant v2.0 | — |
+| Auth code + PKCE, public client, Mobile & desktop redirects | Identical (same claude.ai callback + `http://localhost` loopback) | — |
+| No client secrets | Same for MCP clients (public client + PKCE). Exception: Copilot Studio needs a secret (confidential client, Part D) | No UAMI needed — nothing server-side ever requests a token |
+| **OBO exchange (Token A → Token B)** | Not implemented | Only one token exists; no second audience |
+| **Two app registrations (MCP + API)** | ONE combined registration (resource + public client) | Matches in-house `sp-tis-p-orion-mcp`/`pulsar` registration shape; no audience swap to declare |
+| **UAMI federated credential, `knownClientApplications`, `/.default` OBO scope** | None | All exist solely to enable OBO |
+| **MCP proxies OAuth; five unauthenticated OAuth endpoints** | **Same — since 2026-08-05.** `src/functions/oauth-proxy.js` serves the equivalent five: PRM, AS metadata, `/api/oauth/register` (mock DCR), `/api/oauth/authorize`, `/api/oauth/token` | Forced by Entra: it rejects the MCP-mandated RFC 8707 `resource` param (AADSTS9010010), so the proxy strips it. Exactly why orion's Container App has these endpoints |
+
+The deck's *security properties* (audience-bound tokens, end-to-end `oid`
+attribution, secret-free client chain) all hold here. The one structural
+divergence that remains is **OBO itself** (rows 5–7): single hop, one
+registration, no token exchange, no UAMI. The client-facing OAuth-proxy
+surface, by contrast, turned out not to be an Orion-specific choice but a
+general Entra-vs-MCP-spec compatibility requirement — this service adopted it
+on 2026-08-05 (see "The MCP OAuth proxy" below). **When the deck's pattern
+becomes fully right for us:** the day a tool calls **live D365 on the user's
+behalf**, we add KJ's second registration + OBO exchange (see the note at the
+end of Part A).
+
+---
+
+## Status (2026-08-05)
+
+- **✅ E2E VERIFIED (2026-08-05):** full interactive MCP OAuth completed from
+  Claude Code through the deployed OAuth proxy — discovery → proxied
+  authorize (resource stripped) → Entra sign-in → proxied token → Easy Auth
+  validation → `Mcp.Access` gate → live `d365_list_modules` result. No admin
+  consent prompt appeared (the 2026-08-04 permission grants sufficed). Two
+  deploy-day gotchas, both fixed: (1) `az webapp auth update
+  --excluded-paths` takes only ONE value (same quirk as
+  `--allowed-audiences`) — `Enable-McpAuth.ps1` now writes the full list via
+  an ARM `authsettingsV2` PUT; (2) **`AADSTS50011`**: Entra ignores the
+  loopback *port* but matches the *path* — Claude Code redirects to
+  `http://localhost:<port>/callback`, so the registration needs
+  `http://localhost/callback` in addition to `http://localhost` (added live +
+  in `Configure-McpAppRegistration.ps1`). Also: new function files must be
+  imported in `src/functions/index.js` or their routes silently don't exist —
+  now enforced by a static-scan test.
+- **OAuth proxy implemented (2026-08-05, deployed same day):** the first real
+  member sign-in test failed at Entra with **`AADSTS9010010`** ("The resource
+  parameter provided in the request doesn't match with the requested
+  scopes"). Root cause: the MCP spec (2025-06-18) makes clients send an
+  RFC 8707 `resource` parameter (the MCP server URL, copied verbatim from the
+  PRM document), and since Entra's ~2026-03 enforcement change the v2.0
+  endpoints reject any `resource` that is not an Application ID URI of the
+  scope's app — and tenant policy blocks registering
+  `https://…azurewebsites.net/…` URIs (no verified domain). Every
+  spec-compliant MCP client (Claude Code, claude.ai) dead-ends there; VS Code
+  only works because it doesn't send `resource`. Fix: the in-app **OAuth
+  proxy** (`src/functions/oauth-proxy.js` + `src/azure/oauth-proxy-core.js`)
+  — see "The MCP OAuth proxy" section. Requires a code deploy + re-run of
+  `Enable-McpAuth.ps1` (new excluded paths, removes
+  `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES`).
+- **CUTOVER LIVE (2026-08-04):** Easy Auth (Return401) enforces on every MCP
+  endpoint of `tis-d-mcpd365fo-func`; `Enable-McpAuth.ps1` ran with
+  `-ApiAppId 54b1261c-352d-4772-b83a-001e529bd117` and removed the temporary
+  `REQUIRE_AUTH=false` setting. Verified 2026-08-05 by anonymous probes: all
+  five MCP surfaces + `/upload` + `/api/health` → 401, `/api/ping` → 200,
+  RFC 9728 metadata served at `/.well-known/oauth-protected-resource`, and the
+  401 challenge carries `scope=` + `resource_metadata=`. Operational
+  learnings (PIM, MFA-claim tokens, `az webapp auth` quirks) live in
+  `skills/claude-code/mcp-deploy.md` § Session learnings 2026-08-04.
 - **Code gate (Part C): implemented and merged** — see below.
-- **`REQUIRE_AUTH=false` is set on `tis-d-mcpd365fo-func`** so deploying the
-  fail-closed code does NOT break the (still anonymous) live endpoints.
-  Remove it at cutover — `scripts/Enable-McpAuth.ps1` does this.
-- **Easy Auth: still off** (verified via `az webapp auth show` — unconfigured).
 - **Directory work needs an admin**: creating app registrations and security
   groups returns `Insufficient privileges` for our accounts (tenant restricts
   both) → Part A goes to Aaron. ARM writes on the Function App work fine
@@ -309,7 +385,7 @@ code's role check (`mcp-auth.js`).
 | `oid` required | Token claim | No principal id header → 401 (`admin-auth.js getAuthUser` + `mcp-auth.js`) | No (by design) |
 | 401/403/503 texts incl. stale-token hint | — | Hard-coded in `decideMcpAuthorization` (`mcp-auth.js:116` area) | No |
 | Which endpoints are gated | — | Each handler in `src/functions/` calls `authorizeMcpRequest`; the static-scan test in `test/mcp-auth.test.js` fails if one is missing | Code change, test-enforced |
-| Health-probe exception | — | `--excluded-paths '[/api/health]'` hard-coded in `Enable-McpAuth.ps1:50`; route defined in `src/functions/d365health.js` | Script edit |
+| Liveness-probe exception | — | `--excluded-paths '/api/ping'` hard-coded in `Enable-McpAuth.ps1` (plain path — the `'[…]'` bracket form is stored as a literal); route defined in `src/functions/d365ping.js` | Script edit |
 | Scope `user_impersonation`, redirect URIs, group name/membership | Expose an API / Authentication / group | No server-side counterpart; scope reappears in client config (Part D) + Copilot swagger | Entra only |
 
 ### What Aaron sends back
@@ -322,16 +398,17 @@ is the only parameter of the cutover:
 .\scripts\Enable-McpAuth.ps1 -ApiAppId <that-guid>
 ```
 
-**Actual values returned (2026-07-06):** client ID
-`5e8bc645-a8f6-4516-a4dc-9235d242a309`, registration name
-`sp-tis-p-D365metadata-mcp` (not the `sp-tis-d-mcpd365fo-mcp` asked for
-above — accepted as-is), so the cutover command is:
+**Actual values (history):** the first registration returned on 2026-07-06
+was `sp-tis-p-D365metadata-mcp` (`5e8bc645-a8f6-4516-a4dc-9235d242a309`) —
+**retired**, superseded on 2026-08-04 by `sp-tis-d-d365fokb-mcp`
+(`54b1261c-352d-4772-b83a-001e529bd117`, see the Status section). The cutover
+command that actually ran:
 
 ```powershell
-.\scripts\Enable-McpAuth.ps1 -ApiAppId 5e8bc645-a8f6-4516-a4dc-9235d242a309
+.\scripts\Enable-McpAuth.ps1 -ApiAppId 54b1261c-352d-4772-b83a-001e529bd117
 ```
 
-(`-AppIdUri` defaults to `api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp` already — no
+(`-AppIdUri` defaults to `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp` already — no
 override needed.)
 
 ### Why a directory admin and not us
@@ -355,19 +432,21 @@ App Service Authentication validates the bearer token at the platform edge and
 returns 401 for anonymous/invalid callers — no token-parsing code needed for authn.
 
 **Scripted:** run [`scripts/Enable-McpAuth.ps1`](../scripts/Enable-McpAuth.ps1)
-with the client ID from Part A:
+with the client ID from Part A (this ran at the 2026-08-04 cutover):
 
 ```powershell
-.\scripts\Enable-McpAuth.ps1 -ApiAppId 5e8bc645-a8f6-4516-a4dc-9235d242a309
+.\scripts\Enable-McpAuth.ps1 -ApiAppId 54b1261c-352d-4772-b83a-001e529bd117
 ```
 
-It configures the Microsoft identity provider (issuer
-`https://login.microsoftonline.com/<tenant>/v2.0`, audiences
-`api://trelleborg.onmicrosoft.com/sp-tis-p-D365metadata-mcp` + the client ID), enables Easy Auth with
-**`Return401`**, excludes **`/api/health`** so deploy probes keep working,
-removes the temporary `REQUIRE_AUTH=false` app setting (use
-`-KeepRequireAuthOff` for a staged cutover), and smoke-tests
-401-for-anonymous / 200-for-health.
+It upgrades the auth config format to v2 if needed, configures the Microsoft
+identity provider (issuer `https://login.microsoftonline.com/<tenant>/v2.0`,
+audiences `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp` + the
+client ID — the second audience merged via an ARM `authsettingsV2` PUT because
+`--allowed-audiences` takes only one value), enables Easy Auth with
+**`Return401`**, excludes **`/api/ping`** so deploy probes keep working
+(`/api/health` stays gated — it's the admin dashboard backend), removes the
+temporary `REQUIRE_AUTH=false` app setting (use `-KeepRequireAuthOff` for a
+staged cutover), and smoke-tests 401-for-anonymous / 200-for-ping.
 
 > `Return401` (not `RedirectToLoginPage`) is essential — MCP clients send a bearer
 > token and expect a 401 challenge, not an HTML login redirect.
@@ -416,14 +495,64 @@ used by deploy probes); Easy Auth covers them at the platform edge once on.
 > Either complete Part B first, or set `REQUIRE_AUTH=false` as a temporary
 > app setting and remove it at cutover.
 
-## Part D — Point the clients at OAuth
+## The MCP OAuth proxy — why clients no longer talk to Entra directly
 
-**Prerequisite (done 2026-08-04):** the app setting
-`WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES = api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation`
-on the Function App makes Easy Auth publish RFC 9728 protected-resource
-metadata at `/.well-known/oauth-protected-resource` and adds `scope=` +
-`resource_metadata=` to the 401 challenge — this is what lets MCP clients
-auto-discover the Entra authorization server (closes the "rough edge" below).
+**The failure this fixes (first seen 2026-08-05, error `AADSTS9010010`):**
+the MCP authorization spec (2025-06-18) requires clients to send an RFC 8707
+`resource` parameter on `/authorize` and `/token` — the MCP server URL,
+copied verbatim from the protected-resource metadata. Entra's v2.0 endpoints
+(since the ~2026-03 enforcement change) reject any `resource` that isn't an
+Application ID URI of the app owning the requested scope. Ours is
+`api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp`, the client sends
+`https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb` → mismatch →
+sign-in dead-ends. This hits **every spec-compliant MCP client** (Claude
+Code, claude.ai connectors); Microsoft's own remote MCP servers have the same
+open issues (azure-devops-mcp #1293, Dataverse-MCP #15). The two known fixes
+are (a) an Application ID URI that exactly equals the server URL — impossible
+here, tenant policy requires a verified domain and `azurewebsites.net` isn't
+one — or (b) an OAuth proxy that strips the parameter. We do (b), like
+`sp-tis-p-orion-mcp` does.
+
+**Shape:** the Function App presents *itself* as the OAuth authorization
+server. Five anonymous endpoints (`src/functions/oauth-proxy.js`, pure logic
+in `src/azure/oauth-proxy-core.js`, tests in `test/oauth-proxy.test.js`):
+
+| Endpoint | Role |
+|---|---|
+| `GET /.well-known/oauth-protected-resource[/{path}]` | RFC 9728 PRM. `resource` echoes the requested URL; `authorization_servers` points at **this app** (that's the redirect that makes the proxy work) |
+| `GET /.well-known/oauth-authorization-server[/{path}]` | RFC 8414 AS metadata: authorize/token/register point at the proxy routes; advertises PKCE `S256` (absent from Entra's own metadata) |
+| `GET /.well-known/openid-configuration` | OIDC-style alias of the same document |
+| `GET /api/oauth/authorize` | 302 to Entra `/oauth2/v2.0/authorize` with all params passed through verbatim **minus `resource`**; injects the client ID if omitted |
+| `POST /api/oauth/token` | Forwards the form body to Entra `/oauth2/v2.0/token` **minus `resource`**; streams Entra's response back. `POST /api/oauth/register` is a mock RFC 7591 DCR that hands every client the single registered public-client ID |
+
+**What does NOT change:** tokens still come from Entra, audience-bound to the
+`api://…` URI; Easy Auth still validates signature/issuer/audience at the
+platform edge; `mcp-auth.js` still enforces `Mcp.Access`; PKCE runs end to
+end (the proxy never sees a usable secret — there are none). The proxy is
+discovery + parameter mediation only; it stores nothing. This is **not** OBO
+— no audience swap, no second registration (see the deck-comparison section).
+
+**Config:** defaults in `oauth-proxy-core.js` match the live registration;
+override via app settings `MCP_OAUTH_TENANT_ID`, `MCP_OAUTH_CLIENT_ID`,
+`MCP_OAUTH_SCOPE` — no code change for the prod analog.
+
+**Plumbing this required:** `host.json` `routePrefix` is now `''` and every
+function route self-prefixes `api/` (public URLs unchanged — enforced by a
+static-scan test in `test/oauth-proxy.test.js`), because the well-known
+documents must live at the URL root. The proxy paths are Easy Auth
+**excluded paths**, and `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES` must be
+**removed** (while set, Easy Auth serves its own PRM pointing clients
+straight at Entra — the broken path). `Enable-McpAuth.ps1` does both and
+smoke-tests the proxy; re-run it after deploying the proxy code.
+
+**Superseded:** the 2026-08-04 `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES` setup
+(previous revisions of this doc called it the "rough edge" resolution). It
+produced a *discoverable* but *uncompletable* flow — clients found Entra,
+then died at AADSTS9010010. One side effect of removing it: the 401 challenge
+no longer carries `resource_metadata=`; MCP clients fall back to probing the
+spec-mandated `/.well-known` locations, which the proxy serves.
+
+## Part D — Point the clients at OAuth
 
 - **Claude Code** (verified to reach the auth prompt 2026-08-04): Entra has no
   dynamic client registration, so the client ID must be pinned — without it
@@ -457,19 +586,31 @@ auto-discover the Entra authorization server (closes the "rough edge" below).
   resource `api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp`.
 
 ## Part E — Test plan
-1. **Anonymous is rejected:** `curl -s -o /dev/null -w "%{http_code}" -X POST https://…/api/d365kb -d '{}'` → **401**.
-2. **Valid member token works:** acquire a user token for the scope (interactive `az account get-access-token --resource api://<id>` for a member, or the client's flow) → `curl -H "Authorization: Bearer <token>" …/api/d365kb` with a `tools/list` body → **200** + tool list.
-3. **Non-member is forbidden:** a signed-in user *not* in the group → **403** (the Part C role check) or no token issued at all (assignment required).
-4. **Health still probes:** confirm `Deploy.ps1` health phase passes (token or excluded path).
-5. **Each client connects:** Claude Code, claude.ai, Copilot Studio each complete the OAuth flow and list tools.
+1. **Anonymous is rejected:** `curl -s -o /dev/null -w "%{http_code}" -X POST https://…/api/d365kb -d '{}'` → **401**. ✅ *Verified 2026-08-05 on all six surfaces (kb, xref, sec, taskrecorder, taskrecorder/upload, wiki-mcp).*
+2. **Valid member token works:** acquire a user token for the scope via a real
+   MCP client's OAuth flow → `curl -H "Authorization: Bearer <token>" …/api/d365kb`
+   with a `tools/list` body → **200** + tool list. ✅ *Verified 2026-08-05
+   end-to-end from Claude Code via the OAuth proxy (live tool call returned
+   data).* ⚠️ `az account get-access-token` does NOT work for this — it
+   authenticates as the *Azure CLI* client (`04b07795-…`), which is not
+   consented to this API → `AADSTS65001` (reproduced 2026-08-05). Test with
+   Claude Code / claude.ai instead.
+3. **Non-member is forbidden:** a signed-in user *not* in the group → **403** (the Part C role check) or no token issued at all (assignment required). ☐ untested — needs a non-member volunteer.
+4. **Health still probes:** confirm `Deploy.ps1` health phase passes (token or excluded path). ✅ *Verified 2026-08-05 (two deploys, 0 failures).*
+5. **Each client connects:** Claude Code ✅ *(2026-08-05, via the OAuth proxy)*; claude.ai ☐ (org Owner adds the connector — client ID now optional thanks to mock DCR); Copilot Studio ☐ (needs the client secret + apim redirect, Part D).
 
-## Known rough edge — RESOLVED 2026-08-04
+## Known rough edges — history
 The immature part (KJ's "many hoops", Aaron's "MS will make MCP security easier")
-was the **MCP OAuth *discovery* handshake** — the `.well-known/oauth-protected-resource`
-metadata that lets clients auto-negotiate. Microsoft shipped this as an App
-Service preview feature: the `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES` app
-setting (see Part D prerequisite) makes Easy Auth serve the RFC 9728 document
-and enrich the 401 challenge. Verified live on `tis-d-mcpd365fo-func`. The
-remaining Entra-specific quirk is **no dynamic client registration** — every
-MCP client must be told the client ID explicitly (Claude Code `--client-id`,
-claude.ai Advanced settings, Copilot Security tab).
+was the **MCP OAuth handshake** against Entra. Two rounds:
+
+1. **Discovery (resolved 2026-08-04, superseded 2026-08-05):** the
+   `WEBSITE_AUTH_PRM_DEFAULT_WITH_SCOPES` preview setting made Easy Auth
+   serve the RFC 9728 document and enrich the 401 challenge. It worked — but
+   pointed clients directly at Entra, which then rejected their
+   spec-mandated `resource` parameter.
+2. **RFC 8707 vs Entra (resolved 2026-08-05):** `AADSTS9010010` on every
+   spec-compliant client. Fixed by the in-app **OAuth proxy** (see "The MCP
+   OAuth proxy" section), which also mock-implements RFC 7591 DCR — so
+   clients no longer strictly need a pinned client ID (`/api/oauth/register`
+   hands out the registered one). Pinning `--client-id` still works and
+   remains the documented default for Claude Code.

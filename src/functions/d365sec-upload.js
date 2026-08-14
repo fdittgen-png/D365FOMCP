@@ -584,7 +584,7 @@ function buildDbInfoHtml() {
 
 app.http('d365sec-upload', {
   methods: ['GET', 'POST'],
-  route: 'd365sec/upload',
+  route: 'api/d365sec/upload',
   authLevel: 'anonymous',
   handler: async (request, context) => {
 
@@ -1061,7 +1061,7 @@ async function runBuildAsync(jobId, context) {
 
 app.http('d365sec-upload-sas', {
   methods: ['GET'],
-  route: 'd365sec/upload/sas',
+  route: 'api/d365sec/upload/sas',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -1093,7 +1093,7 @@ app.http('d365sec-upload-sas', {
 
 app.http('d365sec-upload-build', {
   methods: ['POST'],
-  route: 'd365sec/upload/build',
+  route: 'api/d365sec/upload/build',
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
@@ -1145,7 +1145,7 @@ app.http('d365sec-upload-build', {
 
 app.http('d365sec-upload-status', {
   methods: ['GET'],
-  route: 'd365sec/upload/status',
+  route: 'api/d365sec/upload/status',
   authLevel: 'anonymous',
   handler: async (request) => {
     const jobId = new URL(request.url).searchParams.get('job_id');
