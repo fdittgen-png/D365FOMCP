@@ -1,5 +1,15 @@
 # XRef custom-layer coverage & data caveats
 
+> **STATUS UPDATE 2026-08-14 — limitation #1 is CLOSED on the current snapshot.**
+> iExtension and HISOL were compiled into `XRef_tis-d365fo-dev-02100264590`
+> (platform 10.0.2645.90 finally matched the box) and the rebuilt snapshot
+> (6,151,273 names / 27,989,546 refs) — deployed the same day — now contains
+> **iExtension (37,466 names, 50,723 refs) and HISOL (19,479 names)**. The
+> `customLayerNote()` disclosure stays in place as a guard for stale snapshots.
+> Note the custom models still exclude **binary-only ISV packages** (Lasernet,
+> AMC, PRN, …) — those ship no XML/compilable source at all. Refresh procedure:
+> [Metadata-Update-Runbook](Metadata-Update-Runbook.md) §4.
+
 Three known limitations surfaced during analysis against the live MCP services.
 Two are **data/build** facts (not code defects); one is an **inherent** version
 caveat. This page is the canonical reference the tools link to when a custom-
