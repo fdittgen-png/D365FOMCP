@@ -1577,7 +1577,7 @@ async function main() {
     }
     console.log('  kb_search_fts virtual table created (FTS5 available)');
   } catch (err) {
-    console.log(`  kb_search_fts skipped (FTS5 not available: ${err.message}) — d365_search will use LIKE fallback`);
+    console.log(`  kb_search_fts deferred (FTS5 not in this SQLite build: ${err.message}) — will be finalized post-save via better-sqlite3`);
   }
 
   // Prepare statements
@@ -1704,7 +1704,18 @@ async function main() {
   releaseOutputLock(outputPath);
   writeFileSync(outputPath, buffer);
 
-  const dbSizeMB = (buffer.length / (1024 * 1024)).toFixed(1);
+  // Issue #17: sql.js can't create FTS5 tables, so finalize kb_search_fts on
+  // the saved file with better-sqlite3. Best-effort — when the native module
+  // is unavailable, d365_search transparently falls back to LIKE scanning.
+  try {
+    const { ensureKbFtsIndex } = await import('./add-kb-fts.js');
+    const ftsRows = ensureKbFtsIndex(outputPath);
+    console.log(`  kb_search_fts finalized via better-sqlite3 (${ftsRows} rows indexed)`);
+  } catch (err) {
+    console.log(`  kb_search_fts finalize skipped (${err.message}) — d365_search will use LIKE fallback`);
+  }
+
+  const dbSizeMB = ((statSync(outputPath).size) / (1024 * 1024)).toFixed(1);
 
   // ── Summary ──
   console.log('');

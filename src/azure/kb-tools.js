@@ -23,6 +23,7 @@ import {
   sanitizeModulesFilter,
   queryModelVersions,
   numberSourceLines,
+  contextAround,
   validateLikePattern,
   patternErrorResult,
   READ_ONLY_DB_ANNOTATIONS,
@@ -415,37 +416,63 @@ export function registerKbTools(server, db) {
       const pv = validateLikePattern(searchQuery);
       if (pv) return patternErrorResult(pv);
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
+      if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
 
-      const likeParts = [];
-      const likeParams = [];
-
-      terms.forEach((term) => {
-        likeParts.push(`(object_name LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE)`);
-        likeParams.push(`%${term}%`, `%${term}%`);
-      });
-
-      let sql = `SELECT object_type, object_name, module_id, SUBSTR(content, 1, 120) as context
-                 FROM kb_search
-                 WHERE ${likeParts.join(' AND ')}`;
-
-      if (object_type) {
-        sql += ` AND object_type = ? COLLATE NOCASE`;
-        likeParams.push(object_type);
-      }
-
-      if (moduleFilter.length) {
-        sql += ` AND module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
-        likeParams.push(...moduleFilter);
-      }
-
-      sql += ` LIMIT ?`;
-      likeParams.push(lim);
-
+      // Issue #17: FTS5 MATCH first (10-50x faster on the ~1 GB KB), same
+      // pattern as sec_search. Falls back to LIKE when the DB predates
+      // kb_search_fts (older builds, sql.js-only environments).
       let rows;
       try {
-        rows = q(sql, likeParams);
-      } catch (err) {
-        return errorResult('db-error', 'Try a shorter or more specific search term.', err);
+        // Each term becomes a quote-escaped prefix-match token.
+        const ftsExpr = terms.map(t => `"${t.replace(/"/g, '""')}"*`).join(' AND ');
+        let ftsSql = `SELECT s.object_type, s.object_name, s.module_id, s.content
+                      FROM kb_search_fts f
+                      JOIN kb_search s ON s.rowid = f.rowid
+                      WHERE kb_search_fts MATCH ?`;
+        const ftsParams = [ftsExpr];
+        if (object_type) {
+          ftsSql += ` AND s.object_type = ? COLLATE NOCASE`;
+          ftsParams.push(object_type);
+        }
+        if (moduleFilter.length) {
+          ftsSql += ` AND s.module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
+          ftsParams.push(...moduleFilter);
+        }
+        ftsSql += ` LIMIT ?`;
+        ftsParams.push(lim);
+        rows = q(ftsSql, ftsParams);
+      } catch {
+        // kb_search_fts missing — LIKE scan over kb_search.
+        const likeParts = [];
+        const likeParams = [];
+
+        terms.forEach((term) => {
+          likeParts.push(`(object_name LIKE ? COLLATE NOCASE OR content LIKE ? COLLATE NOCASE)`);
+          likeParams.push(`%${term}%`, `%${term}%`);
+        });
+
+        let sql = `SELECT object_type, object_name, module_id, content
+                   FROM kb_search
+                   WHERE ${likeParts.join(' AND ')}`;
+
+        if (object_type) {
+          sql += ` AND object_type = ? COLLATE NOCASE`;
+          likeParams.push(object_type);
+        }
+
+        if (moduleFilter.length) {
+          sql += ` AND module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
+          likeParams.push(...moduleFilter);
+        }
+
+        sql += ` LIMIT ?`;
+        likeParams.push(lim);
+
+        try {
+          rows = q(sql, likeParams);
+        } catch (err) {
+          return errorResult('db-error', 'Try a shorter or more specific search term.', err);
+        }
       }
 
       if (!rows || rows.length === 0) {
@@ -471,7 +498,10 @@ export function registerKbTools(server, db) {
           object_type: r.object_type ?? null,
           object_name: r.object_name,
           module_id: r.module_id ?? null,
-          context: r.context ?? null,
+          // Rule #12: center the snippet on the first matching term instead
+          // of blindly taking the first 120 chars (matches beyond position
+          // 120 used to be invisible in the context column).
+          context: r.content != null ? contextAround(r.content, terms[0], 60) : null,
         })),
       };
 
