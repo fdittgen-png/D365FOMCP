@@ -31,6 +31,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { registerWikiTools } from '../azure/wiki-tools.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
+import { serverInfo, serverOptions, wikiService, requestBaseUrl } from '../azure/server-metadata.js';
 
 /**
  * Registry loaded lazily on first request so module import never throws
@@ -52,12 +53,9 @@ function getRegistry() {
   }
 }
 
-function buildServer(wiki) {
-  const server = new McpServer({
-    name: `wiki-${wiki.name}`,
-    version: '1.0.0',
-    description: wiki.description,
-  });
+function buildServer(wiki, baseUrl) {
+  const svc = wikiService(wiki);
+  const server = new McpServer(serverInfo(svc, { baseUrl }), serverOptions(svc));
   registerWikiTools(server, wiki);
   return server;
 }
@@ -150,7 +148,7 @@ app.http('wiki-mcp', {
 
     // MCP protocol path — spin up a fresh server + transport per request.
     try {
-      const server = buildServer(wiki);
+      const server = buildServer(wiki, requestBaseUrl(request));
       const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
       await server.connect(transport);
 

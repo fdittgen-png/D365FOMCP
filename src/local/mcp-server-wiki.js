@@ -32,6 +32,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadWikiRegistry, findWiki } from '../azure/wiki-registry.js';
 import { registerWikiTools } from '../azure/wiki-tools.js';
+import { serverInfo, serverOptions, wikiService } from '../azure/server-metadata.js';
 
 function usageAndExit(msg) {
   process.stderr.write(`${msg}\n`);
@@ -60,11 +61,7 @@ if (!wiki) {
   usageAndExit(`Wiki "${wikiName}" not found. ${available}`);
 }
 
-const server = new McpServer({
-  name: `wiki-${wiki.name}`,
-  version: '1.0.0',
-  description: wiki.description,
-});
+const server = new McpServer(serverInfo(wikiService(wiki)), serverOptions(wikiService(wiki)));
 
 registerWikiTools(server, wiki);
 

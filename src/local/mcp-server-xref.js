@@ -12,6 +12,7 @@ import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerXrefTools } from '../azure/xref-tools.js';
+import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -28,11 +29,7 @@ db.pragma('journal_mode = OFF');
 db.pragma('cache_size = -50000');
 db.pragma('mmap_size = 3221225472');
 
-const server = new McpServer({
-  name: 'd365fo-xref',
-  version: '1.0.0',
-  description: 'D365FO Cross-Reference — find who calls, extends, implements, or references any AOT object.',
-});
+const server = new McpServer(serverInfo('xref'), serverOptions('xref'));
 
 registerXrefTools(server, db);
 

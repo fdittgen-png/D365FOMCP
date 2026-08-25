@@ -15,7 +15,11 @@ we use the simpler "protected resource" shape: client gets a user token → send
 - Endpoints to protect: `/api/d365kb`, `/api/d365xref`, `/api/d365sec`,
   `/api/d365taskrecorder` (+ its `/upload` route), `/api/wiki-mcp/{name}`
 - Leave **anonymous** (no auth): `/api/ping` (liveness probe,
-  `src/functions/d365ping.js` — the single Easy Auth excluded path).
+  `src/functions/d365ping.js`) and `/api/icon.png` + `/api/icon-512.png`
+  (server icon, `src/functions/d365icon.js` — referenced from every MCP
+  server's `initialize` → `serverInfo.icons`; connector directories fetch it
+  unauthenticated). Both are Easy Auth excluded paths; add new ones with
+  `scripts/Update-McpAuthExcludedPaths.ps1` (non-destructive merge).
   `/api/health` is the admin dashboard backend and sits **behind** Easy Auth;
   its code fail-closes via `decideAdminAccess` anyway.
 

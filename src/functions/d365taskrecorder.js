@@ -19,6 +19,7 @@ import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
+import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
 
 /**
  * Per-endpoint upload ceiling for Task Recorder recordings.
@@ -69,12 +70,8 @@ try {
 
 // ── MCP server factory ─────────────────────────────────────────────────────
 
-function createTaskRecorderServer() {
-  const server = new McpServer({
-    name: 'd365fo-taskrecorder',
-    version: '1.0.0',
-    description: 'D365FO Task Recorder service — converts .axtr recordings to structured Markdown, and to an enriched, self-contained MHTML document (screenshots + KB technical detail + role-based security).',
-  });
+function createTaskRecorderServer(baseUrl) {
+  const server = new McpServer(serverInfo('taskrecorder', { baseUrl }), serverOptions('taskrecorder'));
   registerTaskRecorderTools(server);
   return server;
 }
@@ -88,7 +85,7 @@ app.http('d365taskrecorder', {
   handler: async (request, context) => {
     // Health check
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
-      return { status: 200, jsonBody: { name: 'd365fo-taskrecorder', version: '1.0.0', status: 'ok' } };
+      return { status: 200, jsonBody: healthInfo('taskrecorder', { baseUrl: requestBaseUrl(request) }) };
     }
 
     // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
@@ -96,7 +93,7 @@ app.http('d365taskrecorder', {
     if (denied) return denied;
 
     try {
-      const server = createTaskRecorderServer();
+      const server = createTaskRecorderServer(requestBaseUrl(request));
       const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
       await server.connect(transport);
 

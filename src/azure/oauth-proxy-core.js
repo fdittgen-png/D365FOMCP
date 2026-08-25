@@ -23,6 +23,8 @@
  */
 
 /** Query/body parameter Entra v2.0 rejects when it mismatches the scope's audience. */
+import { resourceNameForPath, WEBSITE_URL } from './server-metadata.js';
+
 const STRIPPED_PARAMS = ['resource'];
 
 const DEFAULT_TENANT_ID = '0f861177-7722-4f06-8db9-3384e5321a9f';
@@ -57,6 +59,9 @@ export function protectedResourceMetadata(baseUrl, resourcePath, cfg) {
   const suffix = resourcePath ? `/${String(resourcePath).replace(/^\/+/, '')}` : '';
   return {
     resource: `${baseUrl}${suffix}`,
+    // RFC 9728 §2: human-readable name/docs — connector directories show these.
+    resource_name: resourceNameForPath(resourcePath),
+    resource_documentation: WEBSITE_URL,
     authorization_servers: [baseUrl],
     scopes_supported: [cfg.scope],
     bearer_methods_supported: ['header'],

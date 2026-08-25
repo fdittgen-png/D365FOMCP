@@ -97,6 +97,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Easy Auth enable failed.' }
 
 $excluded = @(
   '/api/ping',
+  '/api/icon.png',       # server icon referenced from initialize.serverInfo.icons (src/functions/d365icon.js)
+  '/api/icon-512.png',
+  '/favicon.ico',
+  '/favicon.png',
   '/.well-known/oauth-protected-resource',
   '/.well-known/oauth-protected-resource/*',
   '/.well-known/oauth-authorization-server',

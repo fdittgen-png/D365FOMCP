@@ -12,13 +12,10 @@ import { getKbDb } from '../azure/shared.js';
 import { registerKbTools } from '../azure/kb-tools.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
+import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
 
-function createKbServer() {
-  const server = new McpServer({
-    name: 'd365fo-kb',
-    version: '1.0.0',
-    description: 'D365FO Knowledge Base — tables, fields, joins, enums, classes, methods, and more.',
-  });
+function createKbServer(baseUrl) {
+  const server = new McpServer(serverInfo('kb', { baseUrl }), serverOptions('kb'));
   registerKbTools(server, getKbDb());
   return server;
 }
@@ -30,7 +27,7 @@ app.http('d365kb', {
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
-      return { status: 200, jsonBody: { name: 'd365fo-kb', version: '1.0.0', status: 'ok' } };
+      return { status: 200, jsonBody: healthInfo('kb', { baseUrl: requestBaseUrl(request) }) };
     }
 
     // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
@@ -38,7 +35,7 @@ app.http('d365kb', {
     if (denied) return denied;
 
     try {
-      const server = createKbServer();
+      const server = createKbServer(requestBaseUrl(request));
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });

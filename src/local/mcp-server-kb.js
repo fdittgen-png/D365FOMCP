@@ -12,6 +12,7 @@ import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerKbTools } from '../azure/kb-tools.js';
+import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -28,11 +29,7 @@ db.pragma('journal_mode = OFF');
 db.pragma('cache_size = -50000');
 db.pragma('mmap_size = 1100000000');
 
-const server = new McpServer({
-  name: 'd365fo-kb',
-  version: '1.0.0',
-  description: 'D365FO Knowledge Base — tables, fields, joins, enums, classes, methods, and more.',
-});
+const server = new McpServer(serverInfo('kb'), serverOptions('kb'));
 
 registerKbTools(server, db);
 

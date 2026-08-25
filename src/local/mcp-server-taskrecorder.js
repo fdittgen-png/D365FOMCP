@@ -13,12 +13,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
+import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
-const server = new McpServer({
-  name: 'd365fo-taskrecorder',
-  version: '1.0.0',
-  description: 'D365FO Task Recorder service — converts .axtr recordings to structured Markdown, and to an enriched, self-contained MHTML document (screenshots + KB technical detail + role-based security).',
-});
+const server = new McpServer(serverInfo('taskrecorder'), serverOptions('taskrecorder'));
 
 registerTaskRecorderTools(server);
 

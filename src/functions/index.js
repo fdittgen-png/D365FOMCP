@@ -18,5 +18,6 @@ import './otrs-admin.js';
 import './wiki-mcp.js';
 import './d365health.js';
 import './d365ping.js';
+import './d365icon.js';
 import './d365admin-pages.js';
 import './oauth-proxy.js';

@@ -1,0 +1,23 @@
+{
+  "name": "d365fo-mcp",
+  "version": "1.0.0",
+  "description": "Dynamics 365 Finance & Operations expert toolkit — connects the D365FO MCP services (AOT knowledge base, cross-references, security model, Task Recorder) and adds 19 analysis commands plus 8 skills that make Claude use them correctly and token-efficiently.",
+  "author": {
+    "name": "Trelleborg Group — TIS D365 F&O Services",
+    "email": "florian.dittgen@trelleborg.com"
+  },
+  "homepage": "https://github.com/fdittgen-png/D365FOMCP",
+  "repository": "https://github.com/fdittgen-png/D365FOMCP",
+  "license": "Proprietary",
+  "keywords": [
+    "dynamics-365",
+    "d365fo",
+    "finance-and-operations",
+    "x++",
+    "mcp",
+    "security-analysis",
+    "cross-reference",
+    "task-recorder",
+    "erp"
+  ]
+}

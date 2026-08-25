@@ -12,13 +12,10 @@ import { getSecDb, query } from '../azure/shared.js';
 import { registerSecTools } from '../azure/sec-tools.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
+import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
 
-function createSecServer() {
-  const server = new McpServer({
-    name: 'd365fo-sec',
-    version: '1.0.0',
-    description: 'D365FO Security Configuration — roles, duties, privileges, permissions, and user assignments.',
-  });
+function createSecServer(baseUrl) {
+  const server = new McpServer(serverInfo('sec', { baseUrl }), serverOptions('sec'));
   registerSecTools(server, getSecDb());
   return server;
 }
@@ -36,7 +33,7 @@ app.http('d365sec', {
         const row = query(db, "SELECT value FROM sec_metadata WHERE key = 'build_date'");
         if (row.length) lastUpdated = row[0].value;
       } catch { /* DB not loaded yet */ }
-      return { status: 200, jsonBody: { name: 'd365fo-sec', version: '1.0.0', status: 'ok', lastUpdated } };
+      return { status: 200, jsonBody: healthInfo('sec', { baseUrl: requestBaseUrl(request) }) };
     }
 
     // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
@@ -44,7 +41,7 @@ app.http('d365sec', {
     if (denied) return denied;
 
     try {
-      const server = createSecServer();
+      const server = createSecServer(requestBaseUrl(request));
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });

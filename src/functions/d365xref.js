@@ -8,17 +8,14 @@
 import { app } from '@azure/functions';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
+import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getXrefDb } from '../azure/shared.js';
 import { registerXrefTools } from '../azure/xref-tools.js';
 
-function createXrefServer() {
-  const server = new McpServer({
-    name: 'd365fo-xref',
-    version: '1.0.0',
-    description: 'D365FO Cross-Reference — find who calls, extends, implements, or references any AOT object.',
-  });
+function createXrefServer(baseUrl) {
+  const server = new McpServer(serverInfo('xref', { baseUrl }), serverOptions('xref'));
   registerXrefTools(server, getXrefDb());
   return server;
 }
@@ -30,7 +27,7 @@ app.http('d365xref', {
   handler: async (request, context) => {
     // Health check: GET without Accept SSE header
     if (request.method === 'GET' && !request.headers.get('accept')?.includes('text/event-stream')) {
-      return { status: 200, jsonBody: { name: 'd365fo-xref', version: '1.0.0', status: 'ok' } };
+      return { status: 200, jsonBody: healthInfo('xref', { baseUrl: requestBaseUrl(request) }) };
     }
 
     // Entra App-Role gate (docs/MCP-Entra-Auth-Setup.md) — fail closed.
@@ -38,7 +35,7 @@ app.http('d365xref', {
     if (denied) return denied;
 
     try {
-      const server = createXrefServer();
+      const server = createXrefServer(requestBaseUrl(request));
       const transport = new WebStandardStreamableHTTPServerTransport({
         enableJsonResponse: true,
       });

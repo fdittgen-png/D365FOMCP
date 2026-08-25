@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "d365kb": {
+      "type": "http",
+      "url": "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb"
+    },
+    "d365xref": {
+      "type": "http",
+      "url": "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref"
+    },
+    "d365sec": {
+      "type": "http",
+      "url": "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec"
+    },
+    "d365taskrecorder": {
+      "type": "http",
+      "url": "https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder"
+    }
+  }
+}

@@ -15,6 +15,7 @@ import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerSecTools } from '../azure/sec-tools.js';
+import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -37,11 +38,7 @@ db.pragma('mmap_size = 67108864');
 
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
-const server = new McpServer({
-  name: 'd365fo-sec',
-  version: '1.0.0',
-  description: 'D365FO Security Configuration — roles, duties, privileges, permissions, and user assignments.',
-});
+const server = new McpServer(serverInfo('sec'), serverOptions('sec'));
 
 registerSecTools(server, db);
 
