@@ -121,6 +121,16 @@ If you run the MCP servers from a clone of this repo with local SQLite databases
 
 Keep the server **keys** unchanged — the commands and skills refer to tools as `d365kb:d365_lookup_table` etc.
 
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| A `claude.ai D365 …` connector shows **hidden — same URL as your server** and its tools are missing | A local Claude Code server entry (e.g. `d365kb-azure`) points at the same Azure URL; the local entry wins and hides the connector | `claude mcp remove <name> -s local` (check every project scope in `~/.claude.json`); reach Azure via the connector or this plugin, keep local entries stdio-only |
+| `/mcp` says `invalid_request` for an Azure server registered directly in Claude Code | Entra AADSTS90009 — URI-form scope on a client-is-resource registration | Fixed server-side (`normalizeScope`, 2026-08-25); reconnect. `claude mcp get <server>` shows the real AADSTS text |
+| Plugin tools duplicated (`mcp__d365kb__*` and `mcp__plugin_d365fo-mcp_d365kb__*`) | User-level stdio servers and the plugin's HTTP servers both active | Intentional if you want offline + live; otherwise remove one side |
+| A security call hangs and *every other* tool on the host times out | The Function App has one Node worker and SQLite is synchronous — one slow query blocks all endpoints | Indexes self-heal at first request after deploy (`ensureSecIndexes`); fan out heavy `sec_object_access` / `xref_find_references` calls one at a time with `limit` |
+| The skill fell back to `*_raw_sql` on another server or to local files when a service was down | Older skill text | Skill now says: a disconnected service is a gap to report, not a detour |
+
 ## Maintaining
 
 - Tool added or changed in `src/azure/*-tools.js` → `npm run gen:plugin-refs` regenerates `skills/d365fo-mcp-tooling/references/*-tools.md`; `test/plugin.test.js` fails until you do.
