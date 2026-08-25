@@ -2,7 +2,7 @@
 
 Turns Claude Code into a Dynamics 365 Finance & Operations analyst. The plugin:
 
-- **connects the four D365FO MCP services** (knowledge base, cross-references, security model, Task Recorder) hosted on the TIS Azure Function App — sign-in with your work account, no local database;
+- **works with the four D365FO MCP connectors** (knowledge base, cross-references, security model, Task Recorder) hosted on the TIS Azure Function App and published as claude.ai connectors — sign-in with your work account, no local database;
 - **adds 19 slash commands** that run complete analysis workflows (`/d365-table`, `/d365-security`, `/support-scope`, …);
 - **adds 8 skills** that teach Claude which tool to call first, how to read the answers, what to verify before asserting, and how to stay token-efficient.
 
@@ -15,7 +15,9 @@ Contact / information: florian.dittgen@trelleborg.com
 /plugin install d365fo-mcp@d365fo-mcp-marketplace
 ```
 
-On first use of any `d365*` tool Claude Code opens a browser sign-in (Entra ID). Your account needs the `Mcp.Access` app role on the Function App — ask the contact above if you get a 403.
+**The plugin ships skills and commands only — no MCP server definitions.** The four D365FO services are reached through the **claude.ai connectors** ("D365 KB", "D365 xRef", "D365 Sec", "D365 Task recorder") that your organisation publishes in the claude.ai Directory; enable them once under *Customize → Connectors* and they are available in claude.ai, Claude Desktop and Claude Code alike (Claude Code: `/mcp` → Authenticate). Sign-in is Entra ID; your account needs the `Mcp.Access` app role — ask the contact above if you get a 403.
+
+> **Never register the Azure MCP URLs as your own servers** (`claude mcp add … https://…azurewebsites.net/api/d365kb`, project `.mcp.json`, or a plugin `.mcp.json`). Claude Code hides a connector whose URL matches a local server ("hidden — same URL as your server") and uses the local entry instead, which then needs its own OAuth dance. This is why the plugin deliberately has no `.mcp.json`. A SessionStart guard hook (`~/.claude/hooks/mcp-url-guard.cjs`) warns if such an entry exists.
 
 Developing the plugin locally (no install):
 
@@ -25,38 +27,30 @@ claude --plugin-dir C:\path\to\D365FOMCP\plugin\d365fo-mcp
 
 ### Reduce permission prompts
 
-The tools are all read-only. Add to your `~/.claude/settings.json` (or the project's `.claude/settings.json`):
+The tools are all read-only. Add to your `~/.claude/settings.json` (or the project's `.claude/settings.json`) — connector tool names carry the connector label:
 
 ```json
 {
   "permissions": {
     "allow": [
-      "mcp__plugin_d365fo-mcp_d365kb__*",
-      "mcp__plugin_d365fo-mcp_d365xref__*",
-      "mcp__plugin_d365fo-mcp_d365sec__*",
-      "mcp__plugin_d365fo-mcp_d365taskrecorder__*"
+      "mcp__claude_ai_D365_KB__*",
+      "mcp__claude_ai_D365_xRef__*",
+      "mcp__claude_ai_D365_Sec__*",
+      "mcp__claude_ai_D365_Task_recorder__*"
     ]
   }
 }
 ```
 
-### Avoid duplicate tools
+### Local stdio servers (developers with built databases)
 
-If you previously registered `d365kb`, `d365xref`, `d365sec` or `d365taskrecorder` yourself (`claude mcp add …` or entries in `~/.claude.json`), remove them — otherwise every tool appears twice and Claude may pick the stale one:
-
-```text
-claude mcp remove d365kb
-claude mcp remove d365xref
-claude mcp remove d365sec
-claude mcp remove d365taskrecorder
-```
+If you also run the local stdio servers (`d365kb`, `d365xref`, `d365sec`, `d365taskrecorder` → local SQLite files), keep them **stdio**. They coexist with the connectors (tools appear twice — pick by freshness: connectors = live Azure snapshot, stdio = your local build). See "Local stdio alternative" below.
 
 ## What is inside
 
 ```text
 d365fo-mcp/
 ├── .claude-plugin/plugin.json
-├── .mcp.json                     # d365kb, d365xref, d365sec, d365taskrecorder (HTTP, Entra sign-in)
 ├── commands/                     # 19 workflows
 │   ├── d365-table, d365-class, d365-trace-field, d365-impact, d365-security, d365-research, d365-wiki
 │   ├── arch-change-impact, arch-module-review
@@ -106,7 +100,7 @@ Some commands also use optional MCPs when connected (`d365rag`, Microsoft Learn,
 
 ## Local stdio alternative (developers with built databases)
 
-If you run the MCP servers from a clone of this repo with local SQLite databases, replace `.mcp.json` with stdio entries. The server scripts read the DB path from the first argument or from `KB_DB_PATH` / `XREF_DB_PATH` / `SEC_DB_PATH`:
+If you run the MCP servers from a clone of this repo with local SQLite databases, register them as **stdio** servers (user scope, `claude mcp add-json …`). The server scripts read the DB path from the first argument or from `KB_DB_PATH` / `XREF_DB_PATH` / `SEC_DB_PATH`:
 
 ```json
 {
@@ -119,13 +113,13 @@ If you run the MCP servers from a clone of this repo with local SQLite databases
 }
 ```
 
-Keep the server **keys** unchanged — the commands and skills refer to tools as `d365kb:d365_lookup_table` etc.
+Keep the server **keys** as above — the commands and skills refer to tools as `d365kb:d365_lookup_table` etc. (they match on tool name, so connector-hosted tools work equally).
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| A `claude.ai D365 …` connector shows **hidden — same URL as your server** and its tools are missing | A local Claude Code server entry (e.g. `d365kb-azure`) points at the same Azure URL; the local entry wins and hides the connector | `claude mcp remove <name> -s local` (check every project scope in `~/.claude.json`); reach Azure via the connector or this plugin, keep local entries stdio-only |
+| A `claude.ai D365 …` connector shows **hidden — same URL as your server** and its tools are missing | A local Claude Code server entry (e.g. `d365kb-azure`) points at the same Azure URL; the local entry wins and hides the connector | `claude mcp remove <name> -s local` (check every project scope in `~/.claude.json`); reach Azure via the connector only; keep local entries stdio-only. The SessionStart guard `~/.claude/hooks/mcp-url-guard.cjs` reports offenders |
 | `/mcp` says `invalid_request` for an Azure server registered directly in Claude Code | Entra AADSTS90009 — URI-form scope on a client-is-resource registration | Fixed server-side (`normalizeScope`, 2026-08-25); reconnect. `claude mcp get <server>` shows the real AADSTS text |
 | Plugin tools duplicated (`mcp__d365kb__*` and `mcp__plugin_d365fo-mcp_d365kb__*`) | User-level stdio servers and the plugin's HTTP servers both active | Intentional if you want offline + live; otherwise remove one side |
 | A security call hangs and *every other* tool on the host times out | The Function App has one Node worker and SQLite is synchronous — one slow query blocks all endpoints | Indexes self-heal at first request after deploy (`ensureSecIndexes`); fan out heavy `sec_object_access` / `xref_find_references` calls one at a time with `limit` |

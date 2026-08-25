@@ -7,7 +7,7 @@
  *  - every skill dir has SKILL.md whose `name` equals the directory name
  *  - no personal paths / names / e-mail addresses leak into the package
  *    (the single approved operator contact address is allowed)
- *  - .mcp.json registers exactly the four D365FO servers under stable keys
+ *  - no .mcp.json: transport is the claude.ai connectors (same URL in a plugin hides them)
  *  - generated tool references match the current tool registrations
  */
 
@@ -67,14 +67,8 @@ describe('plugin manifests', () => {
     assert.equal(entry.source, './d365fo-mcp');
   });
 
-  it('.mcp.json registers exactly the four D365FO servers over HTTP', () => {
-    const m = JSON.parse(readFileSync(join(PLUGIN, '.mcp.json'), 'utf8'));
-    assert.deepEqual(Object.keys(m.mcpServers).sort(), [...EXPECTED_SERVERS].sort());
-    for (const key of EXPECTED_SERVERS) {
-      const s = m.mcpServers[key];
-      assert.equal(s.type, 'http', `${key} must be http`);
-      assert.match(s.url, new RegExp(`^https://[^/]+/api/${key}$`), `${key} url must end in /api/${key}`);
-    }
+  it('ships NO .mcp.json — servers come from claude.ai connectors; a plugin server with the same URL hides the connector', () => {
+    assert.ok(!existsSync(join(PLUGIN, '.mcp.json')), 'plugin/d365fo-mcp/.mcp.json must not exist (2026-08-25 "hidden — same URL as your server" incident)');
   });
 });
 
