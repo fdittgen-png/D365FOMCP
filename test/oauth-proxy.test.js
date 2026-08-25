@@ -233,3 +233,19 @@ describe('normalizeScope (AADSTS90009 — app requesting a token for itself)', (
     assert.equal(out.has('scope'), false);
   });
 });
+
+describe('buildAuthorizeRedirect — refresh tokens for every client', () => {
+  const cfg = oauthProxyConfig({});
+  it('appends offline_access when the client omitted it (claude.ai connector shape)', () => {
+    const url = new URL(buildAuthorizeRedirect(new URLSearchParams({ response_type: 'code', scope: cfg.scope, state: 's' }), cfg));
+    assert.equal(url.searchParams.get('scope'), `${cfg.clientId}/user_impersonation offline_access`);
+  });
+  it('does not duplicate offline_access when already present', () => {
+    const url = new URL(buildAuthorizeRedirect(new URLSearchParams({ response_type: 'code', scope: `offline_access ${cfg.scope}` }), cfg));
+    assert.equal(url.searchParams.get('scope'), `offline_access ${cfg.clientId}/user_impersonation`);
+  });
+  it('falls back to the configured API scope when the client sent no scope at all', () => {
+    const url = new URL(buildAuthorizeRedirect(new URLSearchParams({ response_type: 'code' }), cfg));
+    assert.equal(url.searchParams.get('scope'), `${cfg.clientId}/user_impersonation offline_access`);
+  });
+});

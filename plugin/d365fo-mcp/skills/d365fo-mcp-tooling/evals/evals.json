@@ -13,7 +13,8 @@
         "Every column referenced in the final SQL exists on the named table per the KB (no hallucinated columns)",
         "SQL joins include DATAAREAID (and PARTITION or notes it) — cross-company D365 join hygiene",
         "Independent lookups were issued in parallel (at least one parallel_group with ≥2 calls)",
-        "Answer explicitly separates verified facts from inferences/unverified items"
+        "Answer explicitly separates verified facts from inferences/unverified items",
+        "No factual claim about D365 objects/behaviour in the answer lacks a supporting tool call in tool_calls.json (or is explicitly marked as inferred/unverified)"
       ]
     },
     {
@@ -28,7 +29,8 @@
         "Recommends a minimal additive grant (specific duty or privilege), not a whole new role, and it is one that actually grants the posting entry point per the tools",
         "States the security snapshot date / freshness from the tool response",
         "Does not paste raw @SYS label ids or leak individual user personal data",
-        "Distinguishes 'button absent/hidden' from 'greyed out' or otherwise flags what the tools cannot confirm about the UI state"
+        "Distinguishes 'button absent/hidden' from 'greyed out' or otherwise flags what the tools cannot confirm about the UI state",
+        "No factual claim about D365 objects/behaviour in the answer lacks a supporting tool call in tool_calls.json (or is explicitly marked as inferred/unverified)"
       ]
     },
     {
@@ -43,7 +45,8 @@
         "Separates Microsoft standard from custom/ISV layer results (uses modules filter or model provenance in the answer)",
         "Passes a limit on list-returning xref calls (no unbounded list requests)",
         "Gives a risk assessment / recommendation, not just raw lists",
-        "Flags anything the tools could not confirm as unverified (e.g., runtime call paths, reflection)"
+        "Flags anything the tools could not confirm as unverified (e.g., runtime call paths, reflection)",
+        "No factual claim about D365 objects/behaviour in the answer lacks a supporting tool call in tool_calls.json (or is explicitly marked as inferred/unverified)"
       ]
     }
   ]

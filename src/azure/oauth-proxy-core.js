@@ -126,7 +126,13 @@ export function buildAuthorizeRedirect(searchParams, cfg) {
     out.append(key, value);
   }
   if (!out.has('client_id')) out.set('client_id', cfg.clientId);
-  if (out.has('scope')) out.set('scope', normalizeScope(out.get('scope'), cfg));
+  // Ask Entra for a refresh token on every authorize. Some clients (claude.ai
+  // connectors, observed 2026-08-25) omit offline_access, get an access token
+  // only, and then demand a manual "Re-authorize" every ~1 h when it expires.
+  // With offline_access the client receives a refresh_token and renews silently
+  // via /api/oauth/token (grant_type=refresh_token).
+  const scope = normalizeScope(out.get('scope') || cfg.scope, cfg);
+  out.set('scope', /(^|\s)offline_access(\s|$)/.test(scope) ? scope : `${scope} offline_access`);
   return `${cfg.authorizeEndpoint}?${out.toString()}`;
 }
 
