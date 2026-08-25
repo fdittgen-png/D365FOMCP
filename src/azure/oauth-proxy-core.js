@@ -27,6 +27,31 @@ import { resourceNameForPath, WEBSITE_URL } from './server-metadata.js';
 
 const STRIPPED_PARAMS = ['resource'];
 
+/**
+ * Rewrite URI-form scopes to the GUID-based form Entra demands when one app
+ * registration is both the OAuth client and the API resource (our setup).
+ *
+ * Entra rejects `api://<tenant>/<app>/user_impersonation` on the token endpoint
+ * with AADSTS90009 "Application X is requesting a token for itself. This
+ * scenario is supported only if resource is specified using the GUID based App
+ * Identifier" — seen 2026-08-25 with Claude Code (which echoes the PRM
+ * scopes_supported into the token request; claude.ai omits scope there, which
+ * is why connectors worked and the CLI did not). `<clientId>/user_impersonation`
+ * is the equivalent GUID form. Other scopes (openid, offline_access, …) pass
+ * through untouched.
+ */
+export function normalizeScope(scopeValue, cfg) {
+  if (typeof scopeValue !== 'string' || !scopeValue.trim()) return scopeValue;
+  const slash = cfg.scope.lastIndexOf('/');
+  const uriPrefix = slash > 0 ? cfg.scope.slice(0, slash + 1) : null; // "api://…/sp-tis-d-d365fokb-mcp/"
+  if (!uriPrefix || !uriPrefix.startsWith('api://')) return scopeValue;
+  return scopeValue
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(s => (s.startsWith(uriPrefix) ? `${cfg.clientId}/${s.slice(uriPrefix.length)}` : s))
+    .join(' ');
+}
+
 const DEFAULT_TENANT_ID = '0f861177-7722-4f06-8db9-3384e5321a9f';
 const DEFAULT_CLIENT_ID = '54b1261c-352d-4772-b83a-001e529bd117';
 const DEFAULT_SCOPE = 'api://trelleborg.onmicrosoft.com/sp-tis-d-d365fokb-mcp/user_impersonation';
@@ -101,6 +126,7 @@ export function buildAuthorizeRedirect(searchParams, cfg) {
     out.append(key, value);
   }
   if (!out.has('client_id')) out.set('client_id', cfg.clientId);
+  if (out.has('scope')) out.set('scope', normalizeScope(out.get('scope'), cfg));
   return `${cfg.authorizeEndpoint}?${out.toString()}`;
 }
 
@@ -115,6 +141,7 @@ export function filterTokenParams(bodyParams, cfg) {
     out.append(key, value);
   }
   if (!out.has('client_id')) out.set('client_id', cfg.clientId);
+  if (out.has('scope')) out.set('scope', normalizeScope(out.get('scope'), cfg));
   return out;
 }
 

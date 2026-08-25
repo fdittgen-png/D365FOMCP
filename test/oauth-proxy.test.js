@@ -18,6 +18,7 @@ import {
   buildAuthorizeRedirect,
   filterTokenParams,
   registrationResponse,
+  normalizeScope,
 } from '../src/azure/oauth-proxy-core.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -100,7 +101,7 @@ describe('buildAuthorizeRedirect — the AADSTS9010010 fix', () => {
     assert.equal(url.searchParams.get('resource'), null);
     assert.equal(url.searchParams.get('state'), 'xyz');
     assert.equal(url.searchParams.get('code_challenge'), 'abc');
-    assert.equal(url.searchParams.get('scope'), `${cfg.scope} offline_access`);
+    assert.equal(url.searchParams.get('scope'), `${cfg.clientId}/user_impersonation offline_access`, 'URI-form scope rewritten to GUID form (AADSTS90009)');
     assert.equal(url.searchParams.get('redirect_uri'), 'http://localhost:45235/callback');
   });
 
@@ -143,7 +144,7 @@ describe('filterTokenParams', () => {
     }), cfg);
     assert.equal(out.get('resource'), null);
     assert.equal(out.get('refresh_token'), 'rt');
-    assert.equal(out.get('scope'), cfg.scope);
+    assert.equal(out.get('scope'), `${cfg.clientId}/user_impersonation`, 'URI-form scope rewritten to GUID form (AADSTS90009)');
   });
 });
 
@@ -209,5 +210,26 @@ describe('static scan — routing invariants for the proxy', () => {
     const anonCount = (fnSrc.match(/authLevel: 'anonymous'/g) || []).length;
     const routeCount = (fnSrc.match(/route:\s*'/g) || []).length;
     assert.equal(anonCount, routeCount, 'every proxy route is explicitly anonymous');
+  });
+});
+
+describe('normalizeScope (AADSTS90009 — app requesting a token for itself)', () => {
+  const cfg = oauthProxyConfig({});
+  it('rewrites the URI-form API scope to <clientId>/<permission>', () => {
+    assert.equal(normalizeScope(cfg.scope, cfg), `${cfg.clientId}/user_impersonation`);
+  });
+  it('leaves openid/profile/offline_access and already-GUID scopes alone, preserving order', () => {
+    const input = `openid profile ${cfg.scope} offline_access ${cfg.clientId}/user_impersonation`;
+    assert.equal(normalizeScope(input, cfg), `openid profile ${cfg.clientId}/user_impersonation offline_access ${cfg.clientId}/user_impersonation`);
+  });
+  it('is a no-op for empty / non-string input and for a non-api:// configured scope', () => {
+    assert.equal(normalizeScope('', cfg), '');
+    assert.equal(normalizeScope(undefined, cfg), undefined);
+    const other = { ...cfg, scope: 'https://graph.microsoft.com/.default' };
+    assert.equal(normalizeScope('https://graph.microsoft.com/.default', other), 'https://graph.microsoft.com/.default');
+  });
+  it('token request without scope is untouched (claude.ai connector shape)', () => {
+    const out = filterTokenParams(new URLSearchParams({ grant_type: 'refresh_token', refresh_token: 'x' }), cfg);
+    assert.equal(out.has('scope'), false);
   });
 });

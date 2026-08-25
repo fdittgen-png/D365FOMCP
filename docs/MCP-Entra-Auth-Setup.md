@@ -618,3 +618,5 @@ was the **MCP OAuth handshake** against Entra. Two rounds:
    clients no longer strictly need a pinned client ID (`/api/oauth/register`
    hands out the registered one). Pinning `--client-id` still works and
    remains the documented default for Claude Code.
+
+> **AADSTS90009 — "Application X is requesting a token for itself" (Claude Code CLI, 2026-08-25).** One registration is both OAuth client and API resource, and Entra then only accepts the *GUID* scope form (`<clientId>/user_impersonation`) on the token endpoint. Claude Code echoes the PRM `scopes_supported` (URI form `api://…/user_impersonation`) into the token request → `invalid_request`; claude.ai omits `scope` at redemption, so connectors worked. Fixed in the proxy: `normalizeScope()` (`src/azure/oauth-proxy-core.js`) rewrites URI-form API scopes to the GUID form on both `/api/oauth/authorize` and `/api/oauth/token`. Symptom in Claude Code: `claude mcp get <server>` shows the AADSTS text; App Insights shows `oauth-token` 400s right after `oauth-asm` 200s.
