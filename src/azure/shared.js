@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
+import { ensureSecIndexes } from './sec-indexes.js';
 
 // ── Shared tool input params ─────────────────────────────────────────────────
 //
@@ -112,6 +113,15 @@ export function getXrefDb() {
 export function getSecDb() {
   if (!secDb) {
     const dbPath = process.env.SEC_DB_PATH || '/home/data/d365fo_sec.sqlite';
+    // Self-healing indexes: the DB file on /home/data is only replaced by an
+    // explicit upload, so a code deploy that adds indexes would otherwise never
+    // reach it. CREATE INDEX IF NOT EXISTS is a no-op when present (~ms); the
+    // first request after a deploy that introduced new indexes pays ~1-2 s.
+    // Set SEC_AUTO_INDEX=false to disable (e.g. read-only mount).
+    if (process.env.SEC_AUTO_INDEX !== 'false') {
+      const r = ensureSecIndexes(dbPath, { log: (m) => console.log(m) });
+      if (r.created.length) console.log(`sec DB: ${r.created.length} index(es) added in ${r.ms} ms`);
+    }
     secDb = openDb(dbPath, 67108864);
   }
   return secDb;

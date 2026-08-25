@@ -36,7 +36,9 @@ Full parameter tables per server (generated from the code, always current): `ref
 
 ## 2. Call discipline
 
-- **Parallel by default.** Independent lookups (table + xref summary + extensions + security) go in one batch. Sequence only when an argument depends on a previous result (e.g. enum names discovered from `d365_lookup_table`).
+- **Match on tool name, not server label.** `d365kb` / `d365xref` / `d365sec` / `d365taskrecorder` above are logical names. The same servers appear as `D365 KB` / `D365 xRef` / `D365 Sec` / `D365 Task recorder` (claude.ai connectors), as `plugin_d365fo-mcp_<key>` (Claude Code plugin) or under whatever alias the host assigned — the tool names (`d365_lookup_table`, `xref_object_summary`, `sec_permission_trace`, …) are identical everywhere and are the stable key.
+- **A service that is not connected is a gap, not a detour.** If no tool from a needed server is available or it times out, say so in the answer and mark the affected findings as unverified. Do not substitute another server's `*_raw_sql`, local files, or memory for it — that produces confident-looking answers from the wrong source (the security model, for example, lives only in `d365sec`).
+- **Parallel by default — but not against one server at once with heavy calls.** The servers run SQLite synchronously: one slow query blocks every other call to that host until it finishes. Batch cheap lookups freely; fan out `sec_object_access` / `xref_find_references` on broad objects one at a time with a `limit`. Independent lookups (table + xref summary + extensions + security) go in one batch. Sequence only when an argument depends on a previous result (e.g. enum names discovered from `d365_lookup_table`).
 - **Counts before lists.** `xref_object_summary`, `sec_stats`, `d365_get_module_summary` tell you whether a follow-up list is worth its tokens.
 - **Use `limit`.** Every list tool accepts one; ask for 20 before 200. A truncation note tells you when more exists — only then re-query.
 - **Never re-fetch** what is already in context; reuse the earlier result.

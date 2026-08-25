@@ -1,0 +1,50 @@
+{
+  "skill_name": "d365fo-mcp-tooling",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "I'm writing a report query against our D365 F&O database. Does CustTable still have InvoiceAccount, and how do I join CustTable to CustInvoiceJour and CustTrans to get open invoice amounts per customer group? Give me the SQL. I remember some field names changed since AX2012 so please don't guess.",
+      "expected_output": "SQL whose columns and join keys were all verified through the KB tools (lookup/check_field_exists/get_join_keys/field_renames), with AX2012 renames called out and anything unverified flagged",
+      "files": [],
+      "assertions": [
+        "Called d365_check_field_exists or d365_lookup_table for CustTable before writing SQL (field existence verified, not assumed)",
+        "Called d365_get_join_keys (or read relations from d365_lookup_table) for CustTable↔CustInvoiceJour and/or CustInvoiceJour↔CustTrans",
+        "Consulted AX2012 rename data (d365_field_renames or d365_hallucination_check) as the user asked not to guess",
+        "Every column referenced in the final SQL exists on the named table per the KB (no hallucinated columns)",
+        "SQL joins include DATAAREAID (and PARTITION or notes it) — cross-company D365 join hygiene",
+        "Independent lookups were issued in parallel (at least one parallel_group with ≥2 calls)",
+        "Answer explicitly separates verified facts from inferences/unverified items"
+      ]
+    },
+    {
+      "id": 1,
+      "prompt": "Accounts payable says the Post button on the vendor invoice journal is greyed out for people who only have the role 'Accounts payable clerk'. Which duties/privileges grant posting there, does anything in that role deny it, and what is the minimal additional grant?",
+      "expected_output": "A role→duty→privilege→entry-point trace from d365sec for the posting entry point, an explicit Deny-wins / effective-permission verdict, and a minimal additive grant recommendation, with the snapshot date stated",
+      "files": [],
+      "assertions": [
+        "Used sec_lookup_role (or sec_role_hierarchy) on 'Accounts payable clerk' to enumerate its duties/privileges",
+        "Identified the posting entry point (menu item / action) via sec_object_access, sec_permission_trace or sec_search rather than assuming it",
+        "Made an explicit Deny-wins / effective-permission statement for the role (sec_effective_permissions or sec_permission_trace)",
+        "Recommends a minimal additive grant (specific duty or privilege), not a whole new role, and it is one that actually grants the posting entry point per the tools",
+        "States the security snapshot date / freshness from the tool response",
+        "Does not paste raw @SYS label ids or leak individual user personal data",
+        "Distinguishes 'button absent/hidden' from 'greyed out' or otherwise flags what the tools cannot confirm about the UI state"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "We want to add a Chain-of-Command extension on SalesFormLetter_Invoice.run to inject an extra validation. What's the impact, who already extends or subscribes to that class in our custom or ISV models, and where else in the code base does run() get called?",
+      "expected_output": "Impact analysis built from xref (object summary → extensions/event handlers → method callers → impact), separating Microsoft vs custom/ISV layer using the modules filter, with counts before lists and a risk assessment",
+      "files": [],
+      "assertions": [
+        "Started with a count-level call (xref_object_summary or xref_impact_analysis) before detailed lists",
+        "Called xref_find_extensions and/or xref_find_event_handlers on SalesFormLetter_Invoice",
+        "Called xref_find_method_callers or xref_method_references for SalesFormLetter_Invoice.run (callers of run())",
+        "Separates Microsoft standard from custom/ISV layer results (uses modules filter or model provenance in the answer)",
+        "Passes a limit on list-returning xref calls (no unbounded list requests)",
+        "Gives a risk assessment / recommendation, not just raw lists",
+        "Flags anything the tools could not confirm as unverified (e.g., runtime call paths, reflection)"
+      ]
+    }
+  ]
+}

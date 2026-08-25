@@ -32,6 +32,19 @@ CREATE INDEX IF NOT EXISTS idx_ep_object_nocase     ON privilege_entry_points(ob
 -- ── Search content for sec_search LIKE queries ───────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_sec_search_content_nocase ON sec_search(content COLLATE NOCASE);
 
+-- ── NOCASE indexes on JOIN columns (2026-08-25, see add-sec-indexes.js) ──────
+CREATE INDEX IF NOT EXISTS idx_dp_priv_nocase          ON duty_privileges(privilege_name COLLATE NOCASE, duty_id);
+CREATE INDEX IF NOT EXISTS idx_dp_duty_nocase          ON duty_privileges(duty_id COLLATE NOCASE, privilege_name);
+CREATE INDEX IF NOT EXISTS idx_rd_duty_nocase          ON role_duties(duty_id COLLATE NOCASE, role_id);
+CREATE INDEX IF NOT EXISTS idx_rd_role_nocase          ON role_duties(role_id COLLATE NOCASE, duty_id);
+CREATE INDEX IF NOT EXISTS idx_rdp_priv_nocase         ON role_direct_privileges(privilege_name COLLATE NOCASE, role_id);
+CREATE INDEX IF NOT EXISTS idx_ep_priv_nocase          ON privilege_entry_points(privilege_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_roles_id_nocase         ON roles(role_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_ur_role_nocase          ON user_roles(role_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_urc_role_nocase         ON user_role_companies(role_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_subroles_child_nocase   ON role_subroles(child_role_id COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_subroles_parent_nocase  ON role_subroles(parent_role_id COLLATE NOCASE);
+
 -- Refresh planner stats
 ANALYZE;
 
