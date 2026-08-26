@@ -38,6 +38,7 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$Subscription = 'TIS.D365FO',   # Azure subscription owning the MCP resource group
     [ValidateSet('d', 'p')]
     [string]$Environment = 'd',
 
@@ -71,13 +72,8 @@ Write-Host "  Environment: $(if ($Environment -eq 'p') { 'Production' } else { '
 Write-Host ""
 
 # ─── Azure CLI auth check ────────────────────────────────────────────────────
-$account = az account show 2>$null | ConvertFrom-Json
-if (-not $account) {
-    Write-Host "Not logged in. Running az login..." -ForegroundColor Yellow
-    az login
-    $account = az account show | ConvertFrom-Json
-}
-Write-Host "  Account: $($account.user.name)" -ForegroundColor Green
+. "$PSScriptRoot\Common-AzContext.ps1"
+$account = Ensure-AzContext -Subscription $Subscription
 
 # ─── Verify Function App exists ───────────────────────────────────────────────
 $funcApp = az functionapp show --resource-group $rg --name $funcName 2>$null | ConvertFrom-Json

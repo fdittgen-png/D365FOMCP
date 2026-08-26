@@ -60,6 +60,7 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$Subscription = 'TIS.D365FO',   # Azure subscription owning the MCP resource group
     [ValidateSet('d', 'p')]
     [string]$Environment = 'd',
 
@@ -98,13 +99,8 @@ Write-Host "  Retention:       last $KeepCount per database (lifecycle: 90 days)
 Write-Host ""
 
 # ─── Azure CLI auth check ────────────────────────────────────────────────────
-$account = az account show 2>$null | ConvertFrom-Json
-if (-not $account) {
-    Write-Host "Not logged in. Running az login..." -ForegroundColor Yellow
-    az login | Out-Null
-    $account = az account show | ConvertFrom-Json
-}
-Write-Host "  Account: $($account.user.name)" -ForegroundColor Green
+. "$PSScriptRoot\Common-AzContext.ps1"
+$account = Ensure-AzContext -Subscription $Subscription
 
 # ─── Verify storage account exists ────────────────────────────────────────────
 $st = az storage account show --resource-group $rg --name $stName 2>$null | ConvertFrom-Json

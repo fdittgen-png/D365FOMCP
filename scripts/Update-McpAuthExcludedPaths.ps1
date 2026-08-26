@@ -23,6 +23,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Pin the Azure subscription (never trust the CLI default — see Common-AzContext.ps1)
+. "$PSScriptRoot\Common-AzContext.ps1"
+$null = Ensure-AzContext -Subscription $Subscription
+
 $subId = az account show --subscription $Subscription --query id -o tsv
 if ($LASTEXITCODE -ne 0) { throw "Cannot resolve subscription id for '$Subscription'." }
 $authUrl = "https://management.azure.com/subscriptions/$subId/resourceGroups/$ResourceGroup/providers/Microsoft.Web/sites/$App/config/authsettingsV2?api-version=2022-03-01"

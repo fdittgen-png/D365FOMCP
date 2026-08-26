@@ -39,6 +39,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Pin the Azure subscription (never trust the CLI default — see Common-AzContext.ps1)
+. "$PSScriptRoot\Common-AzContext.ps1"
+$null = Ensure-AzContext -Subscription $Subscription
+
 Write-Host "== 1/4 Configuring Microsoft identity provider (audiences: $AppIdUri + $ApiAppId)" -ForegroundColor Cyan
 # A never-configured app reports auth config version v1 (classic); the authV2
 # command group refuses to touch it until the one-time format upgrade.

@@ -15,10 +15,15 @@
 [CmdletBinding()]
 param(
     [ValidateSet('d', 'p')]
-    [string]$Environment = 'd'
+    [string]$Environment = 'd',
+    [string]$Subscription = 'TIS.D365FO'   # Azure subscription owning the MCP resource group
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Pin the Azure subscription (never trust the CLI default — see Common-AzContext.ps1)
+. "$PSScriptRoot\Common-AzContext.ps1"
+$null = Ensure-AzContext -Subscription $Subscription
 $prefix   = 'tis'
 $workload = 'mcpd365fo'
 $rg       = "$prefix-$Environment-$workload-rg"

@@ -19,6 +19,7 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$Subscription = 'TIS.D365FO',   # Azure subscription owning the MCP resource group
     [ValidateSet('d', 'p')]
     [string]$Environment = 'd',
 
@@ -43,14 +44,8 @@ Write-Host "  Template:       $templateFile"
 Write-Host ""
 
 # ─── Azure CLI auth check ────────────────────────────────
-$account = az account show 2>$null | ConvertFrom-Json
-if (-not $account) {
-    Write-Host "Not logged in. Running az login..." -ForegroundColor Yellow
-    az login
-    $account = az account show | ConvertFrom-Json
-}
-Write-Host "  Account:      $($account.user.name)" -ForegroundColor Green
-Write-Host "  Subscription: $($account.name) ($($account.id))" -ForegroundColor Green
+. "$PSScriptRoot\Common-AzContext.ps1"
+$account = Ensure-AzContext -Subscription $Subscription
 
 # ─── Verify resource group ───────────────────────────────
 $rg = az group show --name $ResourceGroup 2>$null | ConvertFrom-Json
