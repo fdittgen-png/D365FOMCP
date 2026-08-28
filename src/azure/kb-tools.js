@@ -1139,6 +1139,7 @@ export function registerKbTools(server, db) {
       // than a table name simply yields a null attribution.
       let fieldRows = [];
       try {
+        if (!fieldsHaveCustomization) throw new Error('fields table has no attribution columns');
         fieldRows = q(
           `SELECT ef.field_name, ef.data_field, ef.data_source, ef.is_mandatory,
                   f.source_module AS source_module, f.is_extension AS is_extension
@@ -1151,7 +1152,7 @@ export function registerKbTools(server, db) {
         );
       } catch (err) {
         // KB databases built before fields.source_module / is_extension existed.
-        console.error('[kb-tools:d365_get_entity_sources fields attribution]', err);
+        console.warn('[kb-tools:d365_get_entity_sources] no field attribution:', err.message);
         try {
           fieldRows = q(
             `SELECT field_name, data_field, data_source, is_mandatory
