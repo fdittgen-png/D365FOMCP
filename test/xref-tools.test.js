@@ -786,3 +786,88 @@ describe('wildcard pattern length validation (issue #42)', () => {
     assert.ok(typeof result === 'string');
   });
 });
+
+
+// -- Response-size optimisations ---------------------------------------------
+//
+// Recursive hierarchies and the module directory used to return unbounded
+// result sets. They are now caller-bounded, and report the full count next to
+// what was returned.
+
+describe('response shaping — bounded hierarchies', () => {
+  it('xref_class_hierarchy honours limit and reports the full count', async () => {
+    const res = await callToolFull('xref_class_hierarchy', { class_name: 'SalesFormLetter', limit: 1 });
+    const t = res.structuredContent;
+    if (!t) return; // fixture has no subclasses -> emptyResult path
+    assert.ok(t.returned_count <= 1);
+    assert.equal(t.entries.length, t.returned_count);
+    assert.equal(t.truncated, t.result_count > t.returned_count);
+  });
+
+  it('xref_interface_implementors honours limit and reports the full count', async () => {
+    const res = await callToolFull('xref_interface_implementors', { interface_name: 'SysPackable', limit: 1 });
+    const t = res.structuredContent;
+    if (!t) return;
+    assert.ok(t.returned_count <= 1);
+    assert.equal(t.implementors.length, t.returned_count);
+    assert.equal(t.truncated, t.result_count > t.returned_count);
+  });
+
+  it('xref_impact_analysis lets the caller size the listed sample', async () => {
+    const res = await callToolFull('xref_impact_analysis', { object_name: 'CustTable', limit: 1 });
+    const t = res.structuredContent;
+    if (!t) return;
+    assert.ok(t.referencing_objects.length <= 1);
+    assert.equal(t.sample_cap, 1);
+  });
+});
+
+describe('response shaping — xref_list_modules filters', () => {
+  let fdb, tools;
+
+  before(async () => {
+    fdb = new Database(':memory:');
+    fdb.exec(`
+      CREATE TABLE names (id INTEGER PRIMARY KEY, path TEXT, name TEXT, parent_id INTEGER, module_id INTEGER, provider_id INTEGER);
+      CREATE TABLE modules (id INTEGER PRIMARY KEY, module TEXT);
+      CREATE TABLE model_versions (model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT,
+        publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT);
+
+      INSERT INTO modules VALUES (1, 'ApplicationSuite');
+      INSERT INTO modules VALUES (2, 'iExtension');
+      INSERT INTO names VALUES (10, '/Tables/CustTable', 'CustTable', 0, 1, 1);
+      INSERT INTO names VALUES (11, '/Tables/TBG_Table', 'TBG_Table', 0, 2, 1);
+
+      INSERT INTO model_versions VALUES ('Foundation','ApplicationSuite','Application Suite','Microsoft Corporation','SYS','microsoft','10.0.2263.172','C:\\pkg');
+      INSERT INTO model_versions VALUES ('iExtension','iExtension','iExtension','Trelleborg','USR','custom','10.0.32.7','C:\\custom');
+    `);
+    const { registerXrefTools } = await import('../src/azure/xref-tools.js');
+    const mock = createMockServer();
+    registerXrefTools(mock, fdb);
+    tools = mock.handlers;
+  });
+
+  after(() => { if (fdb) fdb.close(); });
+
+  const call = async (args = {}) => {
+    const tool = tools['xref_list_modules'];
+    return await tool.handler({ format: 'markdown', ...args });
+  };
+
+  it('a no-argument call returns every module (back-compat)', async () => {
+    const res = await call();
+    assert.equal(res.structuredContent.module_count, 2);
+    assert.equal(res.structuredContent.returned_count, 2);
+  });
+
+  it('origin filters down to the custom models', async () => {
+    const res = await call({ origin: 'custom' });
+    assert.deepEqual(res.structuredContent.modules.map(m => m.module), ['iExtension']);
+  });
+
+  it('limit truncates while module_count keeps the match total', async () => {
+    const res = await call({ limit: 1 });
+    assert.equal(res.structuredContent.module_count, 2);
+    assert.equal(res.structuredContent.returned_count, 1);
+  });
+});

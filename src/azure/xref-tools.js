@@ -336,12 +336,15 @@ export function registerXrefTools(server, db) {
         class_name: z.string().min(1).max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
         direction: z.enum(['subclasses', 'parents']).default('subclasses')
           .describe('"subclasses" = who extends this (default), "parents" = what does this extend'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max entries to return (default 200, max 1000). Framework base classes have thousands of subclasses.'),
         format: formatTextParam,
       },
       outputSchema: xrefClassHierarchyOutput.shape,
     },
-    async ({ class_name, direction, format }) => {
+    async ({ class_name, direction, limit, format }) => {
       const dir = direction || 'subclasses';
+      // Defensive default - the test mock server bypasses Zod (contract rule #13).
+      const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 200;
       const classPath = `/Classes/${class_name}`;
       const classResult = q('SELECT id FROM names WHERE path = ? LIMIT 1', [classPath]);
       if (classResult.length === 0) return notFoundResult('Class', class_name);
@@ -379,12 +382,15 @@ export function registerXrefTools(server, db) {
         `, [classId]);
       }
 
+      const shownEntries = result.slice(0, lim);
       const typed = {
         class_name,
         direction: dir,
         max_depth: maxDepth,
         result_count: result.length,
-        entries: result.map(r => ({
+        returned_count: shownEntries.length,
+        truncated: result.length > shownEntries.length,
+        entries: shownEntries.map(r => ({
           path: r.path, class_name: r.path.replace('/Classes/', ''), depth: num(r.depth) ?? 0,
         })),
       };
@@ -398,6 +404,7 @@ export function registerXrefTools(server, db) {
         typed.entries.map(r => ({ Class: r.class_name, Depth: r.depth })),
         ['Class', 'Depth'],
       );
+      if (typed.truncated) out += truncationNote('cap', typed.returned_count, 1000);
       return structuredResult(typed, out, format);
     },
   );
@@ -412,11 +419,14 @@ export function registerXrefTools(server, db) {
       description: 'Find all classes that implement a given interface, including indirect implementors through inheritance. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         interface_name: z.string().min(1).max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max implementors to return (default 200, max 1000). Framework interfaces have thousands.'),
         format: formatTextParam,
       },
       outputSchema: xrefInterfaceImplementorsOutput.shape,
     },
-    async ({ interface_name, format }) => {
+    async ({ interface_name, limit, format }) => {
+      // Defensive default - the test mock server bypasses Zod (contract rule #13).
+      const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 200;
       let targetId = null;
       let targetPath = null;
       for (const prefix of ['/Classes/', '/ClrType/']) {
@@ -442,11 +452,14 @@ export function registerXrefTools(server, db) {
         GROUP BY path ORDER BY depth, path
       `, [targetId]);
 
+      const shownImpl = result.slice(0, lim);
       const typed = {
         interface_name,
         interface_path: targetPath,
         result_count: result.length,
-        implementors: result.map(r => ({
+        returned_count: shownImpl.length,
+        truncated: result.length > shownImpl.length,
+        implementors: shownImpl.map(r => ({
           path: r.path,
           class_name: r.path.replace('/Classes/', ''),
           depth: num(r.depth) ?? 0,
@@ -460,6 +473,7 @@ export function registerXrefTools(server, db) {
         typed.implementors.map(r => ({ Class: r.class_name, Type: r.relationship })),
         ['Class', 'Type'],
       );
+      if (typed.truncated) out += truncationNote('cap', typed.returned_count, 1000);
       return structuredResult(typed, out, format);
     },
   );
@@ -794,11 +808,12 @@ export function registerXrefTools(server, db) {
       description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
+        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set.'),
         format: formatTextParam,
       },
       outputSchema: xrefImpactAnalysisOutput.shape,
     },
-    async ({ object_name, format }) => {
+    async ({ object_name, limit, format }) => {
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
@@ -806,7 +821,8 @@ export function registerXrefTools(server, db) {
       const { id: targetId, path: targetPath } = resolved;
 
       const DETAIL_CAP = 500;
-      const SAMPLE_CAP = 100;
+      // Defensive default - the test mock server bypasses Zod (contract rule #13).
+      const SAMPLE_CAP = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 100;
       const subPaths = q('SELECT id FROM names WHERE path LIKE ? LIMIT 500', [targetPath + '/%']);
       const allTargetIds = [targetId, ...subPaths.map(r => r.id)];
       const { clause: inClause, params: inParams } = buildInClause(allTargetIds);
@@ -865,11 +881,23 @@ export function registerXrefTools(server, db) {
     'xref_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List all D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots configured). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { format: formatTextParam },
+      description: 'List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
+        origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
+        layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
+        publisher: z.string().min(1).max(200).optional().describe('Only models whose publisher contains this text (case-insensitive)'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return (default 200, max 500)'),
+        format: formatTextParam,
+      },
       outputSchema: xrefListModulesOutput.shape,
     },
-    async ({ format }) => {
+    async ({ origin, layer, publisher, limit, format }) => {
+      // Defensive defaults - the test mock server bypasses Zod (contract rule #13).
+      const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 200;
+      const originF = typeof origin === 'string' && origin.trim() ? origin.trim().toLowerCase() : null;
+      const layerF = typeof layer === 'string' && layer.trim() ? layer.trim().toLowerCase() : null;
+      const publisherF = typeof publisher === 'string' && publisher.trim() ? publisher.trim().toLowerCase() : null;
+      const filtered = Boolean(originF || layerF || publisherF);
       const result = q(`
         SELECT m.module, COUNT(DISTINCT n.id) as object_count
         FROM modules m
@@ -893,9 +921,23 @@ export function registerXrefTools(server, db) {
         return vals.length ? vals.join(', ') : null;
       };
 
+      // A package matches when ANY of its models does - filtering the joined
+      // provenance string would drop mixed-origin packages.
+      const matchesFilter = (moduleName) => {
+        if (!filtered) return true;
+        const rows = byModule.get(String(moduleName).toLowerCase()) || [];
+        return rows.some(r =>
+          (!originF || String(r.origin ?? '').toLowerCase() === originF)
+          && (!layerF || String(r.layer ?? '').toLowerCase() === layerF)
+          && (!publisherF || String(r.publisher ?? '').toLowerCase().includes(publisherF)));
+      };
+      const matched = result.filter(r => matchesFilter(r.module));
+      const shown = matched.slice(0, lim);
+
       const typed = {
-        module_count: result.length,
-        modules: result.map(r => ({
+        module_count: matched.length,
+        returned_count: shown.length,
+        modules: shown.map(r => ({
           module: r.module,
           object_count: num(r.object_count) ?? 0,
           version: provenance(r.module, 'version'),
@@ -904,18 +946,29 @@ export function registerXrefTools(server, db) {
           layer: provenance(r.module, 'layer'),
         })),
       };
-      if (!result.length) return emptyResult('modules in the XRef database', typed);
+      const filterDesc = [
+        originF ? `origin=${originF}` : null,
+        layerF ? `layer=${layerF}` : null,
+        publisherF ? `publisher~${publisherF}` : null,
+      ].filter(Boolean).join(', ');
+      if (!matched.length) {
+        return emptyResult(filterDesc ? `modules matching ${filterDesc}` : 'modules in the XRef database', typed);
+      }
 
-      let out = `## XRef Modules (${typed.module_count} total)\n\n`;
+      let out = `## XRef Modules (${typed.module_count}${filterDesc ? ` matching ${filterDesc}` : ' total'})\n\n`;
       out += formatMarkdownTable(
         typed.modules.map(r => ({
           Module: r.module,
           Version: r.version ?? '',
           Origin: r.origin ?? '',
+          Layer: r.layer ?? '',
           'Object Count': r.object_count,
         })),
-        ['Module', 'Version', 'Origin', 'Object Count'],
+        ['Module', 'Version', 'Origin', 'Layer', 'Object Count'],
       );
+      if (typed.module_count > typed.returned_count) {
+        out += truncationNote('cap', typed.returned_count, 500);
+      }
       return structuredResult(typed, out, format);
     },
   );

@@ -91,6 +91,9 @@ export const d365LookupTableOutput = z.object({
   clustered_index: z.string().nullable(),
   replacement_key: z.string().nullable(),
   field_count: z.number(),
+  // Rows in `fields` after the fields_like / custom_only filters (equals
+  // field_count when neither is passed).
+  fields_shown: z.number(),
   // Customization summary: is_customized=true when an AxTableExtension adds
   // fields; custom_field_count counts them; customization_modules lists the
   // models that contributed them.
@@ -387,6 +390,10 @@ export const d365EntityFieldSchema = z.object({
   data_field: z.string().nullable(),
   data_source: z.string().nullable(),
   is_mandatory: z.number().nullable(),
+  // Model attribution of the backing table field (null when the entity data
+  // source is an alias rather than a table, or on pre-attribution KB builds).
+  source_module: z.string().nullable(),
+  is_extension: z.boolean().nullable(),
 });
 export const d365GetEntitySourcesOutput = z.object({
   entity_name: z.string(),
@@ -399,6 +406,10 @@ export const d365GetEntitySourcesOutput = z.object({
   staging_table: z.string().nullable(),
   config_key: z.string().nullable(),
   field_count: z.number(),
+  // fields_matched = rows after the fields_like / custom_only / computed_only
+  // filters; fields_returned = rows actually in entity_fields (after limit).
+  fields_matched: z.number(),
+  fields_returned: z.number(),
   entity_fields: z.array(d365EntityFieldSchema),
   // Entity-level X++ methods (empty on KB databases built before entity-method
   // extraction was added). Use d365_get_class_methods with include_source for
@@ -490,7 +501,10 @@ export const d365ModuleRowSchema = z.object({
   layer: z.string().nullable(),
 });
 export const d365ListModulesOutput = z.object({
+  // module_count = modules matching the filter; returned_count = rows in
+  // `modules` after `limit`.
   module_count: z.number(),
+  returned_count: z.number(),
   modules: z.array(d365ModuleRowSchema),
 });
 
@@ -564,7 +578,10 @@ export const xrefClassHierarchyOutput = z.object({
   class_name: z.string(),
   direction: z.enum(['subclasses', 'parents']),
   max_depth: z.number(),
+  // result_count = full hierarchy size; returned_count = rows in `entries`.
   result_count: z.number(),
+  returned_count: z.number(),
+  truncated: z.boolean(),
   entries: z.array(xrefClassHierarchyEntrySchema),
 });
 
@@ -578,7 +595,10 @@ export const xrefInterfaceImplementorSchema = z.object({
 export const xrefInterfaceImplementorsOutput = z.object({
   interface_name: z.string(),
   interface_path: z.string(),
+  // result_count = all implementors; returned_count = rows in `implementors`.
   result_count: z.number(),
+  returned_count: z.number(),
+  truncated: z.boolean(),
   implementors: z.array(xrefInterfaceImplementorSchema),
 });
 
@@ -655,7 +675,10 @@ export const xrefListModuleRowSchema = z.object({
   layer: z.string().nullable(),
 });
 export const xrefListModulesOutput = z.object({
+  // module_count = modules matching the filter; returned_count = rows in
+  // `modules` after `limit`.
   module_count: z.number(),
+  returned_count: z.number(),
   modules: z.array(xrefListModuleRowSchema),
 });
 

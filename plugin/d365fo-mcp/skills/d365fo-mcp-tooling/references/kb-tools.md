@@ -17,13 +17,13 @@ AOT metadata snapshot: tables, fields, indexes, relations, enums, EDTs, classes 
 | `d365_get_method_source` | Get the full X++ source code for a specific method on a class, table, or data entity. |
 | `d365_find_referencing_tables` | Find all tables that have foreign key relationships TO a given table. |
 | `d365_get_module_summary` | Get a summary of a D365FO module/package: object counts and key tables/classes. |
-| `d365_get_entity_sources` | Get data source chain, fields, and entity-level X++ methods for a D365FO data entity. |
+| `d365_get_entity_sources` | Get the data source chain and fields of a D365FO data entity. |
 | `d365_sql_template` | Get a pre-validated SQL query template for common D365FO scenarios. |
 | `d365_hallucination_check` | Check for known D365FO hallucination traps for a table. |
 | `d365_raw_sql` | Execute a raw SQL query against the D365FO knowledge base. |
 | `d365_graph_traverse` | Traverse the D365FO object dependency graph. |
 | `d365_field_renames` | Look up AX2012-to-D365FO field renames for a table. |
-| `d365_list_modules` | List all D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). |
+| `d365_list_modules` | List D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). |
 | `d365_resolve_label` | Resolve D365FO label IDs (like @SYS12345) to human-readable text. |
 
 ## `d365_lookup_table`
@@ -33,6 +33,8 @@ Get complete metadata for a D365FO table: fields (name, type, EDT), primary key,
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `table_name` | string (min 1, max 500) | yes | Table name (case-insensitive, e.g. CustInvoiceJour) |
+| `fields_like` | string (min 1, max 200) | no | Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field. |
+| `custom_only` | boolean | default `false` | Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_get_join_keys`
@@ -105,6 +107,7 @@ Find all tables that have foreign key relationships TO a given table. Useful for
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `table_name` | string (min 1, max 500) | yes | Target table name |
+| `limit` | integer (≥1, ≤1000) | default `200` | Max referencing relations to return (default 200, max 1000) |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_get_module_summary`
@@ -120,11 +123,16 @@ Get a summary of a D365FO module/package: object counts and key tables/classes. 
 
 ## `d365_get_entity_sources`
 
-Get data source chain, fields, and entity-level X++ methods for a D365FO data entity. Shows the primary table, OData name, and the methods defined on the entity (postLoad, mapEntityToDataSource, validate*, OData actions, …). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
+Get the data source chain and fields of a D365FO data entity. Resolves the AOT name (EcoResReleasedProductV2Entity), the OData public name (ReleasedProductV2) and the OData collection (ReleasedProductsV2) alike. Every field carries its owning model, so `custom_only: true` returns just the customisation surface; `fields_like`, `computed_only` and `limit` narrow a wide entity further. Method signatures are OMITTED by default - `method_count` is always returned, pass `include_methods: true` when the entity code path matters. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `entity_name` | string (min 1, max 500) | yes | Data entity name |
+| `entity_name` | string (min 1, max 500) | yes | Data entity name: AOT name, OData public name, or OData collection name |
+| `include_methods` | boolean | default `false` | Include entity method signatures (postLoad, validate*, OData actions). Default false - method_count is always returned. |
+| `fields_like` | string (min 1, max 200) | no | Only fields whose name contains this text (case-insensitive) |
+| `custom_only` | boolean | default `false` | Only fields added by a non-Microsoft model or by a table extension - the customisation surface |
+| `computed_only` | boolean | default `false` | Only computed/virtual fields (no backing data field) |
+| `limit` | integer (≥1, ≤1000) | default `500` | Max fields to return (default 500, max 1000) |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_sql_template`
@@ -147,7 +155,7 @@ Check for known D365FO hallucination traps for a table. Returns common LLM mista
 
 ## `d365_raw_sql`
 
-Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...). Text channel defaults to TOON (compact, token-efficient). Pass format="markdown" for human-readable tables.
+Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema (real table names - there is no kb_ prefix except kb_search/kb_metadata): tables(table_name, module_id, table_group, field_count, is_customized, ...), fields(table_name, field_name, field_type, edt, enum_type, mandatory, label, source_module, is_extension), enums(enum_name, ...) + enum_values(enum_name, value_name, value), classes(class_name, module_id, ...), methods(owner_type, owner_name, method_name, signature, source_code, is_static), relations(source_table, related_table, relation_name, constraints_json, relationship_type), data_entities(entity_name, public_name, public_collection, primary_table, ...), entity_fields(entity_name, field_name, data_field, data_source), modules(module_id, table_count, ...), model_versions(model_name, module_id, publisher, layer, origin, version), labels(label_id, text), kb_search(object_type, object_name, content). Query sqlite_master for the authoritative list if in doubt. Text channel defaults to TOON (compact, token-efficient). Pass format="markdown" for human-readable tables.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -176,10 +184,15 @@ Look up AX2012-to-D365FO field renames for a table. Prevents using obsolete fiel
 
 ## `d365_list_modules`
 
-List all D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the entire knowledge base. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
+List D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the knowledge base. Filter with `origin` / `layer` / `publisher` to see only the customisation surface - `origin: "custom"` returns a handful of models instead of ~170 - and set `include_counts: false` for a bare model list. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
+| `origin` | `microsoft` \| `isv` \| `custom` | no | Only models with this build origin. Use "custom" / "isv" for the customisation surface. |
+| `layer` | string (min 1, max 20) | no | Only models on this layer (SYS, SLN, ISV, VAR, USR) |
+| `publisher` | string (min 1, max 200) | no | Only models whose publisher contains this text (case-insensitive) |
+| `include_counts` | boolean | default `true` | Include table/class/enum/entity/form counts. Set false for a bare model list. |
+| `limit` | integer (≥1, ≤500) | default `200` | Max modules to return (default 200, max 500) |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_resolve_label`

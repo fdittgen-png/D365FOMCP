@@ -1850,7 +1850,7 @@ describe('entity methods', () => {
   after(() => { if (edb) edb.close(); });
 
   it('d365_get_entity_sources reports the 4 entity methods', async () => {
-    const v = z.object(tools['d365_get_entity_sources'].schema).parse({ entity_name: 'TOC_Basware_PurchaseConfirmationHeaderEntity', format: 'markdown' });
+    const v = z.object(tools['d365_get_entity_sources'].schema).parse({ entity_name: 'TOC_Basware_PurchaseConfirmationHeaderEntity', include_methods: true, format: 'markdown' });
     const res = await tools['d365_get_entity_sources'].handler(v);
     const t = res.structuredContent;
     assert.equal(t.method_count, 4);
@@ -1872,5 +1872,255 @@ describe('entity methods', () => {
     const res = await tools['d365_get_method_source'].handler(v);
     assert.equal(res.structuredContent.owner_type, 'entity');
     assert.match(res.structuredContent.source_code, /insertEntityDataSource/);
+  });
+});
+
+
+// -- Response-size optimisations ---------------------------------------------
+//
+// Two tools used to return unfiltered full-table dumps (measured: 82% of the
+// KB token cost of a real export task). They now shape their response:
+// d365_get_entity_sources omits method signatures by default and filters
+// fields; d365_list_modules filters by build provenance. Both stay
+// back-compatible for a no-argument call.
+
+describe('response shaping — d365_get_entity_sources', () => {
+  let odb, tools;
+
+  before(async () => {
+    odb = new Database(':memory:');
+    odb.exec(`
+      CREATE TABLE data_entities (entity_name TEXT PRIMARY KEY, module_id TEXT, label TEXT,
+        public_name TEXT, public_collection TEXT, is_public INTEGER, primary_table TEXT,
+        staging_table TEXT, config_key TEXT);
+      CREATE TABLE entity_fields (entity_name TEXT, field_name TEXT, data_field TEXT, data_source TEXT, is_mandatory INTEGER, PRIMARY KEY(entity_name, field_name));
+      CREATE TABLE fields (table_name TEXT, field_name TEXT, field_type TEXT, edt TEXT, enum_type TEXT,
+        mandatory TEXT, label TEXT, source_module TEXT, is_extension INTEGER DEFAULT 0, PRIMARY KEY(table_name, field_name));
+      CREATE TABLE methods (owner_type TEXT, owner_name TEXT, method_name TEXT, signature TEXT, is_static INTEGER, source_code TEXT, PRIMARY KEY(owner_type, owner_name, method_name));
+      CREATE TABLE model_versions (model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT,
+        publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT);
+
+      INSERT INTO data_entities VALUES ('EcoResReleasedProductV2Entity','ApplicationSuite','Released products',
+        'ReleasedProductV2','ReleasedProductsV2',1,'InventTable',NULL,NULL);
+
+      INSERT INTO entity_fields VALUES ('EcoResReleasedProductV2Entity','ItemNumber','ItemId','InventTable',1);
+      INSERT INTO entity_fields VALUES ('EcoResReleasedProductV2Entity','ProductSubType',NULL,'InventTable',0);
+      INSERT INTO entity_fields VALUES ('EcoResReleasedProductV2Entity','SearchName','NameAlias','InventTable',0);
+      INSERT INTO entity_fields VALUES ('EcoResReleasedProductV2Entity','QualityCertificateDefaultOnPO','TBG_QualityCertificateDefaultOnPO','InventTable',0);
+
+      INSERT INTO fields VALUES ('InventTable','ItemId','String','ItemId',NULL,'Yes','Item','Foundation',0);
+      INSERT INTO fields VALUES ('InventTable','NameAlias','String','ItemFreeTxt',NULL,'No','Search name','Foundation',0);
+      INSERT INTO fields VALUES ('InventTable','TBG_QualityCertificateDefaultOnPO','Enum',NULL,'NoYes','No','Quality certificate','iExtension',1);
+
+      INSERT INTO methods VALUES ('entity','EcoResReleasedProductV2Entity','postLoad','public void postLoad()',0,'...');
+      INSERT INTO methods VALUES ('entity','EcoResReleasedProductV2Entity','defaultCTQuery','public static Query defaultCTQuery()',1,'...');
+
+      INSERT INTO model_versions VALUES ('Foundation','ApplicationSuite','Application Suite','Microsoft Corporation','SYS','microsoft','10.0.2263.172','C:\\pkg');
+      INSERT INTO model_versions VALUES ('iExtension','iExtension','iExtension','Trelleborg','USR','custom','10.0.32.7','C:\\custom');
+    `);
+    const { registerKbTools } = await import('../src/azure/kb-tools.js');
+    const mock = createMockServer();
+    registerKbTools(mock, odb);
+    tools = mock.handlers;
+  });
+
+  after(() => { if (odb) odb.close(); });
+
+  const call = async (args) => {
+    const v = z.object(tools['d365_get_entity_sources'].schema).parse({ format: 'markdown', ...args });
+    return await tools['d365_get_entity_sources'].handler(v);
+  };
+
+  it('resolves the OData collection name, the public name and the AOT name to one entity', async () => {
+    for (const name of ['ReleasedProductsV2', 'ReleasedProductV2', 'ecoresreleasedproductv2entity']) {
+      const res = await call({ entity_name: name });
+      assert.equal(res.structuredContent.entity_name, 'EcoResReleasedProductV2Entity', `resolving ${name}`);
+      assert.ok(!res.isError, `resolving ${name} must not be a not-found`);
+    }
+  });
+
+  it('omits method signatures by default but always reports method_count', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2' });
+    assert.equal(res.structuredContent.method_count, 2);
+    assert.deepEqual(res.structuredContent.methods, []);
+    assert.match(res.content[0].text, /pass `include_methods: true`/);
+  });
+
+  it('lists method signatures when asked', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', include_methods: true });
+    assert.equal(res.structuredContent.methods.length, 2);
+  });
+
+  it('custom_only returns just the extension field, with its owning model', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', custom_only: true });
+    const t = res.structuredContent;
+    assert.equal(t.field_count, 4, 'field_count stays the whole-entity total');
+    assert.equal(t.fields_matched, 1);
+    assert.equal(t.entity_fields[0].field_name, 'QualityCertificateDefaultOnPO');
+    assert.equal(t.entity_fields[0].source_module, 'iExtension');
+    assert.equal(t.entity_fields[0].is_extension, true);
+  });
+
+  it('computed_only returns the fields with no backing data field', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', computed_only: true });
+    assert.deepEqual(res.structuredContent.entity_fields.map(f => f.field_name), ['ProductSubType']);
+  });
+
+  it('fields_like narrows by name, case-insensitively', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', fields_like: 'name' });
+    assert.deepEqual(res.structuredContent.entity_fields.map(f => f.field_name).sort(), ['SearchName']);
+  });
+
+  it('limit caps the returned fields and reports both counts', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', limit: 2 });
+    const t = res.structuredContent;
+    assert.equal(t.field_count, 4);
+    assert.equal(t.fields_matched, 4);
+    assert.equal(t.fields_returned, 2);
+    assert.equal(t.entity_fields.length, 2);
+    assert.match(res.content[0].text, /Showing first 2 results/);
+  });
+
+  it('a non-matching filter explains the two field classes that live in no model', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', fields_like: 'PrintableText_Custom' });
+    assert.equal(res.structuredContent.fields_matched, 0);
+    assert.match(res.content[0].text, /_Custom/);
+    assert.match(res.content[0].text, /binary-only ISV models/);
+  });
+
+  it('still 404s an entity that exists under no name', async () => {
+    const res = await call({ entity_name: 'NoSuchEntityAnywhere' });
+    assert.equal(res.isError, true);
+  });
+});
+
+describe('response shaping — d365_list_modules', () => {
+  let mdb, tools;
+
+  before(async () => {
+    mdb = new Database(':memory:');
+    mdb.exec(`
+      CREATE TABLE modules (module_id TEXT PRIMARY KEY, table_count INTEGER, class_count INTEGER,
+        enum_count INTEGER, entity_count INTEGER, form_count INTEGER);
+      CREATE TABLE model_versions (model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT,
+        publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT);
+
+      INSERT INTO modules VALUES ('ApplicationSuite', 50, 100, 30, 10, 20);
+      INSERT INTO modules VALUES ('ApplicationFoundation', 15, 40, 10, 5, 8);
+      INSERT INTO modules VALUES ('iExtension', 9, 12, 2, 1, 3);
+      INSERT INTO modules VALUES ('HISOL', 4, 6, 1, 0, 1);
+
+      INSERT INTO model_versions VALUES ('Foundation','ApplicationSuite','Application Suite','Microsoft Corporation','SYS','microsoft','10.0.2263.172','C:\\pkg');
+      INSERT INTO model_versions VALUES ('AppFoundation','ApplicationFoundation','Application Foundation','Microsoft Corporation','SYS','microsoft','10.0.2263.172','C:\\pkg');
+      INSERT INTO model_versions VALUES ('iExtension','iExtension','iExtension','Trelleborg','USR','custom','10.0.32.7','C:\\custom');
+      INSERT INTO model_versions VALUES ('HISOL','HISOL','HISOL','HiSol AG','ISV','isv','1.4.0.0','C:\\isv');
+    `);
+    const { registerKbTools } = await import('../src/azure/kb-tools.js');
+    const mock = createMockServer();
+    registerKbTools(mock, mdb);
+    tools = mock.handlers;
+  });
+
+  after(() => { if (mdb) mdb.close(); });
+
+  const call = async (args = {}) => {
+    const v = z.object(tools['d365_list_modules'].schema).parse({ format: 'markdown', ...args });
+    return await tools['d365_list_modules'].handler(v);
+  };
+
+  it('a no-argument call still returns every module (back-compat)', async () => {
+    const res = await call();
+    assert.equal(res.structuredContent.module_count, 4);
+    assert.equal(res.structuredContent.returned_count, 4);
+  });
+
+  it('origin filters down to the customisation surface', async () => {
+    const res = await call({ origin: 'custom' });
+    assert.deepEqual(res.structuredContent.modules.map(m => m.module_id), ['iExtension']);
+    const isv = await call({ origin: 'isv' });
+    assert.deepEqual(isv.structuredContent.modules.map(m => m.module_id), ['HISOL']);
+  });
+
+  it('layer and publisher filter too, publisher by substring', async () => {
+    const byLayer = await call({ layer: 'usr' });
+    assert.deepEqual(byLayer.structuredContent.modules.map(m => m.module_id), ['iExtension']);
+    const byPublisher = await call({ publisher: 'trelleborg' });
+    assert.deepEqual(byPublisher.structuredContent.modules.map(m => m.module_id), ['iExtension']);
+  });
+
+  it('include_counts:false drops the count columns from the payload', async () => {
+    const res = await call({ include_counts: false, origin: 'custom' });
+    const m = res.structuredContent.modules[0];
+    assert.equal(m.table_count, null);
+    assert.equal(m.class_count, null);
+    assert.equal(m.version, '10.0.32.7', 'provenance is kept');
+  });
+
+  it('limit truncates the list but module_count stays the match total', async () => {
+    const res = await call({ limit: 2 });
+    assert.equal(res.structuredContent.module_count, 4);
+    assert.equal(res.structuredContent.returned_count, 2);
+    assert.match(res.content[0].text, /Showing first 2 results/);
+  });
+
+  it('a filter that matches nothing is an empty result, not an error', async () => {
+    const res = await call({ origin: 'custom', publisher: 'nobody' });
+    assert.ok(!res.isError);
+    assert.equal(res.structuredContent.module_count, 0);
+  });
+});
+
+describe('response shaping — d365_lookup_table field narrowing', () => {
+  let ldb, tools;
+
+  before(async () => {
+    ldb = new Database(':memory:');
+    ldb.exec(`
+      CREATE TABLE tables (table_name TEXT PRIMARY KEY, module_id TEXT, label TEXT, table_group TEXT,
+        save_per_company INTEGER, cache_lookup TEXT, clustered_index TEXT, replacement_key TEXT,
+        field_count INTEGER, is_customized INTEGER DEFAULT 0);
+      CREATE TABLE fields (table_name TEXT, field_name TEXT, field_type TEXT, edt TEXT, enum_type TEXT,
+        mandatory TEXT, label TEXT, source_module TEXT, is_extension INTEGER DEFAULT 0, PRIMARY KEY(table_name, field_name));
+      CREATE TABLE indexes_tbl (table_name TEXT, index_name TEXT, is_unique INTEGER, is_clustered INTEGER, fields_json TEXT);
+      CREATE TABLE relations (source_table TEXT, related_table TEXT, relation_name TEXT, constraints_json TEXT, relationship_type TEXT, on_delete TEXT);
+      CREATE TABLE labels (label_id TEXT PRIMARY KEY, text TEXT);
+
+      INSERT INTO tables VALUES ('InventTable','ApplicationSuite','Items','Main',1,'Found','ItemIdx','ItemId',3,1);
+      INSERT INTO fields VALUES ('InventTable','ItemId','String','ItemId',NULL,'Yes','Item','Foundation',0);
+      INSERT INTO fields VALUES ('InventTable','NameAlias','String','ItemFreeTxt',NULL,'No','Search name','Foundation',0);
+      INSERT INTO fields VALUES ('InventTable','TBG_QualityCertificateDefaultOnPO','Enum',NULL,'NoYes','No','Quality certificate','iExtension',1);
+    `);
+    const { registerKbTools } = await import('../src/azure/kb-tools.js');
+    const mock = createMockServer();
+    registerKbTools(mock, ldb);
+    tools = mock.handlers;
+  });
+
+  after(() => { if (ldb) ldb.close(); });
+
+  const call = async (args) => {
+    const v = z.object(tools['d365_lookup_table'].schema).parse({ format: 'markdown', ...args });
+    return await tools['d365_lookup_table'].handler(v);
+  };
+
+  it('no filter returns every field (back-compat) and fields_shown equals field_count', async () => {
+    const res = await call({ table_name: 'InventTable' });
+    const t = res.structuredContent;
+    assert.equal(t.field_count, 3);
+    assert.equal(t.fields_shown, 3);
+  });
+
+  it('custom_only lists only extension fields; the counts stay whole-table', async () => {
+    const res = await call({ table_name: 'InventTable', custom_only: true });
+    const t = res.structuredContent;
+    assert.equal(t.field_count, 3);
+    assert.equal(t.fields_shown, 1);
+    assert.equal(t.fields[0].name, 'TBG_QualityCertificateDefaultOnPO');
+    assert.equal(t.custom_field_count, 1);
+  });
+
+  it('fields_like narrows by substring, case-insensitively', async () => {
+    const res = await call({ table_name: 'InventTable', fields_like: 'ITEM' });
+    assert.deepEqual(res.structuredContent.fields.map(f => f.name), ['ItemId']);
   });
 });

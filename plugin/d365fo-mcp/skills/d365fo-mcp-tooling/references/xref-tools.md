@@ -19,7 +19,7 @@ Compiler cross-reference snapshot: who calls, reads, writes, extends, implements
 | `xref_cross_module_deps` | Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it). |
 | `xref_raw_sql` | Execute a read-only SQL query against the XRef SQLite database. |
 | `xref_impact_analysis` | Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. |
-| `xref_list_modules` | List all D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin m |
+| `xref_list_modules` | List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin micro |
 | `xref_object_summary` | Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. |
 | `xref_find_extensions` | Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. |
 | `xref_find_field_usages` | Find all code locations that read or write a specific field on a D365FO table. |
@@ -66,6 +66,7 @@ Find the full class inheritance hierarchy — all subclasses (recursive) or the 
 |---|---|---|---|
 | `class_name` | string (min 1, max 500) | yes | Class name (e.g. "SalesFormLetter", "FormLetterServiceController") |
 | `direction` | `subclasses` \| `parents` | default `"subclasses"` | "subclasses" = who extends this (default), "parents" = what does this extend |
+| `limit` | integer (≥1, ≤1000) | default `200` | Max entries to return (default 200, max 1000). Framework base classes have thousands of subclasses. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `xref_interface_implementors`
@@ -75,6 +76,7 @@ Find all classes that implement a given interface, including indirect implemento
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `interface_name` | string (min 1, max 500) | yes | Interface name (e.g. "SysRunnable", "SysPackable") |
+| `limit` | integer (≥1, ≤1000) | default `200` | Max implementors to return (default 200, max 1000). Framework interfaces have thousands. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `xref_search_names`
@@ -140,14 +142,19 @@ Analyze the impact of changing a D365FO object: find all direct dependents group
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name or path |
+| `limit` | integer (≥1, ≤500) | default `100` | Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `xref_list_modules`
 
-List all D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots configured). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
+List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
+| `origin` | `microsoft` \| `isv` \| `custom` | no | Only models with this build origin. Use "custom" / "isv" for the customisation surface. |
+| `layer` | string (min 1, max 20) | no | Only models on this layer (SYS, SLN, ISV, VAR, USR) |
+| `publisher` | string (min 1, max 200) | no | Only models whose publisher contains this text (case-insensitive) |
+| `limit` | integer (≥1, ≤500) | default `200` | Max modules to return (default 200, max 500) |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `xref_object_summary`

@@ -99,10 +99,15 @@ export function registerKbTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get complete metadata for a D365FO table: fields (name, type, EDT), primary key, indexes, and foreign key relations. Returns both a typed JSON payload (structuredContent) and a Markdown rendering for legacy clients.',
-      inputSchema: { table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'), format: formatTextParam },
+      inputSchema: {
+        table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'),
+        fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field.'),
+        custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
+        format: formatTextParam,
+      },
       outputSchema: d365LookupTableOutput.shape,
     },
-    async ({ table_name, format }) => {
+    async ({ table_name, fields_like, custom_only, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
 
@@ -143,6 +148,19 @@ export function registerKbTools(server, db) {
         console.error('[kb-tools:d365_lookup_table fields]', err);
       }
 
+      // Field narrowing. The counts stay whole-table; only the rendered field
+      // list narrows, so a 400-field table can be inspected for one thing
+      // without paying for all of it.
+      const fieldsLikeTerm = typeof fields_like === 'string' && fields_like.trim()
+        ? fields_like.trim().toLowerCase()
+        : null;
+      const customFieldsOnly = custom_only === true;
+      const shownFieldRows = (fieldsLikeTerm || customFieldsOnly)
+        ? fieldRows.filter(f =>
+          (!fieldsLikeTerm || String(f.field_name).toLowerCase().includes(fieldsLikeTerm))
+          && (!customFieldsOnly || Boolean(f.is_extension)))
+        : fieldRows;
+
       const idxRows = q(
         `SELECT index_name, is_unique, is_clustered, fields_json FROM indexes_tbl WHERE table_name = ? COLLATE NOCASE`, [row.table_name]
       );
@@ -178,12 +196,13 @@ export function registerKbTools(server, db) {
         clustered_index: row.clustered_index ?? null,
         replacement_key: row.replacement_key ?? null,
         field_count: fieldRows.length,
+        fields_shown: shownFieldRows.length,
         is_customized: Boolean(row.is_customized),
         custom_field_count: fieldRows.filter(f => f.is_extension).length,
         customization_modules: [...new Set(
           fieldRows.filter(f => f.is_extension && f.source_module).map(f => f.source_module)
         )],
-        fields: fieldRows.map(f => ({
+        fields: shownFieldRows.map(f => ({
           name: f.field_name,
           type: f.field_type ?? null,
           edt: f.edt ?? null,
@@ -855,11 +874,17 @@ export function registerKbTools(server, db) {
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all tables that have foreign key relationships TO a given table. Useful for impact analysis. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { table_name: z.string().min(1).max(500).describe('Target table name'), format: formatTextParam },
+      inputSchema: {
+        table_name: z.string().min(1).max(500).describe('Target table name'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max referencing relations to return (default 200, max 1000)'),
+        format: formatTextParam,
+      },
       outputSchema: d365FindReferencingTablesOutput.shape,
     },
-    async ({ table_name, format }) => {
+    async ({ table_name, limit, format }) => {
       const tn = table_name.trim();
+      // Defensive default - the test mock server bypasses Zod (contract rule #13).
+      const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 200;
 
       // Step 1: does the table exist at all? (Distinguishes "non-existent" from "leaf".)
       const exists = q(
@@ -901,10 +926,12 @@ export function registerKbTools(server, db) {
         }
       }
 
+      const shownRefs = result.slice(0, lim);
       const typed = {
         table_name: realName,
         reference_count: result.length,
-        references: result.map(row => ({
+        returned_count: shownRefs.length,
+        references: shownRefs.map(row => ({
           source_table: row.source_table ?? null,
           relation_name: row.relation_name ?? null,
           relationship_type: row.relationship_type ?? null,
@@ -1050,50 +1077,150 @@ export function registerKbTools(server, db) {
     }
   );
 
-  // ── 10. d365_get_entity_sources ───────────────────────────────────────────
+  // ── 10. d365_get_entity_sources ───────────────────────────────
   server.registerTool(
     'd365_get_entity_sources',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get data source chain, fields, and entity-level X++ methods for a D365FO data entity. Shows the primary table, OData name, and the methods defined on the entity (postLoad, mapEntityToDataSource, validate*, OData actions, …). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { entity_name: z.string().min(1).max(500).describe('Data entity name'), format: formatTextParam },
+      description: 'Get the data source chain and fields of a D365FO data entity. Resolves the AOT name (EcoResReleasedProductV2Entity), the OData public name (ReleasedProductV2) and the OData collection (ReleasedProductsV2) alike. Every field carries its owning model, so `custom_only: true` returns just the customisation surface; `fields_like`, `computed_only` and `limit` narrow a wide entity further. Method signatures are OMITTED by default - `method_count` is always returned, pass `include_methods: true` when the entity code path matters. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
+        entity_name: z.string().min(1).max(500).describe('Data entity name: AOT name, OData public name, or OData collection name'),
+        include_methods: z.boolean().optional().default(false).describe('Include entity method signatures (postLoad, validate*, OData actions). Default false - method_count is always returned.'),
+        fields_like: z.string().min(1).max(200).optional().describe('Only fields whose name contains this text (case-insensitive)'),
+        custom_only: z.boolean().optional().default(false).describe('Only fields added by a non-Microsoft model or by a table extension - the customisation surface'),
+        computed_only: z.boolean().optional().default(false).describe('Only computed/virtual fields (no backing data field)'),
+        limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return (default 500, max 1000)'),
+        format: formatTextParam,
+      },
       outputSchema: d365GetEntitySourcesOutput.shape,
     },
-    async ({ entity_name, format }) => {
+    async ({ entity_name, include_methods, fields_like, custom_only, computed_only, limit, format }) => {
       const en = entity_name.trim();
+      // Defensive defaults - the test mock server bypasses Zod (contract rule #13).
+      const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 500;
+      const wantMethods = include_methods === true;
+      const customOnly = custom_only === true;
+      const computedOnly = computed_only === true;
+      const likeTerm = typeof fields_like === 'string' && fields_like.trim()
+        ? fields_like.trim().toLowerCase()
+        : null;
+
+      // Resolve the AOT name first, then the OData names a caller actually holds:
+      // public_collection ("ReleasedProductsV2") and public_name ("ReleasedProductV2").
       const result = q(
         `SELECT entity_name, module_id, label, public_name, public_collection, is_public, primary_table, staging_table, config_key
-         FROM data_entities WHERE entity_name = ? COLLATE NOCASE`, [en]
+         FROM data_entities
+         WHERE entity_name = ? COLLATE NOCASE
+            OR public_collection = ? COLLATE NOCASE
+            OR public_name = ? COLLATE NOCASE
+         ORDER BY CASE WHEN entity_name = ? COLLATE NOCASE THEN 0
+                       WHEN public_collection = ? COLLATE NOCASE THEN 1
+                       ELSE 2 END
+         LIMIT 1`, [en, en, en, en, en]
       );
 
       if (!result || result.length === 0) {
         const fuzzy = q(
-          `SELECT entity_name FROM data_entities WHERE entity_name LIKE ? COLLATE NOCASE LIMIT 10`, [`%${en}%`]
+          `SELECT entity_name FROM data_entities
+           WHERE entity_name LIKE ? COLLATE NOCASE
+              OR public_collection LIKE ? COLLATE NOCASE
+              OR public_name LIKE ? COLLATE NOCASE
+           LIMIT 10`, [`%${en}%`, `%${en}%`, `%${en}%`]
         );
         return notFoundResult('Entity', en, fuzzy.map(r => r.entity_name));
       }
 
       const r = result[0];
+
+      // Field rows carry their owning model via the backing table field
+      // (fields.source_module / is_extension), so custom_only needs no second
+      // round-trip. The join key (table_name, field_name) is the fields PK, so
+      // it cannot multiply rows; an entity data source that is an alias rather
+      // than a table name simply yields a null attribution.
       let fieldRows = [];
       try {
         fieldRows = q(
-          `SELECT field_name, data_field, data_source, is_mandatory
-           FROM entity_fields WHERE entity_name = ? COLLATE NOCASE ORDER BY field_name`, [r.entity_name]
+          `SELECT ef.field_name, ef.data_field, ef.data_source, ef.is_mandatory,
+                  f.source_module AS source_module, f.is_extension AS is_extension
+           FROM entity_fields ef
+           LEFT JOIN fields f
+             ON f.table_name = ef.data_source COLLATE NOCASE
+            AND f.field_name = ef.data_field COLLATE NOCASE
+           WHERE ef.entity_name = ? COLLATE NOCASE
+           ORDER BY ef.field_name`, [r.entity_name]
         );
       } catch (err) {
-        console.error('[kb-tools:d365_get_entity_sources fields]', err);
+        // KB databases built before fields.source_module / is_extension existed.
+        console.error('[kb-tools:d365_get_entity_sources fields attribution]', err);
+        try {
+          fieldRows = q(
+            `SELECT field_name, data_field, data_source, is_mandatory
+             FROM entity_fields WHERE entity_name = ? COLLATE NOCASE ORDER BY field_name`, [r.entity_name]
+          );
+        } catch (err2) {
+          console.error('[kb-tools:d365_get_entity_sources fields]', err2);
+        }
       }
+
+      const allFields = fieldRows.map(f => ({
+        field_name: f.field_name,
+        data_field: f.data_field ?? null,
+        data_source: f.data_source ?? null,
+        is_mandatory: toNum(f.is_mandatory),
+        source_module: f.source_module ?? null,
+        is_extension: f.is_extension == null ? null : toNum(f.is_extension) === 1,
+      }));
+
+      // Model origin (microsoft / isv / custom) keyed by model name and package.
+      const originByModel = new Map();
+      if (customOnly) {
+        for (const v of queryModelVersions(q)) {
+          const o = String(v.origin ?? '').toLowerCase();
+          if (!o) continue;
+          if (v.model_name) originByModel.set(String(v.model_name).toLowerCase(), o);
+          const mid = v.module_id ? String(v.module_id).toLowerCase() : '';
+          if (mid && !originByModel.has(mid)) originByModel.set(mid, o);
+        }
+      }
+      const isCustomField = (f) => {
+        if (f.is_extension === true) return true;
+        const m = f.source_module ? String(f.source_module).toLowerCase() : '';
+        if (!m) return false;
+        const o = originByModel.get(m);
+        return o === 'custom' || o === 'isv';
+      };
+
+      const matched = allFields.filter((f) => {
+        if (likeTerm && !String(f.field_name).toLowerCase().includes(likeTerm)) return false;
+        if (computedOnly && f.data_field) return false;
+        if (customOnly && !isCustomField(f)) return false;
+        return true;
+      });
+      const shownFields = matched.slice(0, lim);
 
       // Entity-level methods. Derived from the methods table (owner_type='entity')
       // so the count is correct without depending on the data_entities.method_count
-      // column, which is absent on KB databases built before this feature.
+      // column, which is absent on KB databases built before this feature. Without
+      // include_methods only the count is fetched - the signature list is the
+      // single largest block of this response and is rarely why it was called.
       let methodRows = [];
+      let methodCount = 0;
       try {
-        methodRows = q(
-          `SELECT method_name, signature, is_static FROM methods
-           WHERE owner_type = 'entity' AND owner_name = ? COLLATE NOCASE ORDER BY is_static DESC, method_name`,
-          [r.entity_name]
-        );
+        if (wantMethods) {
+          methodRows = q(
+            `SELECT method_name, signature, is_static FROM methods
+             WHERE owner_type = 'entity' AND owner_name = ? COLLATE NOCASE ORDER BY is_static DESC, method_name`,
+            [r.entity_name]
+          );
+          methodCount = methodRows.length;
+        } else {
+          const counted = q(
+            `SELECT COUNT(*) AS method_count FROM methods
+             WHERE owner_type = 'entity' AND owner_name = ? COLLATE NOCASE`,
+            [r.entity_name]
+          );
+          methodCount = toNum(counted?.[0]?.method_count) ?? 0;
+        }
       } catch (err) {
         console.error('[kb-tools:d365_get_entity_sources methods]', err);
       }
@@ -1108,20 +1235,23 @@ export function registerKbTools(server, db) {
         primary_table: r.primary_table ?? null,
         staging_table: r.staging_table ?? null,
         config_key: r.config_key ?? null,
-        field_count: fieldRows.length,
-        entity_fields: fieldRows.map(f => ({
-          field_name: f.field_name,
-          data_field: f.data_field ?? null,
-          data_source: f.data_source ?? null,
-          is_mandatory: toNum(f.is_mandatory),
-        })),
-        method_count: methodRows.length,
+        field_count: allFields.length,
+        fields_matched: matched.length,
+        fields_returned: shownFields.length,
+        entity_fields: shownFields,
+        method_count: methodCount,
         methods: methodRows.map(m => ({
           method_name: m.method_name,
           signature: m.signature ?? null,
           is_static: Boolean(m.is_static),
         })),
       };
+
+      const activeFilters = [
+        likeTerm ? `name contains "${fields_like.trim()}"` : null,
+        customOnly ? 'custom/ISV fields only' : null,
+        computedOnly ? 'computed fields only' : null,
+      ].filter(Boolean);
 
       let out = `## ${typed.entity_name}\n`;
       out += `Module: ${typed.module_id ?? '-'} | Public: ${typed.is_public ? 'Yes' : 'No'}\n`;
@@ -1132,16 +1262,29 @@ export function registerKbTools(server, db) {
       if (typed.staging_table) out += `Staging Table: ${typed.staging_table}\n`;
       out += '\n';
 
-      out += '## Entity Fields\n';
-      out += formatMarkdownTable(
-        typed.entity_fields.map(f => ({
-          Field: f.field_name,
-          DataField: f.data_field ?? '',
-          DataSource: f.data_source ?? '',
-          Mand: f.is_mandatory ?? '',
-        })),
-        ['Field', 'DataField', 'DataSource', 'Mand'],
-      );
+      out += activeFilters.length
+        ? `## Entity Fields (${typed.fields_matched} of ${typed.field_count} - ${activeFilters.join(', ')})\n`
+        : `## Entity Fields (${typed.field_count})\n`;
+      if (shownFields.length > 0) {
+        out += formatMarkdownTable(
+          shownFields.map(f => ({
+            Field: f.field_name,
+            DataField: f.data_field ?? '',
+            DataSource: f.data_source ?? '',
+            Model: f.source_module ?? '',
+            Mand: f.is_mandatory ?? '',
+          })),
+          ['Field', 'DataField', 'DataSource', 'Model', 'Mand'],
+        );
+        if (typed.fields_matched > shownFields.length) {
+          out += truncationNote('cap', shownFields.length, 1000);
+        }
+      } else {
+        out += '_No fields match the filter._';
+        if (customOnly || likeTerm) {
+          out += '\n\n_Two classes of field are in no metadata model, and therefore in no KB snapshot: D365 UI custom fields (`*_Custom`, System administration > Custom fields) and fields from binary-only ISV models. Verify in the environment before concluding a field does not exist._';
+        }
+      }
 
       out += `\n\n## Methods (${typed.method_count})\n`;
       if (typed.methods.length > 0) {
@@ -1154,6 +1297,8 @@ export function registerKbTools(server, db) {
           ['Method', 'Static', 'Signature'],
         );
         out += `\n\n_Use \`d365_get_class_methods\` (or \`d365_get_method_source\`) with \`include_source\` for the full X++ body._`;
+      } else if (typed.method_count > 0) {
+        out += `_${typed.method_count} entity methods not listed - pass \`include_methods: true\` for the signatures._`;
       } else {
         out += '_No entity methods._';
       }
@@ -1266,7 +1411,7 @@ export function registerKbTools(server, db) {
     'd365_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: kb_tables(table_name, table_group, ...), kb_fields(table_name, field_name, ...), kb_enums(enum_name, ...), kb_classes(class_name, ...), kb_methods(class_name, method_name, source_code, ...), kb_search(object_type, object_name, content), kb_relations(...), kb_entities(...). Text channel defaults to TOON (compact, token-efficient). Pass format="markdown" for human-readable tables.',
+      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema (real table names - there is no kb_ prefix except kb_search/kb_metadata): tables(table_name, module_id, table_group, field_count, is_customized, ...), fields(table_name, field_name, field_type, edt, enum_type, mandatory, label, source_module, is_extension), enums(enum_name, ...) + enum_values(enum_name, value_name, value), classes(class_name, module_id, ...), methods(owner_type, owner_name, method_name, signature, source_code, is_static), relations(source_table, related_table, relation_name, constraints_json, relationship_type), data_entities(entity_name, public_name, public_collection, primary_table, ...), entity_fields(entity_name, field_name, data_field, data_source), modules(module_id, table_count, ...), model_versions(model_name, module_id, publisher, layer, origin, version), labels(label_id, text), kb_search(object_type, object_name, content). Query sqlite_master for the authoritative list if in doubt. Text channel defaults to TOON (compact, token-efficient). Pass format="markdown" for human-readable tables.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query to execute'),
         format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),
@@ -1467,11 +1612,26 @@ export function registerKbTools(server, db) {
     'd365_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List all D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the entire knowledge base. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { format: formatTextParam },
+      description: 'List D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the knowledge base. Filter with `origin` / `layer` / `publisher` to see only the customisation surface - `origin: "custom"` returns a handful of models instead of ~170 - and set `include_counts: false` for a bare model list. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
+        origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
+        layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
+        publisher: z.string().min(1).max(200).optional().describe('Only models whose publisher contains this text (case-insensitive)'),
+        include_counts: z.boolean().optional().default(true).describe('Include table/class/enum/entity/form counts. Set false for a bare model list.'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return (default 200, max 500)'),
+        format: formatTextParam,
+      },
       outputSchema: d365ListModulesOutput.shape,
     },
-    async ({ format }) => {
+    async ({ origin, layer, publisher, include_counts, limit, format }) => {
+      // Defensive defaults - the test mock server bypasses Zod (contract rule #13).
+      const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 500) : 200;
+      const withCounts = include_counts !== false;
+      const originF = typeof origin === 'string' && origin.trim() ? origin.trim().toLowerCase() : null;
+      const layerF = typeof layer === 'string' && layer.trim() ? layer.trim().toLowerCase() : null;
+      const publisherF = typeof publisher === 'string' && publisher.trim() ? publisher.trim().toLowerCase() : null;
+      const filtered = Boolean(originF || layerF || publisherF);
+
       const result = q(
         `SELECT module_id, table_count, class_count, enum_count, entity_count, form_count
          FROM modules ORDER BY table_count DESC`
@@ -1479,6 +1639,7 @@ export function registerKbTools(server, db) {
       if (!result || result.length === 0) {
         return emptyResult('modules in the knowledge base', {
           module_count: 0,
+          returned_count: 0,
           modules: [],
         });
       }
@@ -1496,35 +1657,73 @@ export function registerKbTools(server, db) {
         )];
         return vals.length ? vals.join(', ') : null;
       };
+      // A package matches when ANY of its models does - filtering the joined
+      // provenance string would drop mixed-origin packages.
+      const matchesFilter = (moduleId) => {
+        if (!filtered) return true;
+        const rows = byModule.get(moduleId.toLowerCase()) || [];
+        return rows.some(r =>
+          (!originF || String(r.origin ?? '').toLowerCase() === originF)
+          && (!layerF || String(r.layer ?? '').toLowerCase() === layerF)
+          && (!publisherF || String(r.publisher ?? '').toLowerCase().includes(publisherF)));
+      };
+
+      const matched = result.filter(r => matchesFilter(r.module_id));
+      const shown = matched.slice(0, lim);
       const typed = {
-        module_count: result.length,
-        modules: result.map(r => ({
+        module_count: matched.length,
+        returned_count: shown.length,
+        modules: shown.map(r => ({
           module_id: r.module_id,
-          table_count: r.table_count ?? null,
-          class_count: r.class_count ?? null,
-          enum_count: r.enum_count ?? null,
-          entity_count: r.entity_count ?? null,
-          form_count: r.form_count ?? null,
+          table_count: withCounts ? (r.table_count ?? null) : null,
+          class_count: withCounts ? (r.class_count ?? null) : null,
+          enum_count: withCounts ? (r.enum_count ?? null) : null,
+          entity_count: withCounts ? (r.entity_count ?? null) : null,
+          form_count: withCounts ? (r.form_count ?? null) : null,
           version: provenance(r.module_id, 'version'),
           origin: provenance(r.module_id, 'origin'),
           publisher: provenance(r.module_id, 'publisher'),
           layer: provenance(r.module_id, 'layer'),
         })),
       };
-      let out = `## D365FO Modules (${typed.module_count} total)\n\n`;
+
+      const filterDesc = [
+        originF ? `origin=${originF}` : null,
+        layerF ? `layer=${layerF}` : null,
+        publisherF ? `publisher~${publisherF}` : null,
+      ].filter(Boolean).join(', ');
+
+      if (matched.length === 0) {
+        return emptyResult(`modules matching ${filterDesc}`, typed);
+      }
+
+      let out = `## D365FO Modules (${typed.module_count}${filterDesc ? ` matching ${filterDesc}` : ' total'})\n\n`;
+      const columns = withCounts
+        ? ['Module', 'Version', 'Origin', 'Layer', 'Tables', 'Classes', 'Enums', 'Entities', 'Forms']
+        : ['Module', 'Version', 'Origin', 'Layer', 'Publisher'];
       out += formatMarkdownTable(
-        typed.modules.map(m => ({
+        typed.modules.map(m => (withCounts ? {
           Module: m.module_id,
           Version: m.version ?? '',
           Origin: m.origin ?? '',
+          Layer: m.layer ?? '',
           Tables: m.table_count ?? '',
           Classes: m.class_count ?? '',
           Enums: m.enum_count ?? '',
           Entities: m.entity_count ?? '',
           Forms: m.form_count ?? '',
+        } : {
+          Module: m.module_id,
+          Version: m.version ?? '',
+          Origin: m.origin ?? '',
+          Layer: m.layer ?? '',
+          Publisher: m.publisher ?? '',
         })),
-        ['Module', 'Version', 'Origin', 'Tables', 'Classes', 'Enums', 'Entities', 'Forms'],
+        columns,
       );
+      if (typed.module_count > typed.returned_count) {
+        out += truncationNote('cap', typed.returned_count, 500);
+      }
       return structuredResult(typed, out, format);
     }
   );

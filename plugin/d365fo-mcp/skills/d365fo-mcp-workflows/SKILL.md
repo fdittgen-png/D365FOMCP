@@ -245,6 +245,8 @@ THEN (if need full article):
 ```
 PARALLEL:
   d365_get_entity_sources(entityName)              -- field-to-datasource mapping
+                                                   -- (custom_only:true for just the
+                                                   --  customisation surface)
   d365_lookup_table(primaryTableName)              -- backing table structure
   xref_find_references(entityName)                 -- who uses the entity
 ```
@@ -442,7 +444,7 @@ STEP 2 — When xref fails or returns 0 writes, get the COMPLETE writer list fro
   -- The KB methods table is the ground truth for writers; xref's field-write index is weak.
 
 STEP 3 — Rule custom code in/out EARLY:
-  xref_list_modules → origin='custom' rows name the tenant models (e.g. iExtension)
+  xref_list_modules(origin='custom') → the tenant models by name (e.g. iExtension)
   xref_search_names(pattern='%<Table>%', modules=[customModel]) → sweep for CoC/handlers.
   A short "custom code is clean" result lets you commit to standard-code tracing.
 
