@@ -27,3 +27,6 @@ local-deploy/
 # never publish to the (public) repo. Feeds build/build-sec.js.
 secanalysis*.zip
 *.dta.zip
+
+# Skills package build output (rebuild with npm run pack:skills)
+dist/

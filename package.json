@@ -21,7 +21,8 @@
     "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
     "test:integration": "node --test test/integration/*.test.js",
     "start:azure": "func start",
-    "gen:plugin-refs": "node build/gen-plugin-tool-refs.js"
+    "gen:plugin-refs": "node build/gen-plugin-tool-refs.js",
+    "pack:skills": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-SkillsPackage.ps1"
   },
   "engines": {
     "node": ">=20.0.0 <21.0.0"
