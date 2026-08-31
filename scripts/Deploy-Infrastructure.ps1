@@ -50,7 +50,11 @@ param(
 
     # Skip the post-deploy Key Vault / role-assignment verification. The deploy
     # itself is unaffected; only the checks are skipped.
-    [switch]$SkipVaultCheck
+    [switch]$SkipVaultCheck,
+
+    # Enable Key Vault purge protection. IRREVERSIBLE — see the pre-flight
+    # below. Off by default so a routine infra deploy never flips it.
+    [switch]$PurgeProtection
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,18 +105,48 @@ if ($LASTEXITCODE -eq 0 -and $funcExists) {
     }
 }
 
-# ─── Key Vault name pre-flight ───────────────────────────
-# Purge protection is ON, so a vault deleted earlier still holds its name in
-# the soft-deleted state and the deployment fails with a name conflict that
-# does not say so. Check first and give the actual instruction.
+# ─── Key Vault pre-flight ────────────────────────────────
+# 1. A vault deleted earlier still holds its name while soft-deleted, and the
+#    deployment fails with a name conflict that does not explain itself.
 $deletedVault = az keyvault list-deleted --query "[?name=='$kvName'].name | [0]" -o tsv 2>$null
 if ($deletedVault) {
     Write-Host ""
-    Write-Warning "Key Vault '$kvName' exists in the SOFT-DELETED state."
-    Write-Warning "Purge protection prevents reusing the name until it is recovered:"
+    Write-Warning "Key Vault '$kvName' exists in the SOFT-DELETED state, so the name cannot be reused."
+    Write-Warning "Recover it (recommended - the secrets come back) and re-run:"
     Write-Warning "  az keyvault recover --name $kvName"
-    Write-Warning "Recover it (recommended - the secrets come back) and re-run, or the deployment will fail."
     return
+}
+
+# 2. The vault may already exist and predate this template (tis-d-mcpd365fo-kv
+#    was created 2026-03-17). Report what the deploy would CHANGE, and refuse
+#    to flip purge protection - which cannot be undone - without -Confirm.
+$existingVault = az keyvault show --name $kvName --resource-group $ResourceGroup -o json 2>$null | ConvertFrom-Json
+if ($existingVault) {
+    $curPurge     = [bool]$existingVault.properties.enablePurgeProtection
+    $curRetention = [int]$existingVault.properties.softDeleteRetentionInDays
+    $curRbac      = [bool]$existingVault.properties.enableRbacAuthorization
+    Write-Host "  [..] Key Vault '$kvName' already exists (RBAC: $curRbac, purge protection: $curPurge, retention: $curRetention d)" -ForegroundColor DarkGray
+
+    if (-not $curRbac) {
+        Write-Warning "Vault '$kvName' uses ACCESS POLICIES; this template sets enableRbacAuthorization=true."
+        Write-Warning "That switch breaks any consumer relying on an access policy. Review before deploying."
+        if (-not $PSCmdlet.ShouldContinue("Switch $kvName to RBAC authorization?", 'Key Vault authorization change')) { return }
+    }
+
+    # Retention can be raised but never lowered.
+    if ($curRetention -lt 90) {
+        Write-Host "  [!!] Soft-delete retention will be raised $curRetention d -> 90 d (cannot be lowered again)" -ForegroundColor Yellow
+    }
+
+    if ($PurgeProtection -and -not $curPurge) {
+        Write-Warning "-PurgeProtection will enable purge protection on '$kvName'. This is IRREVERSIBLE:"
+        Write-Warning "  * it can never be turned off,"
+        Write-Warning "  * the vault cannot be deleted before its retention expires,"
+        Write-Warning "  * the vault NAME cannot be reused until the soft-deleted copy is recovered or expires."
+        if (-not $PSCmdlet.ShouldContinue("Enable purge protection on $kvName permanently?", 'Irreversible Key Vault change')) { return }
+    } elseif (-not $PurgeProtection -and -not $curPurge) {
+        Write-Host "  [..] Purge protection stays OFF (pass -PurgeProtection to enable it permanently)" -ForegroundColor DarkGray
+    }
 }
 
 # ─── Deploy ──────────────────────────────────────────────
@@ -125,6 +159,9 @@ $deployArgs = @(
     '--template-file', $templateFile
     '--parameters', "env=$Environment"
 )
+if ($PurgeProtection) {
+    $deployArgs += @('--parameters', 'enablePurgeProtection=true')
+}
 if ($BudgetContactEmails) {
     # Bicep array parameter on the CLI: JSON-encode the value.
     $deployArgs += @('--parameters', ('budgetContactEmails=' + ($BudgetContactEmails | ConvertTo-Json -Compress)))
@@ -171,7 +208,8 @@ if (-not $SkipVaultCheck) {
     if (-not $vault) {
         Write-Warning "Key Vault '$kvName' not found after deployment. Live custom fields will not work (issues #87-#91)."
     } else {
-        Write-Host "  [OK] $kvName  (RBAC: $($vault.properties.enableRbacAuthorization), purge protection: $($vault.properties.enablePurgeProtection))" -ForegroundColor Green
+        $purgeState = if ($vault.properties.enablePurgeProtection) { 'on' } else { 'off' }
+        Write-Host "  [OK] $kvName  (RBAC: $($vault.properties.enableRbacAuthorization), purge protection: $purgeState, retention: $($vault.properties.softDeleteRetentionInDays) d)" -ForegroundColor Green
 
         $principalId = az functionapp identity show --name $funcName --resource-group $ResourceGroup `
             --query principalId -o tsv 2>$null

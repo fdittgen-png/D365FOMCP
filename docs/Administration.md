@@ -826,7 +826,7 @@ the repo, not the script's output.
 |---|---|
 | `-List` | Configured sources, secret names only |
 | `-Key <k> -Validate` | Re-test one source without writing |
-| `-Key <k> -Remove [-DeleteSecret]` | Deprovision. `-DeleteSecret` is separate because the vault has purge protection |
+| `-Key <k> -Remove [-DeleteSecret]` | Deprovision. `-DeleteSecret` is separate because a deleted secret only comes back within the vault's soft-delete retention window (7 days on `tis-d-mcpd365fo-kv`), and not at all once purged |
 | `-WhatIf` | Print the `az` commands without executing them |
 
 Guardrails: refuses a non-`https` URL; refuses a Function App name off the naming convention without `-Force`

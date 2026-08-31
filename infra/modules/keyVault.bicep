@@ -30,10 +30,15 @@ param functionAppPrincipalId string = ''
 @allowed(['Enabled', 'Disabled'])
 param publicNetworkAccess string = 'Enabled'
 
-@description('Soft-delete retention in days. 90 is the Azure maximum and the default for production secrets.')
+@description('Soft-delete retention in days. Azure default for a new vault is 90. NOTE: retention can be RAISED on an existing vault but never lowered, so a deploy against tis-d-mcpd365fo-kv (currently 7) permanently moves it to 90. Pass 7 to leave it alone.')
 @minValue(7)
 @maxValue(90)
 param softDeleteRetentionInDays int = 90
+
+@description('''Enable purge protection. IRREVERSIBLE: once on it cannot be turned off, the vault cannot be deleted before its retention expires, and its NAME cannot be reused until the soft-deleted copy is recovered or expires.
+
+Defaults to FALSE so that applying this template to an existing vault does not silently flip a one-way switch — tis-d-mcpd365fo-kv has it off today. Pass true deliberately for a new or production vault.''')
+param enablePurgeProtection bool = false
 
 // Built-in role: Key Vault Secrets User — read secret values, nothing else.
 // https://learn.microsoft.com/azure/role-based-access-control/built-in-roles
@@ -54,11 +59,13 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableRbacAuthorization: true
     enableSoftDelete: true
     softDeleteRetentionInDays: softDeleteRetentionInDays
-    // Purge protection is irreversible once enabled. It is deliberate: a
-    // deleted client secret should not be unrecoverable-by-accident, and the
-    // deprovisioning path (Set-D365CustomFieldsSource.ps1 -Remove) requires an
-    // explicit -DeleteSecret switch for exactly this reason.
-    enablePurgeProtection: true
+    // Parameterised, default false — see the parameter's description. Setting
+    // this to true on an existing vault cannot be undone, so it is never done
+    // as a side effect of a routine infrastructure deploy.
+    // `null` rather than `false` when disabled: the API rejects an explicit
+    // false on a vault that already has it enabled, which would otherwise make
+    // the template undeployable against such a vault.
+    enablePurgeProtection: enablePurgeProtection ? true : null
     publicNetworkAccess: publicNetworkAccess
     networkAcls: {
       bypass: 'AzureServices'

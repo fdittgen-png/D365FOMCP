@@ -75,8 +75,9 @@
     -DeleteSecret is also given.
 
 .PARAMETER DeleteSecret
-    With -Remove, also delete the vault secret. Separate on purpose: the vault
-    has purge protection, so a deleted secret is not trivially recoverable.
+    With -Remove, also delete the vault secret. Separate on purpose: a deleted
+    secret is only recoverable within the vault's soft-delete retention window
+    (7 days on tis-d-mcpd365fo-kv), and not at all after a purge.
 
 .PARAMETER Validate
     Test the chain (token + $metadata) without writing anything. Implied after
@@ -268,7 +269,7 @@ switch ($PSCmdlet.ParameterSetName) {
         }
         if ($DeleteSecret) {
             $name = if ($hit -and $hit.secretName) { $hit.secretName } else { $SecretName }
-            if ($PSCmdlet.ShouldProcess("$KeyVaultName/$name", 'delete secret (purge protection is ON — not trivially recoverable)')) {
+            if ($PSCmdlet.ShouldProcess("$KeyVaultName/$name", 'delete secret (recoverable only within the soft-delete retention window)')) {
                 az keyvault secret delete --vault-name $KeyVaultName --name $name --output none
                 if ($LASTEXITCODE -ne 0) { Write-Warning "Could not delete secret $name from $KeyVaultName." }
                 else { Write-Host "Secret $name deleted (soft-delete)." -ForegroundColor Green }
