@@ -231,6 +231,8 @@ Look up an object inside the sealed ISV models: does it exist, in which model, a
 | `modules` | array<string (min 1, max 100)> | no | Restrict to specific sealed ISV models. |
 | `prefix_match` | boolean | default `false` | Match names starting with `name` instead of exactly. Useful for exploring an ISV prefix such as "LAC". |
 | `search_properties` | boolean | default `false` | Also find elements whose decoded properties contain `name` — use this to locate an ISV-added field on a Microsoft table. Results say which element carries it, never that the name is a field of a given type: sealed metadata proves the identifier is there, not its role. |
+| `include_signatures` | boolean | default `false` | Also return the method signatures declared on the matched type, read from the assembly metadata of the sealed model (fidelity=il): parameter names and types, return type, and the static/virtual/final/visibility modifiers. Call this when the question is what a sealed method accepts and returns — for example before writing a Chain-of-Command wrapper, which must match the signature exactly. It does NOT reveal what a method does: no method body is decompiled or stored anywhere in this database, so behaviour cannot be read out of these rows and a method name is a hint, not a description. |
+| `include_il_command` | boolean | default `false` | Also return the exact local disassembly command for the matched type, so the caller can obtain the IL themselves. Set this ONLY when the user has explicitly asked for the IL or for a method body — never by default and never speculatively. It returns commands, not code: this database holds no IL, no method body and no source text, and running the command is the operator's action on their own machine under their own vendor licence agreement. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_isv_extension_points`
@@ -242,6 +244,7 @@ Show where sealed ISV models hook into standard D365FO code: Chain-of-Command wr
 | `target` | string (min 1, max 500) | no | Standard object the ISV extends, e.g. "SalesFormLetter", "CustTable", "DocuView". |
 | `module` | string (min 1, max 100) | no | Sealed ISV model to list, e.g. "Lasernet". Combine with `target` to narrow further. |
 | `limit` | integer (≥1, ≤500) | default `100` | Max rows per section (default 100, max 500). |
+| `include_signatures` | boolean | default `false` | Attach each wrapped method signature from the assembly metadata (fidelity=il) to the Chain-of-Command rows. Set this when the goal is to write a competing or coexisting CoC wrapper: the wrapper must match the wrapped signature exactly, and the sealed metadata alone does not carry parameter types. Signatures describe the calling contract only — no method body is decompiled or stored. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_custom_fields`

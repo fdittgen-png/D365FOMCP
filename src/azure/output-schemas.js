@@ -1391,6 +1391,23 @@ export const isvProvenanceSchema = z.object({
   caveat: z.string().describe('One-line statement of what this data cannot tell you.'),
 });
 
+/**
+ * Provenance for IL-derived rows (issue #81) — a *separate* schema from
+ * isvProvenanceSchema on purpose.
+ *
+ * An assembly signature is a weaker claim than metadata the ISV published for
+ * the runtime to consume, and the two must not render identically. Collapsing
+ * them into one shape is exactly how a caller ends up treating "this method
+ * takes a BankAccountTable" and "this method reconciles bank statements" as the
+ * same grade of fact.
+ */
+export const isvIlProvenanceSchema = z.object({
+  fidelity: z.literal('il'),
+  source_kind: z.string().describe("Always 'assembly-metadata': ECMA-335 metadata tables, not X++ source."),
+  scanned_at: z.string().nullable(),
+  caveat: z.string().describe('States that signatures are exact and behaviour is unknown — no body was decompiled or stored.'),
+});
+
 export const d365IsvListModelsOutput = z.object({
   isv_data_available: z.boolean().describe('False when this database was built before the ISV scan existed, or with no ISV root configured.'),
   model_count: z.number(),
@@ -1406,6 +1423,37 @@ export const d365IsvListModelsOutput = z.object({
     counts: z.record(z.string(), z.number()).describe('What was recovered per artefact class: elements, labels, refs, coc, events.'),
   })),
   provenance: isvProvenanceSchema,
+});
+
+/**
+ * One IL-derived method signature (issue #81).
+ *
+ * `fidelity: 'il'` throughout: these rows come from the assembly's metadata
+ * tables, never from X++ source. The contract is exact; the behaviour is
+ * unknown and is not represented here because nothing in the pipeline can know
+ * it — no body is decompiled, disassembled or stored.
+ */
+export const isvIlSignatureSchema = z.object({
+  module: z.string(),
+  assembly: z.string().nullable().describe('Image the signature was read from, e.g. Dynamics.AX.Lasernet.0.netmodule.'),
+  namespace: z.string().nullable().describe('CLR namespace. Load-bearing: a sealed model commonly declares one name as both a table (Dynamics.AX.Application) and the form of that name (Dynamics.AX.Application.Forms), which are different objects with different methods.'),
+  type_name: z.string(),
+  method_name: z.string(),
+  kind: z.string().nullable().describe("method | constructor | accessor. Accessors (CLR get_/set_ property pairs for table fields and form data sources) are excluded from tool responses; they are a field-list question, not a signature question."),
+  return_type: z.string().nullable().describe('X++/CLR type name as encoded in the signature blob.'),
+  parameters: z.array(z.object({
+    name: z.string().describe('Declared parameter name from the Param table; `argN` when the compiler emitted none.'),
+    type: z.string(),
+    optional: z.boolean().optional().describe('True when X++ declared a default — recovered from the compiler-generated optional-parameter overload.'),
+  })),
+  visibility: z.string().nullable().describe('public | protected | private | internal | …'),
+  is_static: z.boolean(),
+  is_abstract: z.boolean(),
+  is_virtual: z.boolean(),
+  is_final: z.boolean().describe('A final method cannot be overridden; relevant when planning an extension.'),
+  has_implementation: z.boolean().describe('Derived from MethodDef.RVA != 0 — the image carries an implementation. The body itself is never read.'),
+  attributes: z.array(z.string()).describe('Attribute type names only; attribute argument blobs are deliberately not decoded.'),
+  fidelity: z.literal('il'),
 });
 
 export const d365IsvLookupOutput = z.object({
@@ -1424,6 +1472,24 @@ export const d365IsvLookupOutput = z.object({
       value: z.string().nullable(),
     })).describe('Decoded properties, empty when this element type has no confirmed tag map yet.'),
   })),
+  signatures_available: z.boolean().describe('False when the IL signature pass (issue #81) was not run for this database, or include_signatures was not requested.'),
+  signature_count: z.number(),
+  signatures: z.array(isvIlSignatureSchema).describe("Method signatures on the matched types, present only when include_signatures is set. fidelity='il' — a weaker claim than the shipped metadata above and never to be rendered as equivalent."),
+  il_provenance: isvIlProvenanceSchema.nullable().describe('Provenance for the signatures block; null when no signatures were returned.'),
+  il_command: z.object({
+    available: z.boolean(),
+    note: z.string().describe('States that this database holds no IL, method body or source text, that the commands are the operator\'s own action on their own machine, and that use is subject to the vendor licence agreement.'),
+    targets: z.array(z.object({
+      module: z.string(),
+      assembly: z.string().describe('The image that declares the type — commonly a .netmodule, which is where X++ classes live.'),
+      assembly_path: z.string().describe('Resolved from the scanned metadata root, so the command names the real file.'),
+      qualified_type: z.string().describe('Namespace-qualified type name, as the /item= and -t switches expect.'),
+      ildasm: z.string().describe('Windows SDK ildasm invocation. Emits IL assembly and reads a .netmodule directly. The filename must precede the options or ildasm reports MULTIPLE INPUT FILES SPECIFIED.'),
+      ilspycmd_install: z.string().describe('One-off dotnet global tool install, since ilspycmd is not part of the SDK.'),
+      ilspycmd: z.string().describe('ilspycmd invocation. Emits reconstructed C#, which is a translation rather than the shipped artefact.'),
+      ilspycmd_caveat: z.string().nullable().describe('Set when the declaring image is a .netmodule, which ILSpy commonly cannot load standalone.'),
+    })),
+  }).nullable().describe('Present only when include_il_command was explicitly set. Commands for the operator to run locally — never IL, never a method body, never source text.'),
   provenance: isvProvenanceSchema,
 });
 
@@ -1441,6 +1507,7 @@ export const d365IsvExtensionPointsOutput = z.object({
     target_type: z.string().nullable(),
     method: z.string().nullable().describe('Wrapped method; null when the ISV declares the extension class without a listed method.'),
     is_static: z.boolean(),
+    signature: isvIlSignatureSchema.nullable().optional().describe("The wrapped method's signature, when include_signatures is set and the IL pass has run. This is what a CoC wrapper must match; fidelity='il'."),
   })),
   event_handlers: z.array(z.object({
     module: z.string(),
@@ -1456,6 +1523,8 @@ export const d365IsvExtensionPointsOutput = z.object({
     child: z.string(),
     parent: z.string().nullable(),
   })),
+  signatures_available: z.boolean().describe('False when the IL signature pass (issue #81) was not run for this database, or include_signatures was not requested.'),
+  il_provenance: isvIlProvenanceSchema.nullable().describe('Provenance for any signature attached above; null when none was.'),
   truncated: z.boolean(),
   provenance: isvProvenanceSchema,
 });
