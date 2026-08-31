@@ -19,11 +19,14 @@
  * Usage:
  *   node build/isv-scan.js --kb <kb.sqlite> --xref <xref.sqlite> --roots <dir[,dir]>
  *
+ * Add `--il` (or ISV_IL_SCAN=1) for the assembly-metadata signature pass of
+ * issue #81 — signatures only, off by default, KB database only.
+ *
  * Roots default to ISV_SCAN_PATHS, then to the customization roots already
  * configured in KB_PACKAGES_PATHS. When no root resolves, the scan is a no-op
  * and both databases are left byte-identical.
  *
- * Issues: #75 (ADR), #76, #77, #78, #79, #80.
+ * Issues: #75 (ADR), #76, #77, #78, #79, #80, #81.
  */
 
 import { createRequire } from 'module';
@@ -48,6 +51,7 @@ import {
   parseExtensionClassTargetsDoc,
   parseVersionInfoStrings,
 } from './isv-parsers.js';
+import { readAssemblySignatures, normalizeXppMethods } from './pe-metadata.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -343,6 +347,48 @@ function readStructure(model, binDir, warn) {
   return { coc, events, extendsRows, deleteActions };
 }
 
+/**
+ * Method signatures from the model's own assemblies (issue #81).
+ *
+ * Off unless asked for. Everything else this scanner reads is metadata the ISV
+ * shipped for the runtime and Visual Studio to consume; assembly metadata is
+ * the same package's compiled half, and while reading its *tables* is no more
+ * invasive, it is a different claim about a different artefact and gets its own
+ * switch rather than riding along on ISV_SCAN_PATHS.
+ *
+ * Only `Dynamics.AX.*` images are read. Sealed models vendor third-party
+ * libraries into the same `bin/` (`AngleSharp.dll`, `HtmlSanitizer.dll`,
+ * `ChilkatDotNet46.dll`, …) which are neither the ISV's own surface nor ours to
+ * catalogue.
+ *
+ * @param {string} model
+ * @param {string} binDir
+ * @param {(msg:string)=>void} warn
+ * @returns {Array<object>} normalised signature rows, `[]` when disabled
+ */
+function readIlSignatures(model, binDir, warn) {
+  let files;
+  try {
+    files = readdirSync(binDir)
+      .filter(f => /^Dynamics\.AX\..*\.(dll|netmodule)$/i.test(f));
+  } catch {
+    return [];
+  }
+
+  const raw = [];
+  for (const f of files) {
+    try {
+      const { methods } = readAssemblySignatures(readFileSync(join(binDir, f)));
+      for (const m of methods) raw.push({ ...m, assembly: f });
+    } catch (err) {
+      // A native or malformed image is skipped, never fatal: the other
+      // assemblies of the model still carry a usable surface.
+      warn(`${model}: ${f} — no signatures read (${err.message})`);
+    }
+  }
+  return normalizeXppMethods(raw).map(m => ({ ...m, module: model }));
+}
+
 /* ── scan ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -351,9 +397,10 @@ function readStructure(model, binDir, warn) {
  *
  * @param {string[]} roots
  * @param {(msg:string)=>void} warn
+ * @param {{il?:boolean}} [opts]  `il: true` also reads assembly signatures (#81)
  * @returns {Array<object>} one record per sealed model
  */
-export function scanSealedModels(roots, warn = m => console.warn('Warning:', m)) {
+export function scanSealedModels(roots, warn = m => console.warn('Warning:', m), opts = {}) {
   const out = [];
   for (const root of roots) {
     for (const found of discoverSealedModels(root)) {
@@ -364,6 +411,7 @@ export function scanSealedModels(roots, warn = m => console.warn('Warning:', m))
       const labels = readLabels(model, binDir, prefix, warn);
       const { refs, deps } = readXref(model, xrefFile, warn);
       const structure = readStructure(model, binDir, warn);
+      const ilMethods = opts.il === true ? readIlSignatures(model, binDir, warn) : [];
       out.push({
         model,
         root,
@@ -375,6 +423,7 @@ export function scanSealedModels(roots, warn = m => console.warn('Warning:', m))
         labels,
         refs,
         deps,
+        ilMethods,
         ...structure,
       });
     }
@@ -397,7 +446,8 @@ export function writeKb(db, models) {
 
   const clear = (t) => db.prepare(`DELETE FROM ${t}`).run();
   ['isv_models', 'isv_elements', 'isv_element_props', 'isv_coc',
-    'isv_event_handlers', 'isv_extends', 'isv_delete_actions', 'isv_labels'].forEach(clear);
+    'isv_event_handlers', 'isv_extends', 'isv_delete_actions', 'isv_labels',
+    'isv_il_methods'].forEach(clear);
 
   const insModel = db.prepare(`INSERT INTO isv_models
     (model, publisher, version, layer, source_kind, fidelity, depends_on, root, scanned_at, counts)
@@ -418,6 +468,11 @@ export function writeKb(db, models) {
     (module, table_name, target, relation, action) VALUES (?,?,?,?,?)`);
   const insLabel = db.prepare(`INSERT OR REPLACE INTO isv_labels
     (label_id, language, text, module, label_file, qualified_id) VALUES (?,?,?,?,?,?)`);
+  const insIl = db.prepare(`INSERT INTO isv_il_methods
+    (module, assembly, namespace, type_name, base_type, method_name, kind,
+     return_type, parameters, param_count, generic_count, visibility, is_static,
+     is_abstract, is_virtual, is_final, has_implementation, attributes, fidelity)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'il')`);
 
   db.transaction(() => {
     for (const m of models) {
@@ -429,6 +484,7 @@ export function writeKb(db, models) {
           coc: m.coc.length,
           events: m.events.length,
           refs: m.refs.length,
+          il_methods: (m.ilMethods || []).length,
         }));
 
       // Element ids are assigned by SQLite, so map scan-order index -> row id
@@ -454,6 +510,14 @@ export function writeKb(db, models) {
       }
       for (const l of m.labels) {
         insLabel.run(l.labelId, l.language, l.text, l.module, l.labelFile, l.qualifiedId);
+      }
+      for (const sig of m.ilMethods || []) {
+        insIl.run(sig.module, sig.assembly ?? null, sig.namespace ?? null, sig.typeName,
+          sig.baseType ?? null, sig.methodName, sig.kind ?? null, sig.returnType ?? null,
+          JSON.stringify(sig.parameters ?? []), sig.paramCount ?? 0, sig.genericCount ?? 0,
+          sig.visibility ?? null, sig.isStatic ? 1 : 0, sig.isAbstract ? 1 : 0,
+          sig.isVirtual ? 1 : 0, sig.isFinal ? 1 : 0, sig.hasImplementation ? 1 : 0,
+          JSON.stringify(sig.attributes ?? []));
       }
     }
   })();
@@ -530,10 +594,11 @@ export function writeXref(db, models) {
  * @param {string} opts.dbPath          database the main build just closed
  * @param {'kb'|'xref'} opts.target     which schema set to write
  * @param {string[]} [opts.roots]       override; otherwise ISV_SCAN_PATHS etc.
+ * @param {boolean} [opts.il]           override the ISV_IL_SCAN flag (#81)
  * @param {(msg:string)=>void} [opts.log]
  * @returns {Promise<{scanned:number, models:string[], skipped?:string}>}
  */
-export async function refreshIsvMetadata({ dbPath, target, roots, log = console.log } = {}) {
+export async function refreshIsvMetadata({ dbPath, target, roots, il, log = console.log } = {}) {
   const resolved = (roots && roots.length ? roots : resolveRoots([])).filter(r => {
     try { return statSync(r).isDirectory(); } catch { return false; }
   });
@@ -543,7 +608,10 @@ export async function refreshIsvMetadata({ dbPath, target, roots, log = console.
 
   let models = [];
   try {
-    models = scanSealedModels(resolved, m => log(`  ISV warn: ${m}`));
+    // The IL pass costs nothing for the XRef database — it writes only to KB
+    // tables — so it is skipped entirely on that target.
+    const wantIl = target !== 'xref' && ilScanEnabled(il === undefined ? null : il);
+    models = scanSealedModels(resolved, m => log(`  ISV warn: ${m}`), { il: wantIl });
     if (!models.length) return { scanned: 0, models: [], skipped: 'no sealed models found' };
 
     const db = new Database(dbPath);
@@ -562,12 +630,14 @@ export async function refreshIsvMetadata({ dbPath, target, roots, log = console.
     elements: a.elements + m.elements.length,
     labels: a.labels + m.labels.length,
     refs: a.refs + m.refs.length,
-  }), { elements: 0, labels: 0, refs: 0 });
+    il: a.il + (m.ilMethods || []).length,
+  }), { elements: 0, labels: 0, refs: 0, il: 0 });
 
   log(`  ISV refresh: ${models.length} sealed model(s) — `
     + `${totals.elements.toLocaleString()} elements, `
     + `${totals.labels.toLocaleString()} labels, `
-    + `${totals.refs.toLocaleString()} references`);
+    + `${totals.refs.toLocaleString()} references`
+    + (totals.il ? `, ${totals.il.toLocaleString()} IL signatures` : ''));
 
   return { scanned: models.length, models: models.map(m => m.model) };
 }
@@ -575,14 +645,33 @@ export async function refreshIsvMetadata({ dbPath, target, roots, log = console.
 /* ── CLI ───────────────────────────────────────────────────────────────── */
 
 function parseArgs(argv) {
-  const out = { kb: null, xref: null, roots: [] };
+  const out = { kb: null, xref: null, roots: [], il: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--kb') out.kb = argv[++i];
     else if (a === '--xref') out.xref = argv[++i];
     else if (a === '--roots') out.roots = splitPaths(argv[++i]);
+    else if (a === '--il') out.il = true;
+    else if (a === '--no-il') out.il = false;
   }
   return out;
+}
+
+/**
+ * Is the IL signature pass on? (issue #81)
+ *
+ * Off by default and deliberately not folded into ISV_SCAN_PATHS: with the flag
+ * unset the scan writes no `isv_il_methods` row, so a database built without it
+ * is byte-identical to one built before this pass existed. `--il` / `--no-il`
+ * override the environment.
+ *
+ * @param {boolean|null} [argValue]
+ * @returns {boolean}
+ */
+export function ilScanEnabled(argValue = null) {
+  if (argValue === true || argValue === false) return argValue;
+  const v = String(process.env.ISV_IL_SCAN ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
 function splitPaths(s) {
@@ -611,8 +700,13 @@ async function main() {
   }
   console.log(`ISV scan: roots ${roots.join(', ')}`);
 
+  const il = ilScanEnabled(args.il);
+  console.log(`ISV scan: IL signature pass ${il ? 'ON' : 'off'}`
+    + (il ? '' : ' (enable with --il or ISV_IL_SCAN=1)'));
+
   const warnings = [];
-  const models = scanSealedModels(roots, m => { warnings.push(m); console.warn('  warn:', m); });
+  const models = scanSealedModels(
+    roots, m => { warnings.push(m); console.warn('  warn:', m); }, { il });
 
   if (!models.length) {
     console.log('ISV scan: no sealed models found (a sealed model has bin/ and no Descriptor/).');
@@ -620,24 +714,26 @@ async function main() {
   }
 
   console.log(`\nISV scan: ${models.length} sealed model(s)\n`);
-  console.log('  model                          elements   labels     refs      coc   events');
-  console.log('  ' + '-'.repeat(76));
+  console.log('  model                          elements   labels     refs      coc   events    il-sig');
+  console.log('  ' + '-'.repeat(85));
   for (const m of models) {
     console.log('  ' + m.model.padEnd(28) +
       String(m.elements.length).padStart(9) +
       String(m.labels.length).padStart(9) +
       String(m.refs.length).padStart(9) +
       String(m.coc.length).padStart(9) +
-      String(m.events.length).padStart(9));
+      String(m.events.length).padStart(9) +
+      String((m.ilMethods || []).length).padStart(10));
   }
-  const total = (k) => models.reduce((n, m) => n + m[k].length, 0);
-  console.log('  ' + '-'.repeat(76));
+  const total = (k) => models.reduce((n, m) => n + (m[k] || []).length, 0);
+  console.log('  ' + '-'.repeat(85));
   console.log('  ' + 'TOTAL'.padEnd(28) +
     String(total('elements')).padStart(9) +
     String(total('labels')).padStart(9) +
     String(total('refs')).padStart(9) +
     String(total('coc')).padStart(9) +
-    String(total('events')).padStart(9));
+    String(total('events')).padStart(9) +
+    String(total('ilMethods')).padStart(10));
 
   if (args.kb) {
     const db = new Database(args.kb);

@@ -176,6 +176,60 @@ CREATE INDEX IF NOT EXISTS idx_isv_labels_qualified ON isv_labels(qualified_id C
 CREATE INDEX IF NOT EXISTS idx_isv_labels_module    ON isv_labels(module COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_isv_labels_file      ON isv_labels(label_file COLLATE NOCASE);`;
 
+/**
+ * Method signatures read from assembly metadata (issue #81).
+ *
+ * This is the one table in the ISV set that is **not** `fidelity='metadata'`.
+ * Every row is `fidelity='il'` and means: the assembly declares a method with
+ * this name, these parameters and this return type. It does **not** mean anyone
+ * knows what the method does — there is no body here, and `build/pe-metadata.js`
+ * has no code path that could produce one. Tools rendering these rows must say
+ * so, which is what `isvIlProvenance()` below is for.
+ *
+ * `parameters` is a JSON array of `{name, type, optional?}` in declaration
+ * order. `attributes` is a JSON array of attribute *type names* — attribute
+ * argument blobs are deliberately not decoded.
+ *
+ * `has_implementation` is derived from `MethodDef.RVA != 0`, i.e. "this image
+ * carries an implementation" vs "abstract or extern". The bytes at that RVA are
+ * never read.
+ *
+ * `kind` separates `method` from `constructor` and from `accessor` — the CLR
+ * property accessors the compiler emits for table fields and form data sources.
+ * Accessors are the majority of rows (5,938 of 12,814 on AmcBankingFoundation)
+ * and are excluded from the method-signature blocks the tools render, because
+ * "what does this method take" is not answered by a get/set pair. They are kept
+ * because for a model shipping no `Ax<Type>` XML they are the nearest thing to a
+ * field list that exists — a separate question, for a separate tool.
+ */
+export const ISV_IL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS isv_il_methods (
+  id                 INTEGER PRIMARY KEY,
+  module             TEXT NOT NULL,
+  assembly           TEXT,
+  namespace          TEXT,
+  type_name          TEXT NOT NULL,
+  base_type          TEXT,
+  method_name        TEXT NOT NULL,
+  kind               TEXT,
+  return_type        TEXT,
+  parameters         TEXT,
+  param_count        INTEGER,
+  generic_count      INTEGER,
+  visibility         TEXT,
+  is_static          INTEGER,
+  is_abstract        INTEGER,
+  is_virtual         INTEGER,
+  is_final           INTEGER,
+  has_implementation INTEGER,
+  attributes         TEXT,
+  fidelity           TEXT NOT NULL DEFAULT 'il'
+);
+CREATE INDEX IF NOT EXISTS idx_isv_il_type   ON isv_il_methods(type_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_isv_il_method ON isv_il_methods(method_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_isv_il_module ON isv_il_methods(module COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_isv_il_kind   ON isv_il_methods(kind COLLATE NOCASE);`;
+
 /** Everything the KB database needs. */
 export const ISV_KB_SCHEMA = [
   ISV_MODELS_SCHEMA,
@@ -183,6 +237,7 @@ export const ISV_KB_SCHEMA = [
   ISV_ELEMENT_PROPS_SCHEMA,
   ISV_STRUCTURE_SCHEMA,
   ISV_LABELS_SCHEMA,
+  ISV_IL_SCHEMA,
 ].join('\n');
 
 /** Everything the XRef database needs. */
@@ -256,6 +311,68 @@ export function isvProvenanceNote(rowCount, modules) {
     : '';
   return `\n\n_${rowCount} row(s) from sealed ISV metadata${who} — no X++ source; `
     + 'call-site detail is limited to path, line and column._\n';
+}
+
+/**
+ * Does this database carry IL-derived signatures? Separate from hasIsvData():
+ * the IL pass is off by default and behind its own flag, so an ISV-scanned
+ * database routinely has every other isv_ table populated and this one empty.
+ *
+ * @param {object} db  open better-sqlite3 Database
+ * @returns {boolean}
+ */
+export function hasIsvIlData(db) {
+  try {
+    const row = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='isv_il_methods'")
+      .get();
+    if (!row) return false;
+    return (db.prepare('SELECT COUNT(*) AS c FROM isv_il_methods').get()?.c ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The provenance block for any response carrying `fidelity='il'` rows.
+ *
+ * Deliberately *not* the same object as isvProvenance(): an IL signature is a
+ * weaker claim than shipped metadata, and the two must never render
+ * identically. A signature is exact about the calling contract and completely
+ * silent about behaviour — a caller that reads intent out of a method name is
+ * guessing, and the caveat says so in the payload rather than relying on the
+ * caller to remember it.
+ *
+ * @param {object} db  open better-sqlite3 Database
+ * @returns {{fidelity:string, source_kind:string, scanned_at:string|null, caveat:string}}
+ */
+export function isvIlProvenance(db) {
+  let scannedAt = null;
+  try {
+    scannedAt = db.prepare('SELECT MAX(scanned_at) AS t FROM isv_models').get()?.t ?? null;
+  } catch { /* pre-ISV database — reported as an unknown scan date */ }
+  return {
+    fidelity: 'il',
+    source_kind: 'assembly-metadata',
+    scanned_at: scannedAt,
+    caveat: 'Signatures read from assembly metadata (ECMA-335 tables), not from X++ source. '
+      + 'Exact about what a method accepts and returns and about its static/virtual/final '
+      + 'modifiers; silent about what it does. No method body was decompiled, disassembled '
+      + 'or stored, so behaviour cannot be inferred from these rows — a method name is a '
+      + 'hint, not a description.',
+  };
+}
+
+/** The one-line note appended to the Markdown rendering of an IL-derived
+ *  response. Distinct wording from isvProvenanceNote() on purpose: the two
+ *  fidelities must be visibly different in the text channel too. */
+export function isvIlProvenanceNote(rowCount, modules) {
+  const who = Array.isArray(modules) && modules.length
+    ? ` (${modules.slice(0, 6).join(', ')}${modules.length > 6 ? ', …' : ''})`
+    : '';
+  return `\n\n_${rowCount} signature(s) from assembly metadata${who} — \`fidelity=il\`. `
+    + 'Parameter and return types are exact; **no method body exists in this database**, '
+    + 'so what a method *does* is not known._\n';
 }
 
 /** The payload returned when the database predates the ISV scan, or no ISV
