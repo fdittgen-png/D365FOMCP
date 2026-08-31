@@ -178,11 +178,43 @@ function Set-Registry([array]$Sources) {
         Write-Host "WhatIf: json = $json" -ForegroundColor DarkGray
         return
     }
-    az functionapp config appsettings set `
-        --name $FunctionAppName --resource-group $ResourceGroup `
-        --settings "$APP_SETTING=$json" --output none
-    if ($LASTEXITCODE -ne 0) { throw "Failed to write $APP_SETTING to $FunctionAppName." }
-    Write-Host "Registry updated on $FunctionAppName ($($Sources.Count) source(s))." -ForegroundColor Green
+    # Write via a settings FILE, never `--settings "NAME=$json"`. The az CLI on
+    # Windows strips the double quotes out of the inline value, so the registry
+    # landed as [{key:tbg365-uat,...}] — unquoted, not JSON. The app then logged
+    # "CUSTOM_FIELDS_SOURCES is not valid JSON - ignored" and the feature was
+    # dead, while this script reported success.
+    $settingsFile = Join-Path ([IO.Path]::GetTempPath()) "cfs-$([guid]::NewGuid().ToString('N')).json"
+    try {
+        ,@([pscustomobject]@{ name = $APP_SETTING; value = $json }) |
+            ConvertTo-Json -Compress -Depth 6 | Set-Content -Path $settingsFile -Encoding UTF8
+        az functionapp config appsettings set `
+            --name $FunctionAppName --resource-group $ResourceGroup `
+            --settings "@$settingsFile" --output none
+        if ($LASTEXITCODE -ne 0) { throw "Failed to write $APP_SETTING to $FunctionAppName." }
+    }
+    finally {
+        Remove-Item $settingsFile -Force -ErrorAction SilentlyContinue
+    }
+
+    # Read back what actually landed. Validating the in-memory object proved
+    # nothing: this script reported "Validation OK" over a registry the app
+    # could not parse. The round trip is the only thing that catches a
+    # quoting failure in the layer between here and Azure.
+    $stored = (az functionapp config appsettings list `
+        --name $FunctionAppName --resource-group $ResourceGroup -o json 2>$null |
+        ConvertFrom-Json | Where-Object { $_.name -eq $APP_SETTING }).value
+    if (-not $stored) { throw "$APP_SETTING is absent from $FunctionAppName after writing it." }
+    try {
+        $parsed = $stored | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw ("$APP_SETTING did not survive the write to $FunctionAppName as valid JSON. Stored value starts: " +
+               $stored.Substring(0, [Math]::Min(80, $stored.Length)))
+    }
+    $storedKeys = @($parsed | ForEach-Object { $_.key })
+    foreach ($src in $Sources) {
+        if ($storedKeys -notcontains $src.key) { throw "Source '$($src.key)' is missing from the stored $APP_SETTING." }
+    }
+    Write-Host "Registry updated on $FunctionAppName ($($Sources.Count) source(s)); read back and parsed OK." -ForegroundColor Green
 }
 
 function Show-Sources([array]$Sources) {
