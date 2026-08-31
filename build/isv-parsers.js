@@ -113,6 +113,63 @@ export function parseSealedPropertyBlob(blob) {
   return { props, truncated };
 }
 
+/** Longest plausible identifier/label in a sealed property blob. */
+const MAX_SEALED_STRING = 96;
+
+/** A sealed property string is an AOT identifier, a label id, or a dotted
+ *  element name — never free prose. Anything else is a mis-framed read. */
+const SEALED_IDENTIFIER = /^[A-Za-z@_][A-Za-z0-9_.@:\-/]*$/;
+
+/**
+ * Extract the length-prefixed strings from a property blob.
+ *
+ * `parseSealedPropertyBlob` walks the TLV stream strictly and stops at the
+ * first entry it cannot frame. That is right for `AxEdt`, whose payload is
+ * all-strings, but useless for element types that interleave non-string
+ * entries (uint32 counts, flag bytes) whose widths are not known per tag —
+ * `AxTableExtension` blobs stop the strict walker at byte 4 and yield nothing.
+ *
+ * This scanner instead looks for the one shape that IS unambiguous:
+ * `[tag][len][len printable bytes]` where the payload reads as an AOT
+ * identifier. Verified against the real store: `SalesConfirmDetailsTmp.LACExtension`
+ * yields `0x06 "SalesConfirmDetailsTmp.LACExtension"`, `0x01 "LACTransRefRecId"`,
+ * `0x03 "RecId"`, `0x0b "CustConfirmTrans"`.
+ *
+ * **This is a heuristic and is treated as one.** It can mis-frame inside a long
+ * string and emit a fragment, so callers must store what it returns with the
+ * tag verbatim and MUST NOT name a property from it without separate evidence
+ * (issue #79). Its value is that it makes identifiers *findable* — answering
+ * "is `LACTransRefRecId` real, and where does it come from?" needs no tag
+ * semantics at all.
+ *
+ * @param {Buffer} blob
+ * @returns {Array<{tag:string, value:string}>} in blob order, non-overlapping
+ */
+export function scanSealedStrings(blob) {
+  const out = [];
+  if (!Buffer.isBuffer(blob)) return out;
+  for (let i = 1; i + 1 < blob.length; i++) {
+    const len = blob[i];
+    if (len < 2 || len > MAX_SEALED_STRING) continue;
+    const end = i + 1 + len;
+    if (end > blob.length) continue;
+
+    const bytes = blob.subarray(i + 1, end);
+    let printable = true;
+    for (const c of bytes) {
+      if (c < 0x20 || c > 0x7e) { printable = false; break; }
+    }
+    if (!printable) continue;
+
+    const value = bytes.toString('utf8');
+    if (!SEALED_IDENTIFIER.test(value)) continue;
+
+    out.push({ tag: `0x${blob[i - 1].toString(16).padStart(2, '0')}`, value });
+    i = end - 1; // never let one string be re-read as part of another
+  }
+  return out;
+}
+
 /**
  * A property value is accepted only when it is text a human could have typed:
  * no control characters, no lone bytes from the middle of a multi-byte

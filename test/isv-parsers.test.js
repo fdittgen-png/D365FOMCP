@@ -19,6 +19,7 @@ import {
   parseSealedMdDirectory,
   readSealedMdEntry,
   parseSealedPropertyBlob,
+  scanSealedStrings,
   parseSealedLabelStore,
   parseLabelFileText,
   parseElementReferences,
@@ -381,4 +382,58 @@ test('parseVersionInfoStrings treats an empty CompanyName as absent, not as junk
 test('parseVersionInfoStrings yields nothing when the keys are absent', () => {
   assert.deepEqual(parseVersionInfoStrings(Buffer.alloc(4096)), {});
   assert.deepEqual(parseVersionInfoStrings('not a buffer'), {});
+});
+
+/* ── length-prefixed string scanner (issue #79 phase 2, Lasernet) ────────── */
+
+test('scanSealedStrings recovers identifiers the strict TLV walk cannot reach', () => {
+  // Byte-for-byte the shape of SalesConfirmDetailsTmp.LACExtension in
+  // Lasernet_AxTableExtension.md: string entries interleaved with non-string
+  // ones (uint32 counts, flag bytes) whose widths are not known per tag. The
+  // strict walker stops at byte 4 and yields nothing; this is what makes an
+  // ISV field added to a Microsoft table findable at all.
+  const blob = Buffer.concat([
+    Buffer.from([0xd2, 0x00, 0xcb, 0x01]),          // header
+    Buffer.from([0x03, 0x01, 0x00, 0x00, 0x00]),    // non-string entry
+    Buffer.from([0xd4, 0x01]),
+    Buffer.from([0x08, 0x10]), Buffer.from('LACTransRefRecId'),
+    Buffer.from([0x06, 0x23]), Buffer.from('SalesConfirmDetailsTmp.LACExtension'),
+    Buffer.from([0x03, 0x05]), Buffer.from('RecId'),
+    Buffer.from([0x0b, 0x10]), Buffer.from('CustConfirmTrans'),
+    Buffer.from([0xff, 0xff]),
+  ]);
+
+  assert.deepEqual(parseSealedPropertyBlob(blob).props, [],
+    'precondition: the strict walker recovers nothing from this shape');
+
+  const found = scanSealedStrings(blob);
+  assert.deepEqual(found, [
+    { tag: '0x08', value: 'LACTransRefRecId' },
+    { tag: '0x06', value: 'SalesConfirmDetailsTmp.LACExtension' },
+    { tag: '0x03', value: 'RecId' },
+    { tag: '0x0b', value: 'CustConfirmTrans' },
+  ]);
+});
+
+test('scanSealedStrings rejects free prose and binary, keeping only identifiers', () => {
+  const withProse = Buffer.concat([
+    Buffer.from([0x00, 0x05, 0x0c]), Buffer.from('hello world!'), // has a space and !
+    Buffer.from([0x07, 0x09]), Buffer.from('LACReport'),
+  ]);
+  assert.deepEqual(scanSealedStrings(withProse).map(s => s.value), ['LACReport']);
+
+  assert.deepEqual(scanSealedStrings(Buffer.from([0x01, 0x04, 0x00, 0x01, 0x02, 0x03])), []);
+  assert.deepEqual(scanSealedStrings('not a buffer'), []);
+});
+
+test('scanSealedStrings never lets one string be re-read inside another', () => {
+  // A length byte occurring inside an already-consumed string must not start a
+  // second, overlapping match — that is what produced fragment noise before.
+  const blob = Buffer.concat([
+    Buffer.from([0x00]),
+    Buffer.from([0x06, 0x10]), Buffer.from('LACTransRefRecId'),
+  ]);
+  const found = scanSealedStrings(blob);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].value, 'LACTransRefRecId');
 });

@@ -222,14 +222,15 @@ List the sealed (binary-only) ISV models scanned into this KB — publisher, ver
 
 ## `d365_isv_lookup`
 
-Look up an object inside the sealed ISV models: does it exist, in which model, and as which AOT type. Use when a table, class, form or enum is reported as not found by the normal KB tools but is suspected to belong to a third-party model. Field-level detail is not available for sealed models — only the element inventory and whatever properties decode reliably. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
+Look up an object inside the sealed ISV models: does it exist, in which model, and as which AOT type. Use when a table, class, form, enum — or a FIELD an ISV added to a Microsoft table — is reported as not found by the normal KB tools but is suspected to belong to a third-party model. Set `search_properties` to find an identifier that appears inside an element rather than as its name: that is how an ISV extension field such as `LACTransRefRecId` on `SalesConfirmDetailsTmp` is located, since the KB has no row for it. Sealed models publish an element inventory and the identifiers inside each element, not a resolved field list. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `name` | string (min 1, max 500) | yes | Object name to look for, e.g. "LACReportTable". Matched case-insensitively, exact by default. |
-| `element_type` | string (min 1, max 100) | no | Restrict to one AOT type, e.g. "AxTable", "AxClass", "AxForm". |
+| `element_type` | string (min 1, max 100) | no | Restrict to one AOT type, e.g. "AxTable", "AxClass", "AxForm", "AxTableExtension". |
 | `modules` | array<string (min 1, max 100)> | no | Restrict to specific sealed ISV models. |
 | `prefix_match` | boolean | default `false` | Match names starting with `name` instead of exactly. Useful for exploring an ISV prefix such as "LAC". |
+| `search_properties` | boolean | default `false` | Also find elements whose decoded properties contain `name` — use this to locate an ISV-added field on a Microsoft table. Results say which element carries it, never that the name is a field of a given type: sealed metadata proves the identifier is there, not its role. |
 | `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way. |
 
 ## `d365_isv_extension_points`
