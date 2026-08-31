@@ -63,6 +63,11 @@ try {
     }
   };
 
+  // `il_methods` (issue #81) is reported for a KB file even when it is 0: the
+  // pass is off by default, so 0 is the normal state and must be visibly 0
+  // rather than absent. Reporting nothing is how a DB upload that silently
+  // dropped 84k signature rows would have gone unnoticed — the deploy summary
+  // listed elements/labels/coc/events and said nothing about signatures.
   const counts = kind === 'xref'
     ? { refs: count('isv_refs'), names: count('isv_names'), deps: count('isv_module_deps') }
     : {
@@ -70,6 +75,7 @@ try {
       labels: count('isv_labels'),
       coc: count('isv_coc'),
       events: count('isv_event_handlers'),
+      il_methods: count('isv_il_methods'),
     };
 
   out({ present: true, models, scanned_at: scannedAt, counts, path: dbPath });
