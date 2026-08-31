@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Configure (or inspect / remove) a D365FO environment as a live custom-field
     source for the KB MCP service.
@@ -61,7 +61,8 @@
     Target resource group. Default: <prefix>-<env>-<workload>-rg.
 
 .PARAMETER EnvCode
-    Environment code used to build the default names: d (dev) or p (prod).
+    Environment code used to build the default names: d (dev, default) or p (prod).
+    Derives $prefix-<env>-$workload-{kv,func,rg}.
 
 .PARAMETER Default
     Mark this source the default for tool calls that omit `environment`. Clears
@@ -122,7 +123,12 @@ param(
     [string]$KeyVaultName,
     [string]$FunctionAppName,
     [string]$ResourceGroup,
-    [ValidateSet('d', 'p')][string]$EnvCode = 'p',
+    # Defaults to 'd'. It used to default to 'p', which derived
+    # tis-p-mcpd365fo-kv — a vault that does not exist (there is no
+    # tis-p-mcpd365fo-rg in this subscription), so every unqualified run failed
+    # on a DNS error AFTER prompting for and holding the secret. Defaulting an
+    # unqualified run at production is also the wrong safety posture.
+    [ValidateSet('d', 'p')][string]$EnvCode = 'd',
     [string]$Subscription,
     [switch]$Force
 )
@@ -317,6 +323,34 @@ switch ($PSCmdlet.ParameterSetName) {
             $answer = Read-Host 'Type the environment key again to confirm'
             if ($answer -ne $Key) { throw 'Confirmation did not match — aborted.' }
         }
+
+        # Prove the vault is there and writable BEFORE asking for a secret.
+        # Failing afterwards wastes the secret the operator just typed and
+        # reports the cause as a DNS error, which reads like a network fault
+        # rather than "you targeted the wrong environment".
+        # Probe the DATA plane, not the control plane. `az keyvault show` is a
+        # control-plane read that Owner already satisfies, so it passes for a
+        # caller who still cannot write a secret — a false all-clear. Listing
+        # secrets needs a Secrets role, which is the thing actually required.
+        $vaultProbe = az keyvault secret list --vault-name $KeyVaultName --maxresults 1 --query "[].name" -o tsv 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $probeText = ($vaultProbe | Out-String)
+            if ($probeText -match 'ResourceNotFound|was not found|getaddrinfo') {
+                throw ("Key Vault '$KeyVaultName' does not exist. It was derived from -EnvCode '$EnvCode' " +
+                       "(vault/app/RG = $prefix-$EnvCode-$workload-*). Pass -EnvCode d for the dev environment, " +
+                       "or -KeyVaultName to name the vault directly. Nothing was written and no secret was read.")
+            }
+            if ($probeText -match 'Forbidden|does not have secrets|not authorized') {
+                throw ("No data-plane access to Key Vault '$KeyVaultName'. Writing a secret needs the " +
+                       "**Key Vault Secrets Officer** role ON THE VAULT — Owner on the resource group is not " +
+                       "enough for an RBAC vault, because Owner grants the control plane only. Grant it in " +
+                       "Portal > the vault > Access control (IAM), then re-run. Nothing was written and no " +
+                       "secret was read.")
+            }
+            throw ("Could not reach Key Vault '$KeyVaultName'. az said: " +
+                   (($probeText -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -replace '\s+', ' '))
+        }
+        Write-Host "  Vault $KeyVaultName reachable." -ForegroundColor DarkGray
 
         if (-not $ClientSecret) { $ClientSecret = Read-Host -AsSecureString "Client secret for $ClientId" }
         if (-not $ClientSecret -or $ClientSecret.Length -eq 0) { throw 'A client secret is required.' }
