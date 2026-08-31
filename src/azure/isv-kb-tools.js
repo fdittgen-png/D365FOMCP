@@ -129,23 +129,25 @@ export function registerIsvKbTools(server, db) {
     'd365_isv_lookup',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Look up an object inside the sealed ISV models: does it exist, in which model, and as which AOT type. Use when a table, class, form or enum is reported as not found by the normal KB tools but is suspected to belong to a third-party model. Field-level detail is not available for sealed models — only the element inventory and whatever properties decode reliably. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Look up an object inside the sealed ISV models: does it exist, in which model, and as which AOT type. Use when a table, class, form, enum — or a FIELD an ISV added to a Microsoft table — is reported as not found by the normal KB tools but is suspected to belong to a third-party model. Set `search_properties` to find an identifier that appears inside an element rather than as its name: that is how an ISV extension field such as `LACTransRefRecId` on `SalesConfirmDetailsTmp` is located, since the KB has no row for it. Sealed models publish an element inventory and the identifiers inside each element, not a resolved field list. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         name: z.string().min(1).max(500).describe('Object name to look for, e.g. "LACReportTable". Matched case-insensitively, exact by default.'),
-        element_type: z.string().min(1).max(100).optional().describe('Restrict to one AOT type, e.g. "AxTable", "AxClass", "AxForm".'),
+        element_type: z.string().min(1).max(100).optional().describe('Restrict to one AOT type, e.g. "AxTable", "AxClass", "AxForm", "AxTableExtension".'),
         modules: z.array(z.string().min(1).max(100)).max(20).optional().describe('Restrict to specific sealed ISV models.'),
         prefix_match: z.boolean().optional().default(false).describe('Match names starting with `name` instead of exactly. Useful for exploring an ISV prefix such as "LAC".'),
+        search_properties: z.boolean().optional().default(false).describe('Also find elements whose decoded properties contain `name` — use this to locate an ISV-added field on a Microsoft table. Results say which element carries it, never that the name is a field of a given type: sealed metadata proves the identifier is there, not its role.'),
         format: formatTextParam,
       },
       outputSchema: d365IsvLookupOutput.shape,
     },
-    async ({ name, element_type, modules, prefix_match, format }) => {
+    async ({ name, element_type, modules, prefix_match, search_properties, format }) => {
       const target = String(name ?? '').trim();
       if (!target) {
         return errorResult('invalid-input', 'Provide an object name to look up.');
       }
-      // Defensive default: the test mock server bypasses Zod (contract item 13).
+      // Defensive defaults: the test mock server bypasses Zod (contract item 13).
       const prefix = prefix_match === true;
+      const byProps = search_properties === true;
 
       if (!available()) {
         return emptyResult(`sealed ISV data for "${target}"`, {
@@ -170,13 +172,22 @@ export function registerIsvKbTools(server, db) {
         params.push(...mods);
       }
 
+      // Matching on the element's own name and on the identifiers inside it are
+      // two different questions; the second is what finds an ISV field added to
+      // a Microsoft table, so it is a union rather than a fallback.
+      const propClause = byProps
+        ? ` OR e.id IN (SELECT element_id FROM isv_element_props
+                        WHERE value = ? COLLATE NOCASE)`
+        : '';
+      const propParams = byProps ? [target] : [];
+
       let rows;
       try {
         rows = q(`SELECT e.id, e.module, e.element_type, e.name, e.blob_size
                   FROM isv_elements e
-                  WHERE ${where.join(' AND ')}
+                  WHERE (${where.join(' AND ')})${propClause}
                   ORDER BY e.module COLLATE NOCASE, e.name COLLATE NOCASE
-                  LIMIT ${EXT_HARD_MAX}`, params);
+                  LIMIT ${EXT_HARD_MAX}`, [...params, ...propParams]);
       } catch (err) {
         return errorResult('db-error', `Could not search the sealed-ISV inventory for "${target}".`, err);
       }

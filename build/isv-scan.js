@@ -37,6 +37,7 @@ import {
   parseSealedMdDirectory,
   readSealedMdEntry,
   parseSealedPropertyBlob,
+  scanSealedStrings,
   parseSealedLabelStore,
   parseElementReferences,
   parseModuleReferences,
@@ -54,10 +55,24 @@ const Database = require('better-sqlite3');
 const XML = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
 
 /** Property tags decoded so far, per element type. Extended only with fixture
- *  evidence — an unmapped tag is stored as its raw `0xNN`, never guessed. */
+ *  evidence — an unmapped tag is stored as its raw `0xNN`, never guessed.
+ *
+ *  AxTableExtension carries exactly one tag confirmed across 48 blobs from four
+ *  models, and it self-validates: 0x06's value always equals the directory
+ *  entry name (asserted in test/isv-parsers.test.js). The other frequent tags
+ *  there (0x01/0x02/0x08/0x12 hold identifiers, 0x0b a related table) are NOT
+ *  named: the evidence does not yet separate field name from relation name, and
+ *  a wrong name is worse than a raw tag. */
 const PROPERTY_TAGS = {
   AxEdt: { '0x0d': 'extends', '0x0f': 'label', '0x10': 'helpText', '0x11': 'name' },
+  AxTableExtension: { '0x06': 'extends' },
 };
+
+/** Element types whose payload interleaves non-string entries, so the strict
+ *  TLV walk yields nothing and the string scanner is used instead. Extend this
+ *  as new types are shown to need it — the strict walk is preferred wherever
+ *  it works, because it cannot mis-frame. */
+const SCAN_STRINGS_TYPES = new Set(['AxTableExtension']);
 
 /** `.md` files that are not element stores and must not become inventory. */
 const NON_ELEMENT_MD = new Set(['AxLabelFile']);
@@ -157,14 +172,17 @@ function readElements(model, binDir, prefix, warn) {
       continue;
     }
     const tagMap = PROPERTY_TAGS[elementType] || null;
+    const useScanner = SCAN_STRINGS_TYPES.has(elementType);
     for (const entry of dir.entries) {
       const index = elements.length;
       elements.push({ module: model, elementType, name: entry.name, blobSize: entry.size });
-      if (!tagMap) continue;
+      if (!tagMap && !useScanner) continue;
       const blob = readSealedMdEntry(buf, entry, dir.payloadBase);
-      const decoded = parseSealedPropertyBlob(blob);
-      for (const p of decoded.props) {
-        props.push({ index, tag: p.tag, prop: tagMap[p.tag] || null, value: p.value });
+      const decoded = useScanner
+        ? scanSealedStrings(blob)
+        : parseSealedPropertyBlob(blob).props;
+      for (const p of decoded) {
+        props.push({ index, tag: p.tag, prop: tagMap?.[p.tag] || null, value: p.value });
       }
     }
   }
