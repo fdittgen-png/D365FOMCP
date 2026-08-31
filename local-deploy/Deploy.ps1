@@ -11,6 +11,7 @@
       4. Deploys code via zip-deploy
       5. Uploads SQLite databases to /home/data/ via Kudu VFS — in parallel
       6. Assigns Function App managed identity to Key Vault Secrets User
+         (needed by the live custom-field reader - issues #87-#91)
       7. Health-checks every endpoint in parallel
 
     Efficiency vs the originals:
@@ -133,7 +134,14 @@ param(
     [string]$XrefDbPath,
     [string]$SecDbPath,
 
-    [switch]$RefreshIsv
+    [switch]$RefreshIsv,
+
+    # Enable Key Vault purge protection when -DeployInfra runs. IRREVERSIBLE:
+    # it cannot be turned off, the vault cannot be deleted before its retention
+    # expires, and the NAME cannot be reused until the soft-deleted copy is
+    # recovered. Off by default so a routine deploy never flips it - the
+    # existing tis-d-mcpd365fo-kv has it off.
+    [switch]$PurgeProtection
 )
 
 $ErrorActionPreference = 'Stop'
@@ -323,6 +331,39 @@ if ($DeployInfra) {
     if (-not (Test-Path $templateFile)) {
         throw "Bicep template not found: $templateFile"
     }
+
+    # main-rg.bicep declares CUSTOM_FIELDS_SOURCES as an empty placeholder (the
+    # secret-free registry of D365 environments the live custom-field reader may
+    # query, written post-deploy by scripts/Set-D365CustomFieldsSource.ps1).
+    # A template deploy would blank it and silently disable every configured
+    # environment, so capture it and put it back afterwards.
+    $script:PreservedCustomFieldSources = $null
+    $preFuncName = if ($FunctionAppName) { $FunctionAppName } else { "$Prefix-$Environment-$Workload-func" }
+    $existingSources = az functionapp config appsettings list `
+        --resource-group $ResourceGroup --name $preFuncName `
+        --query "[?name=='CUSTOM_FIELDS_SOURCES'].value | [0]" -o tsv 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSources)) {
+        $script:PreservedCustomFieldSources = $existingSources
+        $srcCount = try { @($existingSources | ConvertFrom-Json).Count } catch { '?' }
+        Write-Host "  Preserving CUSTOM_FIELDS_SOURCES ($srcCount source(s)) across the template deploy" -ForegroundColor DarkGray
+    }
+
+    # The vault may already exist and predate this template (tis-d-mcpd365fo-kv
+    # was created 2026-03-17 with purge protection OFF and 7-day retention).
+    # Report what the deploy would CHANGE; never flip the one-way switch silently.
+    $kvPreName = "$Prefix-$Environment-$Workload-kv"
+    $kvPre = az keyvault show --name $kvPreName --resource-group $ResourceGroup -o json 2>$null | ConvertFrom-Json
+    if ($kvPre) {
+        $kvPurge = [bool]$kvPre.properties.enablePurgeProtection
+        $kvRet   = [int]$kvPre.properties.softDeleteRetentionInDays
+        Write-Host "  Key Vault '$kvPreName' exists (RBAC: $([bool]$kvPre.properties.enableRbacAuthorization), purge protection: $kvPurge, retention: $kvRet d)" -ForegroundColor DarkGray
+        if ($kvRet -lt 90) {
+            Write-Host "  [!] Retention will be raised $kvRet d -> 90 d. Allowed, but it can never be lowered again." -ForegroundColor Yellow
+        }
+        if ($PurgeProtection -and -not $kvPurge) {
+            Write-Warning "  -PurgeProtection enables purge protection on '$kvPreName' PERMANENTLY (cannot be undone; blocks deletion and name reuse)."
+        }
+    }
     $deploymentName = "mcpd365fo-$Environment-$(Get-Date -Format 'yyyyMMddHHmmss')"
 
     # Write a Bicep parameter file rather than fight PowerShell ↔ az CLI quoting
@@ -337,6 +378,7 @@ if ($DeployInfra) {
             workload           = @{ value = $Workload }
             prefix             = @{ value = $Prefix }
             budgetContactEmails = @{ value = @($BudgetEmails) }
+            enablePurgeProtection = @{ value = [bool]$PurgeProtection }
         }
     }
     $paramsObj | ConvertTo-Json -Depth 5 | Set-Content -Path $paramsFile -Encoding UTF8
@@ -353,6 +395,25 @@ if ($DeployInfra) {
     if ($LASTEXITCODE -ne 0) { throw "Bicep deployment failed:`n$bicepResult" }
     $bicepOut = ($bicepResult | ConvertFrom-Json).properties.outputs
     Write-Host "  [OK] Function App URL: $($bicepOut.functionAppUrl.value)" -ForegroundColor Green
+
+    # Restore the registry only if the template actually blanked it: never
+    # clobber a value someone set between the capture above and now.
+    if ($script:PreservedCustomFieldSources) {
+        $nowSources = az functionapp config appsettings list `
+            --resource-group $ResourceGroup --name $preFuncName `
+            --query "[?name=='CUSTOM_FIELDS_SOURCES'].value | [0]" -o tsv 2>$null
+        if ([string]::IsNullOrWhiteSpace($nowSources)) {
+            $null = az functionapp config appsettings set `
+                --resource-group $ResourceGroup --name $preFuncName `
+                --settings "CUSTOM_FIELDS_SOURCES=$script:PreservedCustomFieldSources" --output none 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host '  [OK] CUSTOM_FIELDS_SOURCES restored' -ForegroundColor Green
+            } else {
+                Write-Warning '  Could not restore CUSTOM_FIELDS_SOURCES - re-run Set-D365CustomFieldsSource.ps1 per environment.'
+                Write-Warning "  Preserved value (secret-free): $script:PreservedCustomFieldSources"
+            }
+        }
+    }
     Add-Step 'Bicep' 'OK'
 } else {
     Add-Step 'Bicep' 'SKIPPED'
@@ -362,7 +423,8 @@ if ($DeployInfra) {
 Write-Section 'Discovering Function App'
 if (-not $FunctionAppName) {
     $apps = @(az functionapp list --resource-group $ResourceGroup --query '[].name' -o json 2>$null | ConvertFrom-Json)
-    $apps = @($apps)   # normalise: a single match is not an array, none is $null
+    $apps = @($apps)   # normalise: a single match is not an array, none is $null
+
     if ($apps.Count -eq 0) {
         throw "No Function App found in resource group '$ResourceGroup'. Pass -DeployInfra or -FunctionAppName."
     }
@@ -754,6 +816,28 @@ if ($SkipDb) {
     Write-Host '    Verify: call d365_isv_list_models on the deployed KB endpoint.' -ForegroundColor DarkGray
 } else {
     Write-Host '    NONE - the uploaded databases contain no isv_* tables.' -ForegroundColor Yellow
+}
+Write-Host ''
+Write-Host '  Live UI custom fields (d365_custom_fields):' -ForegroundColor Cyan
+# Same failure mode as the sealed-ISV note above: the tool ships with the CODE,
+# but it is inert until an environment is registered. Reporting "deployed"
+# without reporting "dormant" is how an operator concludes it is broken.
+$cfSources = az functionapp config appsettings list `
+    --resource-group $ResourceGroup --name $FunctionAppName `
+    --query "[?name=='CUSTOM_FIELDS_SOURCES'].value | [0]" -o tsv 2>$null
+$cfKvName = az functionapp config appsettings list `
+    --resource-group $ResourceGroup --name $FunctionAppName `
+    --query "[?name=='KEY_VAULT_NAME'].value | [0]" -o tsv 2>$null
+if ([string]::IsNullOrWhiteSpace($cfKvName)) {
+    Write-Host '    DORMANT - KEY_VAULT_NAME is not set; run with -DeployInfra to apply the template.' -ForegroundColor Yellow
+} elseif ([string]::IsNullOrWhiteSpace($cfSources)) {
+    Write-Host '    DORMANT - no D365 environment registered. _Custom field checks return the' -ForegroundColor Yellow
+    Write-Host '              field-class explanation instead of resolving the field.' -ForegroundColor Yellow
+    Write-Host ('    Register one: .\scripts\Set-D365CustomFieldsSource.ps1 -Key <key> -Url https://<env> -TenantId <guid> -ClientId <guid> -Default -EnvCode ' + $Environment) -ForegroundColor DarkGray
+} else {
+    $cfKeys = try { (@($cfSources | ConvertFrom-Json) | ForEach-Object { $_.key }) -join ', ' } catch { '(unparseable JSON)' }
+    Write-Host "    LIVE - environment(s): $cfKeys" -ForegroundColor Green
+    Write-Host "    Verify: d365_custom_fields { table_name: 'SalesTable' }" -ForegroundColor DarkGray
 }
 Write-Host '════════════════════════════════════════════════════════════════' -ForegroundColor $color
 
