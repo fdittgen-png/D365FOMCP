@@ -53,6 +53,24 @@ import {
 
 export function registerKbTools(server, db) {
 
+  // Batch caps (issue #83).
+  //
+  // What batching does and does not buy, measured against the live databases:
+  // it does NOT shrink the response body. Nesting N payloads under a batch
+  // envelope makes the TOON text *larger* than N separate responses (+9.5% for
+  // 9 enums, +24% for 3 field checks), because TOON's tabular encoding degrades
+  // once arrays nest. What it removes is N-1 round-trips — the per-call request
+  // and result framing, and the latency — which is real but does not show up in
+  // a byte count of the text channel.
+  //
+  // Two consequences, both deliberate: a single-target call emits exactly its
+  // pre-batching payload so it pays nothing for the feature, and the caps stay
+  // modest. Batching a tool whose single response is already large
+  // (d365_lookup_table) would trade round-trips for a token bomb, so it is not
+  // batched at all.
+  const ENUM_BATCH_MAX = 10;
+  const FIELD_CHECK_BATCH_MAX = 25;
+
   const q = (sql, params = []) => query(db, sql, params);
 
   /** Safe number coercion for SQLite TEXT columns that may contain "Yes"/"No"
@@ -542,64 +560,112 @@ export function registerKbTools(server, db) {
     'd365_get_enum',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
-      inputSchema: { enum_name: z.string().min(1).max(500).describe('Enum name (e.g. StatusIssue, InventTransType)'), format: formatTextParam },
+      description: 'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++. Pass `enum_names` to resolve up to 10 enums in one call instead of one call each. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      inputSchema: {
+        enum_name: z.string().min(1).max(500).optional().describe('Enum name (e.g. StatusIssue, InventTransType). Use this or `enum_names`.'),
+        enum_names: z.array(z.string().min(1).max(500)).min(1).max(ENUM_BATCH_MAX).optional()
+          .describe(`Resolve several enums in one call (max ${ENUM_BATCH_MAX}). Prefer this over repeated single calls — the response envelope is paid once. Names that do not exist come back in \`not_found\` rather than failing the call.`),
+        format: formatTextParam,
+      },
       outputSchema: d365GetEnumOutput.shape,
     },
-    async ({ enum_name, format }) => {
+    async ({ enum_name, enum_names, format }) => {
       const resolve = makeLabelResolver(db);
-      const en = enum_name.trim();
-      const result = q(
-        `SELECT enum_name, module_id, label, values_json FROM enums WHERE enum_name = ? COLLATE NOCASE`, [en]
+
+      // Singular and plural are unioned so passing both is not an error, and
+      // deduped so a caller repeating a name does not inflate the IN clause.
+      const requested = [...new Set([
+        ...(Array.isArray(enum_names) ? enum_names : []),
+        ...(enum_name ? [enum_name] : []),
+      ].map(n => String(n).trim()).filter(Boolean))];
+
+      if (!requested.length) {
+        return errorResult('invalid-input', 'Provide `enum_name` or `enum_names`.');
+      }
+      // Defensive cap: Zod's .max() is bypassed by the test mock server (rule #13).
+      const names = requested.slice(0, ENUM_BATCH_MAX);
+      const batchMode = Array.isArray(enum_names) && enum_names.length > 0;
+
+      const rows = q(
+        `SELECT enum_name, module_id, label, values_json FROM enums
+         WHERE enum_name IN (${names.map(() => '?').join(', ')}) COLLATE NOCASE`, names
       );
 
-      if (!result || result.length === 0) {
+      // Single-target miss keeps its existing behaviour — a not-found error with
+      // fuzzy suggestions. Only batch mode reports misses as data, because there
+      // the call as a whole still succeeded.
+      if ((!rows || rows.length === 0) && !batchMode) {
         const fuzzy = q(
-          `SELECT enum_name FROM enums WHERE enum_name LIKE ? COLLATE NOCASE LIMIT 10`, [`%${en}%`]
+          `SELECT enum_name FROM enums WHERE enum_name LIKE ? COLLATE NOCASE LIMIT 10`, [`%${names[0]}%`]
         );
-        return notFoundResult('Enum', en, fuzzy.map(r => r.enum_name));
+        return notFoundResult('Enum', names[0], fuzzy.map(r => r.enum_name));
       }
 
-      const { enum_name: name, module_id: mod, label, values_json: vj } = result[0];
-
-      // Parse values_json with three explicit outcomes:
-      //   1. parse error  -> visible parse-error marker (not silent)
-      //   2. empty array  -> "No values defined" sentinel
-      //   3. ok           -> render the values table
-      let rawValues = null;
-      let parseError = false;
-      try {
-        rawValues = JSON.parse(vj || '[]');
-      } catch (e) {
-        console.error('[kb-tools:d365_get_enum parse]', e);
-        parseError = true;
-      }
-      const values = Array.isArray(rawValues) ? rawValues : [];
-
-      const typed = {
-        enum_name: name,
-        module_id: mod ?? null,
-        label: label ? resolve(label) : null,
-        value_count: values.length,
-        values: values.map(v => ({
-          name: String(v.name ?? ''),
-          value: typeof v.value === 'number' ? v.value : (v.value == null ? null : Number(v.value)),
-          label: v.label ? resolve(v.label) : null,
-        })),
-        parse_error: parseError,
+      /** Build one enum's payload. Parsing values_json has three explicit
+       *  outcomes: parse error (visible, never silent), empty array, or values. */
+      const toPayload = (row) => {
+        let rawValues = null;
+        let parseError = false;
+        try {
+          rawValues = JSON.parse(row.values_json || '[]');
+        } catch (e) {
+          console.error('[kb-tools:d365_get_enum parse]', e);
+          parseError = true;
+        }
+        const values = Array.isArray(rawValues) ? rawValues : [];
+        return {
+          enum_name: row.enum_name,
+          module_id: row.module_id ?? null,
+          label: row.label ? resolve(row.label) : null,
+          value_count: values.length,
+          values: values.map(v => ({
+            name: String(v.name ?? ''),
+            value: typeof v.value === 'number' ? v.value : (v.value == null ? null : Number(v.value)),
+            label: v.label ? resolve(v.label) : null,
+          })),
+          parse_error: parseError,
+        };
       };
 
-      let out = `## ${typed.enum_name}\nModule: ${typed.module_id ?? '-'} | Label: ${typed.label ?? '-'}\n\n`;
-      if (parseError) {
-        out += `*(Could not parse stored values for this enum — see server logs.)*\n`;
-      } else if (typed.value_count === 0) {
-        out += '*(No values defined.)*\n';
-      } else {
-        out += '|Name|Value|Label|\n|---|---|---|\n';
-        for (const v of typed.values) {
-          out += `|${v.name}|${v.value ?? ''}|${v.label ?? ''}|\n`;
+      // Preserve the caller's order rather than SQLite's.
+      const byName = new Map((rows || []).map(r => [r.enum_name.toUpperCase(), r]));
+      const payloads = names.map(n => byName.get(n.toUpperCase())).filter(Boolean).map(toPayload);
+      const notFound = names.filter(n => !byName.has(n.toUpperCase()));
+
+      // Single mode opens at H2 (contract rule #3); batch mode nests each enum
+      // under the H2 batch heading.
+      const renderOne = (p, heading) => {
+        let s = `${heading} ${p.enum_name}\nModule: ${p.module_id ?? '-'} | Label: ${p.label ?? '-'}\n\n`;
+        if (p.parse_error) {
+          s += '*(Could not parse stored values for this enum — see server logs.)*\n';
+        } else if (p.value_count === 0) {
+          s += '*(No values defined.)*\n';
+        } else {
+          s += '|Name|Value|Label|\n|---|---|---|\n';
+          for (const v of p.values) s += `|${v.name}|${v.value ?? ''}|${v.label ?? ''}|\n`;
         }
+        return s;
+      };
+
+      if (!batchMode) {
+        const p = payloads[0];
+        // Exactly the pre-batching payload: no batch keys at all, so a single
+        // call costs precisely what it always did.
+        return structuredResult(p, renderOne(p, '##'), format);
       }
+
+      // Batch mode carries only batch keys — the single-target fields are
+      // omitted rather than sent as nulls, which cost bytes for no information.
+      const typed = {
+        requested_count: names.length,
+        resolved_count: payloads.length,
+        not_found: notFound,
+        enums: payloads,
+      };
+
+      let out = `## Enums (${typed.resolved_count} of ${typed.requested_count})\n\n`;
+      for (const p of payloads) out += renderOne(p) + '\n';
+      if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
 
       return structuredResult(typed, out, format);
     }
@@ -610,80 +676,138 @@ export function registerKbTools(server, db) {
     'd365_check_field_exists',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names. Pass `tables` to check several tables in one call instead of one call each — the usual case when validating a multi-table join. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
-      table_name: z.string().min(1).max(500).describe('Table name'),
-      field_names: z.array(z.string().min(1).max(500)).describe('Array of field names to check'),
-      format: formatTextParam,
-    },
+        table_name: z.string().min(1).max(500).optional().describe('Table name. Use this with `field_names`, or use `tables`.'),
+        field_names: z.array(z.string().min(1).max(500)).optional().describe('Array of field names to check on `table_name`.'),
+        tables: z.array(z.object({
+          table_name: z.string().min(1).max(500),
+          field_names: z.array(z.string().min(1).max(500)).min(1),
+        })).min(1).max(FIELD_CHECK_BATCH_MAX).optional()
+          .describe(`Check several tables in one call (max ${FIELD_CHECK_BATCH_MAX}). A table that does not exist comes back with found=false rather than failing the whole call.`),
+        format: formatTextParam,
+      },
       outputSchema: d365CheckFieldExistsOutput.shape,
     },
-    async ({ table_name, field_names, format }) => {
-      const tn = table_name.trim();
+    async ({ table_name, field_names, tables, format }) => {
+      const batchMode = Array.isArray(tables) && tables.length > 0;
 
-      // Verify table exists
-      const tblCheck = q(
-        `SELECT table_name FROM tables WHERE table_name = ? COLLATE NOCASE`, [tn]
-      );
-      if (!tblCheck || tblCheck.length === 0) {
-        return notFoundResult('Table', tn);
+      // Union singular and plural so passing both is not an error.
+      const requests = [
+        ...(batchMode ? tables : []),
+        ...(table_name && Array.isArray(field_names) && field_names.length
+          ? [{ table_name, field_names }]
+          : []),
+      ]
+        .map(t => ({
+          table_name: String(t.table_name ?? '').trim(),
+          field_names: (Array.isArray(t.field_names) ? t.field_names : [])
+            .map(f => String(f ?? '').trim()).filter(Boolean),
+        }))
+        .filter(t => t.table_name && t.field_names.length)
+        // Defensive cap: Zod's .max() is bypassed by the test mock server (rule #13).
+        .slice(0, FIELD_CHECK_BATCH_MAX);
+
+      if (!requests.length) {
+        return errorResult('invalid-input',
+          'Provide `table_name` with `field_names`, or `tables` with at least one entry.');
       }
-      const realTableName = tblCheck[0].table_name;
 
-      // Get all actual fields
-      const allFields = q(
-        `SELECT field_name FROM fields WHERE table_name = ? COLLATE NOCASE`, [realTableName]
-      );
-      const actualFields = new Set((allFields || []).map(r => r.field_name.toUpperCase()));
+      /** Check one table's fields. Returns null when the table does not exist,
+       *  which the two modes surface differently: a single-target call keeps its
+       *  not-found error, a batch call records it in `not_found`. */
+      const checkTable = ({ table_name: tn, field_names: fns }) => {
+        const tblCheck = q(
+          `SELECT table_name FROM tables WHERE table_name = ? COLLATE NOCASE`, [tn]
+        );
+        if (!tblCheck || tblCheck.length === 0) return null;
+        const realTableName = tblCheck[0].table_name;
 
-      const checks = field_names.map(fn => {
-        const fnUpper = fn.trim().toUpperCase();
-        if (actualFields.has(fnUpper)) {
-          const correctName = allFields.find(r => r.field_name.toUpperCase() === fnUpper).field_name;
+        const allFields = q(
+          `SELECT field_name FROM fields WHERE table_name = ? COLLATE NOCASE`, [realTableName]
+        ) || [];
+        const actualFields = new Set(allFields.map(r => r.field_name.toUpperCase()));
+
+        const checks = fns.map(fn => {
+          const fnUpper = fn.toUpperCase();
+          if (actualFields.has(fnUpper)) {
+            return {
+              field_name: fn,
+              exists: true,
+              correct_name: allFields.find(r => r.field_name.toUpperCase() === fnUpper).field_name,
+              note: null,
+              similar: [],
+            };
+          }
+          const trap = q(
+            `SELECT explanation FROM hallucination_traps
+             WHERE object_name = ? COLLATE NOCASE AND wrong_value = ? COLLATE NOCASE`,
+            [realTableName, fn]
+          );
+          const similar = allFields
+            .filter(r => r.field_name.toUpperCase().includes(fnUpper) || fnUpper.includes(r.field_name.toUpperCase()))
+            .map(r => r.field_name)
+            .slice(0, 3);
           return {
             field_name: fn,
-            exists: true,
-            correct_name: correctName,
-            note: null,
-            similar: [],
+            exists: false,
+            correct_name: null,
+            note: trap.length > 0 ? trap[0].explanation : null,
+            similar,
           };
-        }
-        const trap = q(
-          `SELECT explanation FROM hallucination_traps
-           WHERE object_name = ? COLLATE NOCASE AND wrong_value = ? COLLATE NOCASE`,
-          [realTableName, fn]
-        );
-        const similar = allFields
-          .filter(r => r.field_name.toUpperCase().includes(fnUpper) || fnUpper.includes(r.field_name.toUpperCase()))
-          .map(r => r.field_name)
-          .slice(0, 3);
-        return {
-          field_name: fn,
-          exists: false,
-          correct_name: null,
-          note: trap.length > 0 ? trap[0].explanation : null,
-          similar,
-        };
-      });
+        });
 
-      const typed = {
-        table_name: realTableName,
-        check_count: checks.length,
-        checks,
+        return { table_name: realTableName, found: true, check_count: checks.length, checks };
       };
 
-      let out = `## Field Check: ${typed.table_name}\n\n`;
-      out += '|Field|Exists|Note|\n|---|---|---|\n';
-      for (const c of typed.checks) {
-        if (c.exists) {
-          out += `|${c.field_name}|YES|${c.correct_name}|\n`;
-        } else {
-          let note = 'DOES NOT EXIST';
-          if (c.note) note += ` -- ${c.note}`;
-          else if (c.similar.length > 0) note += ` -- similar: ${c.similar.join(', ')}`;
-          out += `|${c.field_name}|**NO**|${note}|\n`;
+      const renderChecks = (checks) => {
+        let s = '|Field|Exists|Note|\n|---|---|---|\n';
+        for (const c of checks) {
+          if (c.exists) {
+            s += `|${c.field_name}|YES|${c.correct_name}|\n`;
+          } else {
+            let note = 'DOES NOT EXIST';
+            if (c.note) note += ` -- ${c.note}`;
+            else if (c.similar.length > 0) note += ` -- similar: ${c.similar.join(', ')}`;
+            s += `|${c.field_name}|**NO**|${note}|\n`;
+          }
         }
+        return s;
+      };
+
+      if (!batchMode) {
+        const result = checkTable(requests[0]);
+        if (!result) return notFoundResult('Table', requests[0].table_name);
+
+        // Exactly the pre-batching payload — no batch keys.
+        const typed = {
+          table_name: result.table_name,
+          check_count: result.check_count,
+          checks: result.checks,
+        };
+        const out = `## Field Check: ${typed.table_name}\n\n` + renderChecks(typed.checks);
+        return structuredResult(typed, out, format);
       }
+
+      const results = [];
+      const notFound = [];
+      for (const req of requests) {
+        const r = checkTable(req);
+        if (r) results.push(r);
+        else notFound.push(req.table_name);
+      }
+
+      const typed = {
+        requested_count: requests.length,
+        not_found: notFound,
+        tables: results,
+      };
+
+      let out = `## Field Check (${results.length} of ${requests.length} tables)\n\n`;
+      for (const r of results) {
+        out += `### ${r.table_name}\n\n` + renderChecks(r.checks) + '\n';
+      }
+      if (notFound.length) out += `**Tables not found:** ${notFound.join(', ')}\n`;
 
       return structuredResult(typed, out, format);
     }
@@ -1283,7 +1407,7 @@ export function registerKbTools(server, db) {
       } else {
         out += '_No fields match the filter._';
         if (customOnly || likeTerm) {
-          out += '\n\n_Two classes of field are in no metadata model, and therefore in no KB snapshot: D365 UI custom fields (`*_Custom`, System administration > Custom fields) and fields from binary-only ISV models. Verify in the environment before concluding a field does not exist._';
+          out += '\n\n_Two classes of field are in no metadata model, and therefore in no KB snapshot: D365 UI custom fields (`*_Custom`, System administration > Custom fields) and fields from binary-only ISV models. For the latter, `d365_isv_lookup` confirms whether the owning object exists in a sealed ISV model — those models publish an element inventory but no field-level detail. Verify in the environment before concluding a field does not exist._';
         }
       }
 

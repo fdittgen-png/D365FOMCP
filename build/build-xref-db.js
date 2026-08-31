@@ -23,6 +23,7 @@ import {
   insertModelVersions,
   MODEL_VERSIONS_SCHEMA,
 } from '../src/azure/model-descriptors.js';
+import { refreshIsvMetadata } from './isv-scan.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -423,6 +424,12 @@ async function build() {
   log(`  Time:       ${elapsed}s`);
   log(`  Output:     ${outputPath}`);
   log(`==============================================================`);
+
+  // The XRef SQL source carries no rows for sealed ISV models: on the reference
+  // box `Lasernet` has 0 outbound references there, while its own .xref package
+  // holds 109k. Load those into the separate isv_ tables now, so the ISV
+  // cross-references stay in step with every rebuild. Non-fatal (issue #77).
+  await refreshIsvMetadata({ dbPath: outputPath, target: 'xref', log });
 }
 
 build().catch(err => {

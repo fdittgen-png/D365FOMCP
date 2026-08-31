@@ -20,6 +20,7 @@ import {
   insertModelVersions,
   MODEL_VERSIONS_SCHEMA,
 } from '../src/azure/model-descriptors.js';
+import { refreshIsvMetadata } from './isv-scan.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -1752,6 +1753,14 @@ async function main() {
   console.log('═══════════════════════════════════════════════════════════');
 
   db.close();
+
+  // The walk above skips every model's `bin/` directory, so sealed ISV models
+  // (no X++ source, no Ax<Type> XML) contribute nothing to the tables written
+  // here. Refresh their separate isv_ tables now, so a rebuild of the standard
+  // application and the source-shipping customizations carries the ISV
+  // metadata forward with it instead of leaving it dated. Non-fatal by design
+  // (issue #75).
+  await refreshIsvMetadata({ dbPath: outputPath, target: 'kb' });
 }
 
 // ─── Reusable entry point ────────────────────────────────────────────────────

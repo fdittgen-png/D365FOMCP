@@ -12,6 +12,7 @@ import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerKbTools } from '../azure/kb-tools.js';
+import { registerIsvKbTools } from '../azure/isv-kb-tools.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const require = createRequire(import.meta.url);
@@ -32,6 +33,7 @@ db.pragma('mmap_size = 1100000000');
 const server = new McpServer(serverInfo('kb'), serverOptions('kb'));
 
 registerKbTools(server, db);
+registerIsvKbTools(server, db);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });
