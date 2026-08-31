@@ -303,13 +303,34 @@ export const d365EnumValueSchema = z.object({
   value: z.number().nullable(),
   label: z.string().nullable(),
 });
-export const d365GetEnumOutput = z.object({
+// One enum's payload. Shared by the single-target fields and the batch array
+// so both channels are guaranteed to carry the identical shape.
+export const d365EnumPayloadSchema = z.object({
   enum_name: z.string(),
   module_id: z.string().nullable(),
   label: z.string().nullable(),
   value_count: z.number(),
   values: z.array(d365EnumValueSchema),
   parse_error: z.boolean(),
+});
+
+// Batching (issue #83) is a backward-compatible superset, and the two modes are
+// disjoint: a single-target call emits *exactly* the payload it emitted before
+// batching existed, and a batch call emits only the batch fields. Nothing is
+// duplicated across the two channels and a single call pays nothing for the
+// feature — measured, after an earlier version that carried both grew the
+// response instead of shrinking it.
+export const d365GetEnumOutput = z.object({
+  enum_name: z.string().nullish(),
+  module_id: z.string().nullish(),
+  label: z.string().nullish(),
+  value_count: z.number().nullish(),
+  values: z.array(d365EnumValueSchema).nullish(),
+  parse_error: z.boolean().nullish(),
+  requested_count: z.number().nullish().describe('Batch mode only: how many enums were asked for.'),
+  resolved_count: z.number().nullish(),
+  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested names that do not exist. A single-target miss still returns a not-found error.'),
+  enums: z.array(d365EnumPayloadSchema).nullish().describe('Batch mode only: per-enum payloads.'),
 });
 
 // d365_check_field_exists — per-field existence + note
@@ -320,10 +341,24 @@ export const d365CheckFieldResultSchema = z.object({
   note: z.string().nullable(),
   similar: z.array(z.string()),
 });
-export const d365CheckFieldExistsOutput = z.object({
+// One table's field checks. `found` distinguishes "table does not exist" from
+// "table exists and none of these fields do" — collapsing those two into an
+// empty check list would be actively misleading when generating SQL.
+export const d365CheckFieldTableSchema = z.object({
   table_name: z.string(),
+  found: z.boolean(),
   check_count: z.number(),
   checks: z.array(d365CheckFieldResultSchema),
+});
+
+// Backward-compatible superset — see d365GetEnumOutput for the pattern.
+export const d365CheckFieldExistsOutput = z.object({
+  table_name: z.string().nullish(),
+  check_count: z.number().nullish(),
+  checks: z.array(d365CheckFieldResultSchema).nullish(),
+  requested_count: z.number().nullish().describe('Batch mode only.'),
+  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested tables that do not exist.'),
+  tables: z.array(d365CheckFieldTableSchema).nullish().describe('Batch mode only: per-table results.'),
 });
 
 // d365_get_method_source — single method source
@@ -540,6 +575,17 @@ export const xrefFindReferencesOutput = z.object({
   result_count: z.number(),
   truncated: z.boolean(),
   references: z.array(xrefRefRowSchema),
+  // Sealed-ISV callers (issues #77, #82). Opt-in via `include_isv`, and kept in
+  // its own block so ISV rows are never interleaved with the main results — the
+  // two have different fidelity and must stay distinguishable.
+  isv: z.object({
+    reference_count: z.number(),
+    module_summary: z.array(z.object({
+      module: z.string(),
+      reference_count: z.number(),
+    })),
+    note: z.string(),
+  }).nullish(),
 });
 
 // xref_find_usages
@@ -687,7 +733,7 @@ export const xrefObjectSummaryKindCountSchema = z.object({
   kind: z.string(),
   count: z.number(),
 });
-export const xrefObjectSummaryOutput = z.object({
+export const xrefObjectSummaryPayloadSchema = z.object({
   object_path: z.string(),
   module: z.string().nullable(),
   sub_object_count: z.number(),
@@ -696,6 +742,23 @@ export const xrefObjectSummaryOutput = z.object({
   outgoing_total: z.number(),
   incoming_by_kind: z.array(xrefObjectSummaryKindCountSchema),
   outgoing_by_kind: z.array(xrefObjectSummaryKindCountSchema),
+});
+
+// Backward-compatible superset — see d365GetEnumOutput for the pattern. This is
+// the recommended first call before drilling into an object, so batching it
+// removes the most common source of repeated round-trips.
+export const xrefObjectSummaryOutput = z.object({
+  object_path: z.string().nullish(),
+  module: z.string().nullish(),
+  sub_object_count: z.number().nullish(),
+  methods: z.array(z.string()).nullish(),
+  incoming_total: z.number().nullish(),
+  outgoing_total: z.number().nullish(),
+  incoming_by_kind: z.array(xrefObjectSummaryKindCountSchema).nullish(),
+  outgoing_by_kind: z.array(xrefObjectSummaryKindCountSchema).nullish(),
+  requested_count: z.number().nullish().describe('Batch mode only.'),
+  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested names that could not be resolved.'),
+  objects: z.array(xrefObjectSummaryPayloadSchema).nullish().describe('Batch mode only: per-object summaries.'),
 });
 
 // xref_find_extensions
@@ -1232,4 +1295,107 @@ export const taskrecorderDocumentOutput = z.object({
   xml_output_path: z.string().nullable().describe('Absolute path the contract XML was written to (when include_xml=true), else null. Validates against schemas/task-recording-document.xsd.'),
   document_xml: z.string().nullable().describe('The full contract XML text, present only when include_xml=true AND return_inline=true; otherwise null.'),
   notes: z.array(z.string()).describe('Warnings/observations, e.g. "no screenshots embedded" or "KB database not available".'),
+});
+
+// ── Sealed-ISV tools (issues #75–#82) ────────────────────────────────────────
+// Sealed ISV models ship no X++ source and no Ax<Type> XML, so everything below
+// is read from the model's own `bin/` artefacts and lives in separate `isv_*`
+// tables. Every payload carries `fidelity` so a caller can never mistake
+// ISV-published metadata for the fully-parsed KB/XRef data.
+
+/** Provenance every sealed-ISV response repeats, so it is never implicit. */
+export const isvProvenanceSchema = z.object({
+  fidelity: z.string().describe("'metadata' = read from the artefacts the ISV shipped (.md/.xref/.runtime/.xml); 'il' = derived from assembly signatures."),
+  source_kind: z.string().describe("Always 'sealed' for these models: binary-only, no X++ source available."),
+  scanned_at: z.string().nullable().describe('ISO timestamp of the scan that produced these rows — may differ from the service snapshot date.'),
+  caveat: z.string().describe('One-line statement of what this data cannot tell you.'),
+});
+
+export const d365IsvListModelsOutput = z.object({
+  isv_data_available: z.boolean().describe('False when this database was built before the ISV scan existed, or with no ISV root configured.'),
+  model_count: z.number(),
+  models: z.array(z.object({
+    model: z.string(),
+    publisher: z.string().nullable().describe("Publisher from the assembly version resource, or 'unknown' — sealed models ship no Descriptor, and CompanyName is commonly empty."),
+    version: z.string().nullable(),
+    layer: z.string().nullable().describe('Always null for a sealed model: no Descriptor ships a layer.'),
+    source_kind: z.string(),
+    fidelity: z.string(),
+    depends_on: z.array(z.string()).describe('Declared module dependencies, from the ModuleReferences entry of the .xref package.'),
+    scanned_at: z.string().nullable(),
+    counts: z.record(z.string(), z.number()).describe('What was recovered per artefact class: elements, labels, refs, coc, events.'),
+  })),
+  provenance: isvProvenanceSchema,
+});
+
+export const d365IsvLookupOutput = z.object({
+  isv_data_available: z.boolean(),
+  name: z.string(),
+  found: z.boolean(),
+  match_count: z.number(),
+  matches: z.array(z.object({
+    module: z.string(),
+    element_type: z.string().describe('AOT type, e.g. AxTable, AxClass, AxForm.'),
+    name: z.string(),
+    blob_size: z.number().nullable().describe('Byte length of the undecoded property blob — a rough "how much is defined here" signal.'),
+    properties: z.array(z.object({
+      property: z.string().nullable().describe('Resolved property name, or null when the tag is not yet pinned by a fixture.'),
+      tag: z.string().describe('Raw property tag; retained verbatim so an unknown tag is visible rather than dropped.'),
+      value: z.string().nullable(),
+    })).describe('Decoded properties, empty when this element type has no confirmed tag map yet.'),
+  })),
+  provenance: isvProvenanceSchema,
+});
+
+export const d365IsvExtensionPointsOutput = z.object({
+  isv_data_available: z.boolean(),
+  target: z.string().nullable().describe('The standard object asked about, or null when listing a whole module.'),
+  module_filter: z.string().nullable(),
+  coc_count: z.number(),
+  event_count: z.number(),
+  extends_count: z.number(),
+  chain_of_command: z.array(z.object({
+    module: z.string(),
+    extension_class: z.string(),
+    target: z.string().nullable(),
+    target_type: z.string().nullable(),
+    method: z.string().nullable().describe('Wrapped method; null when the ISV declares the extension class without a listed method.'),
+    is_static: z.boolean(),
+  })),
+  event_handlers: z.array(z.object({
+    module: z.string(),
+    delegate_element: z.string().nullable(),
+    delegate_method: z.string().nullable(),
+    handler_element: z.string().nullable(),
+    handler_method: z.string().nullable(),
+    direction: z.string().nullable().describe('Pre / Post / other, from delegateTypeId.'),
+  })),
+  extends: z.array(z.object({
+    module: z.string(),
+    kind: z.string().describe('class | table | edt | odata'),
+    child: z.string(),
+    parent: z.string().nullable(),
+  })),
+  truncated: z.boolean(),
+  provenance: isvProvenanceSchema,
+});
+
+export const xrefIsvFindUsagesOutput = z.object({
+  isv_data_available: z.boolean(),
+  object_name: z.string(),
+  usage_count: z.number(),
+  module_summary: z.array(z.object({
+    module: z.string(),
+    reference_count: z.number(),
+  })).describe('Referencing sealed ISV models, most references first.'),
+  usages: z.array(z.object({
+    module: z.string(),
+    source_path: z.string().describe('Referencing element, e.g. /Classes/LACRunController/Methods/run.'),
+    target_path: z.string(),
+    kind: z.string().nullable().describe('TypeReference | MethodCall | Attribute | ClassExtended | MethodOverride | Property.'),
+    line: z.number().nullable(),
+    col: z.number().nullable(),
+  })),
+  truncated: z.boolean(),
+  provenance: isvProvenanceSchema,
 });

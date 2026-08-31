@@ -1,6 +1,6 @@
 # D365FO MCP Services
 
-MCP server platform exposing D365FO metadata as 53 AI-consumable tools across 4 services (KB, XRef, Security, Task Recorder).
+MCP server platform exposing D365FO metadata as 57 AI-consumable tools across 4 services (KB, XRef, Security, Task Recorder).
 
 ## Key Commands
 
@@ -13,6 +13,7 @@ npm run start:kb               # Local KB server (stdio)
 npm run start:xref             # Local XRef server (stdio)
 npm run start:sec              # Local Security server (stdio)
 npm run start:taskrecorder     # Local Task Recorder server (stdio)
+npm run build:isv              # Scan sealed ISV models into isv_* tables
 ```
 
 ## Architecture
@@ -30,6 +31,8 @@ npm run start:taskrecorder     # Local Task Recorder server (stdio)
   - `server-metadata.js` — the single source of each MCP server's identity (`name` stable / `title` / `description` / `websiteUrl` / `icons` / `instructions`, author + contact attribution). Every `new McpServer(...)` in `src/functions/*` and `src/local/*` MUST be `new McpServer(serverInfo(svc, { baseUrl }), serverOptions(svc))` (static-scan enforced in `test/server-metadata.test.js`). Icon = Trelleborg mark in `assets/mcp-icon-{128,512}.png`, embedded as data URI + served anonymously by `src/functions/d365icon.js` (`/api/icon.png` — must stay in Easy Auth `excludedPaths`, see `scripts/Update-McpAuthExcludedPaths.ps1`). The RFC 9728 PRM document reuses it for `resource_name`.
   - `sec-indexes.js` — single source of the Security DB performance indexes (`SEC_INDEXES`) + `ensureSecIndexes(dbPath)`: `getSecDb()` runs it before opening the read-only connection, so a code deploy alone brings the Azure `/home/data/d365fo_sec.sqlite` up to date at first request (idempotent, `SEC_AUTO_INDEX=false` disables). `build/add-sec-indexes.js` is the manual migration; `src/azure/sec-builder.js` carries the same statements for fresh builds. Every `JOIN … COLLATE NOCASE` in `sec-tools.js` MUST have a NOCASE index on one side (`test/sec-join-collation.test.js`) — without it a single call blocks every MCP endpoint on the Function App for >90 s.
   - `oauth-proxy-core.js` — MCP OAuth compatibility layer (strips the RFC 8707 `resource` param Entra rejects, AADSTS9010010); endpoints in `src/functions/oauth-proxy.js`, docs in `docs/MCP-Entra-Auth-Setup.md`. NOTE: `host.json` `routePrefix` is `''` — every function route must self-prefix `api/` (static-scan enforced in `test/oauth-proxy.test.js`)
+  - `isv-schema.js` — the sealed-ISV data contract: `isv_*` table DDL, `ensureIsvSchema(db, 'kb'|'xref')`, `hasIsvData(db)` (returns false on pre-ISV DBs — tools MUST check it), and the provenance helpers every ISV response repeats. **17 of 19 non-Microsoft models on the dev box ship no X++ source and no `Ax<Type>` XML** — only a `bin/` directory. `build/isv-parsers.js` decodes what they do ship: the sealed `.md` metadata store (directory + TLV property blobs), the `<Model>.xref` ZIP (199k cross-reference lines the XRef SQL source never received — `Lasernet` has **0** outbound refs in the main tables), the `*_AxLabelFile.md` label stores (153k labels, 31 languages, `@LAC*`/`@ABA*` previously unresolvable), and the `*.runtime` / `*.xml` CoC + event-handler descriptors. `build/isv-scan.js` orchestrates it and is called at the end of **both** `build:kb` and `build:xref` (non-fatal; no-op unless `ISV_SCAN_PATHS` is set), so the ISV metadata refreshes with the Microsoft application and iExtension rather than drifting. **Nothing is decompiled** — see issue #81 before adding IL. Separation is physical: sealed-ISV rows land only in `isv_`-prefixed tables, never in `tables`/`fields`/`names`/`refs`/`labels`
+  - `isv-kb-tools.js` / `isv-xref-tools.js` — 4 sealed-ISV tools (`d365_isv_list_models`, `d365_isv_lookup`, `d365_isv_extension_points`, `xref_isv_find_usages`), registered onto the KB and XRef servers. Deliberately separate from the existing tools: ISV data says what a model declares and where it hooks in, never what its code does
   - `kb-tools.js` — 17 KB tools, exports `registerKbTools(server, db)`
   - `xref-tools.js` — 16 XRef tools, exports `registerXrefTools(server, db)`
   - `sec-tools.js` — 18 Security tools, exports `registerSecTools(server, db)`
@@ -77,6 +80,17 @@ npm run build:sec      # Builds d365fo_sec.sqlite (~60 MB)
 ```
 
 Set paths via environment variables or `.env` file (see `.env.example`).
+
+`ISV_SCAN_PATHS` (optional) adds the sealed-ISV pass to both builds. Unset = no ISV scan and byte-identical databases.
+
+## Batching (issue #83)
+
+`d365_get_enum` (`enum_names`), `d365_check_field_exists` (`tables`) and `xref_object_summary` (`object_names`) accept several targets per call. Two rules, both enforced by `test/batch-tools.test.js`:
+
+1. **Single and batch payloads are disjoint.** A single-target call emits *exactly* its pre-batching `structuredContent` — no batch keys — so it pays nothing for the feature. A batch call emits only batch keys. Never both.
+2. **A partial batch is a success**, not an error: misses go to `not_found[]`. A single-target miss still returns `notFoundResult`.
+
+Batching saves **round-trips, not bytes** — measured, the batched body is *larger* (+9.5% for 9 enums) because TOON's tabular encoding degrades once payloads nest. Do not batch a tool whose single response is already large; `d365_lookup_table` is deliberately excluded.
 
 ## Claude plugin
 

@@ -13,10 +13,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getXrefDb } from '../azure/shared.js';
 import { registerXrefTools } from '../azure/xref-tools.js';
+import { registerIsvXrefTools } from '../azure/isv-xref-tools.js';
 
 function createXrefServer(baseUrl) {
   const server = new McpServer(serverInfo('xref', { baseUrl }), serverOptions('xref'));
   registerXrefTools(server, getXrefDb());
+  registerIsvXrefTools(server, getXrefDb());
   return server;
 }
 

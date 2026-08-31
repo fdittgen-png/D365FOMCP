@@ -29,6 +29,10 @@ const TOOL_FILES = [
   'sec-tools.js',
   'taskrecorder-tools.js',
   'wiki-tools.js',
+  // Sealed-ISV tools (issue #82) are registered onto the KB and XRef servers
+  // from their own modules; they answer to the same contract as everything else.
+  'isv-kb-tools.js',
+  'isv-xref-tools.js',
 ];
 
 // P6-01: every directory under src/ must not contain a `/* ignore */`

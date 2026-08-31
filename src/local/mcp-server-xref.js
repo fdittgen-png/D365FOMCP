@@ -12,6 +12,7 @@ import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerXrefTools } from '../azure/xref-tools.js';
+import { registerIsvXrefTools } from '../azure/isv-xref-tools.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const require = createRequire(import.meta.url);
@@ -32,6 +33,7 @@ db.pragma('mmap_size = 3221225472');
 const server = new McpServer(serverInfo('xref'), serverOptions('xref'));
 
 registerXrefTools(server, db);
+registerIsvXrefTools(server, db);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });

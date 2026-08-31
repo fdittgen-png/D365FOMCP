@@ -48,6 +48,7 @@ import {
   xrefImpactAnalysisOutput,
   rawSqlOutput,
 } from './output-schemas.js';
+import { hasIsvData } from './isv-schema.js';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
 function rowsToObjects(columns, arrayRows) {
@@ -123,7 +124,50 @@ function buildInClause(values) {
 
 export function registerXrefTools(server, db) {
 
+  // Batch cap (issue #83): xref_object_summary is the recommended first call
+  // before drilling into an object, so batching it removes the most common
+  // source of repeated round-trips. It saves round-trips, not bytes — the
+  // batched body measured +1.6% against eight separate calls; see the note in
+  // kb-tools.js. Each summary runs its own aggregate queries, hence a modest cap.
+  const SUMMARY_BATCH_MAX = 10;
+
   const q = (sql, params = []) => query(db, sql, params);
+
+  /**
+   * Per-model reference counts from the sealed-ISV tables (issues #77, #82).
+   *
+   * The main `refs` table has no rows sourced from binary-only ISV models —
+   * measured: `Lasernet` has 0 outbound references there — so a "who references
+   * this?" answer is silently incomplete for anything a third-party model
+   * touches. This adds the missing side as a separate, clearly-labelled block.
+   *
+   * Returns null when the database predates the ISV scan, so the caller emits
+   * no ISV block at all rather than an empty one that reads like "no ISV uses".
+   *
+   * @param {string} targetPath  resolved AOT path, e.g. /Tables/CustTable
+   */
+  function isvReferenceSummary(targetPath) {
+    if (!hasIsvData(db)) return null;
+    let rows;
+    try {
+      rows = q(`SELECT n.module AS module, COUNT(*) AS c
+                FROM isv_refs r JOIN isv_names n ON n.id = r.source_id
+                WHERE r.target_path = ? COLLATE NOCASE
+                   OR r.target_path LIKE ? COLLATE NOCASE
+                GROUP BY n.module ORDER BY c DESC`,
+      [targetPath, `${targetPath}/%`]);
+    } catch (err) {
+      console.error('[xref-tools:isvReferenceSummary]', err);
+      return null;
+    }
+    const summary = rows.map(r => ({ module: String(r.module), reference_count: Number(r.c || 0) }));
+    return {
+      reference_count: summary.reduce((n, m) => n + m.reference_count, 0),
+      module_summary: summary,
+      note: 'From sealed ISV metadata — these models ship no X++ source and are '
+        + 'absent from the main cross-reference snapshot. Call sites: xref_isv_find_usages.',
+    };
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Tool 1: xref_find_references — "Who uses this object?"
@@ -132,17 +176,19 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind. Default: All'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        include_isv: z.boolean().optional().default(false)
+          .describe('Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites.'),
         format: formatTextParam,
       },
       outputSchema: xrefFindReferencesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit, format }) => {
+    async ({ object_name, kind, limit: rawLimit, include_isv, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
@@ -170,6 +216,10 @@ export function registerXrefTools(server, db) {
         LIMIT ?
       `, params);
 
+      // Defensive default: the test mock server bypasses Zod (contract item 13).
+      const wantIsv = include_isv === true;
+      const isvBlock = wantIsv ? isvReferenceSummary(targetPath) : null;
+
       const baseTyped = {
         target_path: targetPath,
         kind_filter: kindFilterLabel,
@@ -179,8 +229,9 @@ export function registerXrefTools(server, db) {
         references: result.map(r => ({
           path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
         })),
+        isv: isvBlock,
       };
-      if (!result.length) {
+      if (!result.length && !(isvBlock && isvBlock.reference_count)) {
         return emptyResult(`references to "${targetPath}"`, baseTyped);
       }
 
@@ -190,6 +241,15 @@ export function registerXrefTools(server, db) {
         ['Source', 'Kind', 'Line', 'Col', 'Module'],
       );
       if (baseTyped.truncated) out += truncationNote('user', limit);
+      if (isvBlock) {
+        out += `\n### Sealed ISV models (${isvBlock.reference_count})\n\n`;
+        out += isvBlock.reference_count
+          ? formatMarkdownTable(
+            isvBlock.module_summary.map(m => ({ Model: m.module, References: m.reference_count })),
+            ['Model', 'References'])
+          : '_No sealed ISV model references this object._\n';
+        out += `\n_${isvBlock.note}_\n`;
+      }
       return structuredResult(baseTyped, out, format);
     },
   );
@@ -980,54 +1040,108 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.",
+      description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. This is the recommended first call before drilling into an object — pass `object_names` to summarise up to 10 objects in one call instead of one call each. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.",
       inputSchema: {
-        object_name: z.string().min(1).max(500).describe('Object name or path'),
+        object_name: z.string().min(1).max(500).optional().describe('Object name or path. Use this or `object_names`.'),
+        object_names: z.array(z.string().min(1).max(500)).min(1).max(SUMMARY_BATCH_MAX).optional()
+          .describe(`Summarise several objects in one call (max ${SUMMARY_BATCH_MAX}). Names that cannot be resolved come back in \`not_found\` rather than failing the call.`),
         format: formatTextParam,
       },
       outputSchema: xrefObjectSummaryOutput.shape,
     },
-    async ({ object_name, format }) => {
-      const _v = validateLikePattern(object_name);
-      if (_v) return patternErrorResult(_v);
-      const resolved = resolveNameId(q, object_name);
-      if (!resolved) return notFoundResult('Object', object_name);
-      const { id: objId, path: objPath } = resolved;
+    async ({ object_name, object_names, format }) => {
+      // Singular and plural are unioned, deduped, and the caller's order kept.
+      const requested = [...new Set([
+        ...(Array.isArray(object_names) ? object_names : []),
+        ...(object_name ? [object_name] : []),
+      ].map(n => String(n ?? '').trim()).filter(Boolean))];
 
-      const modResult = q('SELECT m.module FROM names n JOIN modules m ON n.module_id = m.id WHERE n.id = ?', [objId]);
-      const moduleName = modResult[0]?.module || null;
+      if (!requested.length) {
+        return errorResult('invalid-input', 'Provide `object_name` or `object_names`.');
+      }
+      // Defensive cap: Zod's .max() is bypassed by the test mock server (rule #13).
+      const names = requested.slice(0, SUMMARY_BATCH_MAX);
+      const batchMode = Array.isArray(object_names) && object_names.length > 0;
 
-      const subObjects = q('SELECT id, path FROM names WHERE path LIKE ? ORDER BY path LIMIT 200', [objPath + '/%']);
-      const allIds = [objId, ...subObjects.map(r => r.id)];
-      const { clause: inClause, params: inParams } = buildInClause(allIds);
-      const incoming = q(`SELECT kind, COUNT(*) as cnt FROM refs WHERE target_id IN (${inClause}) GROUP BY kind ORDER BY cnt DESC`, inParams);
-      const { clause: inClause2, params: inParams2 } = buildInClause(allIds);
-      const outgoing = q(`SELECT kind, COUNT(*) as cnt FROM refs WHERE source_id IN (${inClause2}) GROUP BY kind ORDER BY cnt DESC`, inParams2);
+      for (const n of names) {
+        const _v = validateLikePattern(n);
+        if (_v) return patternErrorResult(_v);
+      }
 
-      const methods = subObjects
-        .filter(r => r.path.includes('/Methods/'))
-        .map(r => r.path.split('/Methods/')[1]);
-      const incomingByKind = incoming.map(r => ({ kind: kindName(r.kind), count: num(r.cnt) ?? 0 }));
-      const outgoingByKind = outgoing.map(r => ({ kind: kindName(r.kind), count: num(r.cnt) ?? 0 }));
+      /** Summarise one object, or null when the name cannot be resolved. */
+      const summarise = (name) => {
+        const resolved = resolveNameId(q, name);
+        if (!resolved) return null;
+        const { id: objId, path: objPath } = resolved;
 
-      const typed = {
-        object_path: objPath,
-        module: moduleName,
-        sub_object_count: subObjects.length,
-        methods,
-        incoming_total: incomingByKind.reduce((s, r) => s + r.count, 0),
-        outgoing_total: outgoingByKind.reduce((s, r) => s + r.count, 0),
-        incoming_by_kind: incomingByKind,
-        outgoing_by_kind: outgoingByKind,
+        const modResult = q('SELECT m.module FROM names n JOIN modules m ON n.module_id = m.id WHERE n.id = ?', [objId]);
+        const moduleName = modResult[0]?.module || null;
+
+        const subObjects = q('SELECT id, path FROM names WHERE path LIKE ? ORDER BY path LIMIT 200', [objPath + '/%']);
+        const allIds = [objId, ...subObjects.map(r => r.id)];
+        const { clause: inClause, params: inParams } = buildInClause(allIds);
+        const incoming = q(`SELECT kind, COUNT(*) as cnt FROM refs WHERE target_id IN (${inClause}) GROUP BY kind ORDER BY cnt DESC`, inParams);
+        const { clause: inClause2, params: inParams2 } = buildInClause(allIds);
+        const outgoing = q(`SELECT kind, COUNT(*) as cnt FROM refs WHERE source_id IN (${inClause2}) GROUP BY kind ORDER BY cnt DESC`, inParams2);
+
+        const methods = subObjects
+          .filter(r => r.path.includes('/Methods/'))
+          .map(r => r.path.split('/Methods/')[1]);
+        const incomingByKind = incoming.map(r => ({ kind: kindName(r.kind), count: num(r.cnt) ?? 0 }));
+        const outgoingByKind = outgoing.map(r => ({ kind: kindName(r.kind), count: num(r.cnt) ?? 0 }));
+
+        return {
+          object_path: objPath,
+          module: moduleName,
+          sub_object_count: subObjects.length,
+          methods,
+          incoming_total: incomingByKind.reduce((s, r) => s + r.count, 0),
+          outgoing_total: outgoingByKind.reduce((s, r) => s + r.count, 0),
+          incoming_by_kind: incomingByKind,
+          outgoing_by_kind: outgoingByKind,
+        };
       };
 
-      let out = `## Object summary: ${objPath}\n`;
-      out += `Module: ${moduleName ?? '-'} • Sub-objects: ${typed.sub_object_count}\n\n`;
-      if (methods.length > 0) out += `## Methods (${methods.length})\n${methods.join(', ')}\n\n`;
-      out += `## Incoming references (used by) — total ${typed.incoming_total}\n`;
-      for (const r of incomingByKind) out += `- ${r.kind}: ${r.count}\n`;
-      out += `\n## Outgoing references (uses) — total ${typed.outgoing_total}\n`;
-      for (const r of outgoingByKind) out += `- ${r.kind}: ${r.count}\n`;
+      // Single mode keeps its H2 sections; batch mode demotes them so the whole
+      // response still has exactly one H2 (contract rule #3).
+      const renderOne = (p, h) => {
+        let s = `${h} Object summary: ${p.object_path}\n`;
+        s += `Module: ${p.module ?? '-'} • Sub-objects: ${p.sub_object_count}\n\n`;
+        if (p.methods.length > 0) s += `${h}# Methods (${p.methods.length})\n${p.methods.join(', ')}\n\n`;
+        s += `${h}# Incoming references (used by) — total ${p.incoming_total}\n`;
+        for (const r of p.incoming_by_kind) s += `- ${r.kind}: ${r.count}\n`;
+        s += `\n${h}# Outgoing references (uses) — total ${p.outgoing_total}\n`;
+        for (const r of p.outgoing_by_kind) s += `- ${r.kind}: ${r.count}\n`;
+        return s;
+      };
+
+      if (!batchMode) {
+        const p = summarise(names[0]);
+        if (!p) return notFoundResult('Object', names[0]);
+        // Exactly the pre-batching payload — no batch keys.
+        return structuredResult(p, renderOne(p, '##'), format);
+      }
+
+      const objects = [];
+      const notFound = [];
+      for (const n of names) {
+        const p = summarise(n);
+        if (p) objects.push(p);
+        else notFound.push(n);
+      }
+
+      // Batch mode carries only batch keys — see the enum handler for why the
+      // single-target fields are omitted rather than nulled.
+      const typed = {
+        requested_count: names.length,
+        not_found: notFound,
+        objects,
+      };
+
+      let out = `## Object summaries (${objects.length} of ${names.length})\n\n`;
+      for (const p of objects) out += renderOne(p, '###') + '\n';
+      if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
+
       return structuredResult(typed, out, format);
     },
   );
