@@ -21,6 +21,9 @@ param monthlyBudgetAmount int = 50
 @minLength(1)
 param budgetContactEmails array
 
+@description('Enable Key Vault purge protection. IRREVERSIBLE: once on it cannot be turned off, the vault cannot be deleted before its soft-delete retention expires, and its name cannot be reused until the soft-deleted copy is recovered or expires. Defaults to FALSE so a routine -DeployInfra against an EXISTING vault never flips a one-way switch; both deploy scripts pre-flight the live vault before passing true. tis-d-mcpd365fo-kv has it off today.')
+param enablePurgeProtection bool = false
+
 // ─── Naming ─────────────────────────────────────────────
 var rgName    = '${prefix}-${env}-${workload}-rg'
 var funcName  = '${prefix}-${env}-${workload}-func'
@@ -82,6 +85,7 @@ module keyVault 'modules/keyVault.bicep' = {
   scope: rg
   name: 'keyVault'
   params: {
+    enablePurgeProtection: enablePurgeProtection
     location: location
     kvName: kvName
     functionAppPrincipalId: func.outputs.functionAppPrincipalId
