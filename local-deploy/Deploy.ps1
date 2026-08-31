@@ -315,15 +315,42 @@ Write-Host "  Project root:    $projectDir"
 $account = Ensure-AzContext -Subscription $Subscription
 
 # ─── Resolve RG ─────────────────────────────────────────────────────────────
-$rg = az group show --name $ResourceGroup 2>$null | ConvertFrom-Json
+# `az group show` fails for at least three genuinely different reasons, and
+# swallowing stderr made all three report as "not found, or you lack access".
+# That message cost real time twice on 2026-08-31 alone: once when a PIM role
+# had not been activated, once when the refresh token had been revoked. Keep
+# the error and name the actual cause.
+$rgErr = ''
+$rgJson = az group show --name $ResourceGroup 2>&1
+if ($LASTEXITCODE -ne 0) { $rgErr = ($rgJson | Out-String) } else { $rg = $rgJson | ConvertFrom-Json }
+
 if (-not $rg) {
-    # The RG must pre-exist: `az deployment group create` (used by -DeployInfra)
-    # targets an existing RG and does not create one. Create it once, then re-run.
     $createHint = "Create it first with:  az group create --name $ResourceGroup --location <region>"
-    if ($DeployInfra) {
-        throw "Resource group '$ResourceGroup' not found. $createHint  Then re-run with -DeployInfra to provision the resources inside it."
+    $sub = (az account show --query "name" -o tsv 2>$null)
+
+    if ($rgErr -match 'AADSTS\d+|expired|revoked|re-?authenticate|refresh token') {
+        # The token, not the permission. az login is the only fix; activating a
+        # PIM role changes nothing while the grant itself is invalid.
+        $code = if ($rgErr -match '(AADSTS\d+)') { $Matches[1] } else { 'auth' }
+        throw ("Azure sign-in is no longer valid ($code) — this is an AUTHENTICATION failure, not a missing " +
+               "resource group and not PIM. Run:  az login   then re-run this script.`n" +
+               "  az said: " + (($rgErr -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1) -replace '\s+', ' '))
     }
-    throw "Resource group '$ResourceGroup' not found, or you lack access to it. $createHint (and pass -DeployInfra to provision resources)."
+    if ($rgErr -match 'AuthorizationFailed|does not have authorization') {
+        # The account is signed in but carries no role over this scope.
+        throw ("No access to resource group '$ResourceGroup' in subscription '$sub' — this is an AUTHORIZATION " +
+               "failure, so the group exists but your token carries no role over it. Activate the eligible role " +
+               "in Entra PIM, then run  az login  to mint a token that carries it (activation alone does not " +
+               "refresh an existing token).")
+    }
+    if ($rgErr -match 'ResourceGroupNotFound' -or [string]::IsNullOrWhiteSpace($rgErr)) {
+        if ($DeployInfra) {
+            throw "Resource group '$ResourceGroup' does not exist in subscription '$sub'. $createHint  Then re-run with -DeployInfra."
+        }
+        throw "Resource group '$ResourceGroup' does not exist in subscription '$sub'. $createHint (and pass -DeployInfra to provision resources). If you expected it to exist, check you are on the right subscription."
+    }
+    throw ("Could not resolve resource group '$ResourceGroup' in subscription '$sub'.`n  az said: " +
+           (($rgErr -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 3) -join ' | '))
 }
 Write-Host "  RG location:     $($rg.location)" -ForegroundColor Green
 
