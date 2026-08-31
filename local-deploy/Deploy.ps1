@@ -721,12 +721,68 @@ if (-not $SkipDb) {
     $kuduBase = "https://$FunctionAppName.scm.azurewebsites.net"
     $kuduAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$($creds.user):$($creds.pass)"))
 
-    # Ensure /home/data/ exists (idempotent — Kudu returns 201/409)
+    # Ensure /home/data/ exists.
+    #
+    # This used to be an unconditional PUT wrapped in `catch { }`. /home/data/
+    # always already exists, so Kudu answered "The resource represents a
+    # directory which can not be updated", which Invoke-RestMethod raises as a
+    # TERMINATING error — and PowerShell logs it to the transcript before the
+    # catch swallows it. Every successful deploy therefore recorded
+    # `PS>TerminatingError(Invoke-RestMethod)` right above the upload, which
+    # trains whoever reads the log to skim past terminating errors. That is
+    # exactly the wrong instinct in this script: a genuine upload failure looks
+    # the same, and the 2026-04 XRef outage was a bad upload nobody spotted.
+    #
+    # Worse, `-ErrorAction SilentlyContinue` does not suppress a terminating
+    # error, and the empty catch hid every *real* failure of this call too —
+    # notably HTTP 401, which is what wrong Kudu credentials return. Since the
+    # uploads below reuse those same credentials, that is the one failure worth
+    # stopping for, and it was being discarded.
+    #
+    # GET first: an existing directory answers 200 and raises nothing, so the
+    # normal path is silent. Create only on 404, and fail loudly on an auth
+    # rejection rather than uploading with credentials known to be bad.
     try {
-        Invoke-RestMethod -Uri "$kuduBase/api/vfs/data/" -Method PUT `
-            -Headers @{ Authorization = "Basic $kuduAuth" } `
-            -ContentType 'application/json' -ErrorAction SilentlyContinue
-    } catch { }
+        Invoke-RestMethod -Uri "$kuduBase/api/vfs/data/" -Method GET `
+            -Headers @{ Authorization = "Basic $kuduAuth" } | Out-Null
+    } catch {
+        $status = 0
+        if ($_.Exception.Response) {
+            try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = 0 }
+        }
+        switch ($status) {
+            404 {
+                try {
+                    Invoke-RestMethod -Uri "$kuduBase/api/vfs/data/" -Method PUT `
+                        -Headers @{ Authorization = "Basic $kuduAuth" } `
+                        -ContentType 'application/json' | Out-Null
+                    Write-Host '  [OK] Created /home/data/.' -ForegroundColor Green
+                } catch {
+                    throw ("Could not create /home/data/ on $FunctionAppName : " +
+                        "$($_.Exception.Message). Uploads would land nowhere.")
+                }
+            }
+            401 {
+                throw ("Kudu rejected the publishing credentials (HTTP 401) on $kuduBase. " +
+                    'Every database upload below uses these same credentials and would fail ' +
+                    'or silently write nothing. Re-run once ' +
+                    '`az functionapp deployment list-publishing-credentials` returns a valid ' +
+                    'user/password for this Function App.')
+            }
+            403 {
+                throw ("Kudu denied access to /home/data/ (HTTP 403) on $kuduBase. " +
+                    'SCM basic-publishing credentials are commonly disabled on the Function ' +
+                    'App; enable them, or deploy the databases by another route.')
+            }
+            default {
+                # Unknown, but the directory may still be writable — warn and let
+                # the per-upload integrity check be the real gate.
+                Write-Warning ("  Could not confirm /home/data/ exists " +
+                    "(HTTP $status): $($_.Exception.Message). Continuing; each upload is " +
+                    'size-verified independently.')
+            }
+        }
+    }
 
     $uploadPlan = @()
     if ('kb'   -in $Databases -and (Test-Path $KbDbPath))   { $uploadPlan += @{ Name='KB';   Local=$KbDbPath;   Remote='d365fo_kb.sqlite'   } }
