@@ -12,7 +12,8 @@ Four MCP servers expose a **read-only snapshot** of a D365FO build (AOT metadata
 | Need | Server | Start with | Then |
 |---|---|---|---|
 | Table structure (fields, indexes, relations, properties) | `d365kb` | `d365_lookup_table` | `d365_get_enum` for enum fields, `d365_find_referencing_tables` for incoming FKs |
-| "Does field X exist on table Y?" | `d365kb` | `d365_check_field_exists` | `d365_field_renames` if it was an AX2012 name |
+| "Does field X exist on table Y?" | `d365kb` | `d365_check_field_exists` | `d365_field_renames` if it was an AX2012 name; a `_Custom` name resolves live — see §4 |
+| "Which UI custom fields exist on table Y?" | `d365kb` | `d365_custom_fields` | Live per-environment read, not the build snapshot. `table_name` attribution is **derived** — quote the row's `attribution` |
 | Join two tables correctly | `d365kb` | `d365_get_join_keys` | `d365_sql_template` for a ready query |
 | Enum values ↔ integers | `d365kb` | `d365_get_enum` | — |
 | Class API, method list, inheritance | `d365kb` | `d365_get_class_methods` | `d365_get_method_source` (line-numbered X++) |
@@ -67,7 +68,7 @@ Full parameter tables per server (generated from the code, always current): `ref
 | "Role R is minimal / over-provisioned" | `sec_compare_roles` + `sec_licence_assessment` |
 | Numeric facts from KB | Treat TEXT-typed numerics as strings that need coercion; do not compare `"10" > "9"` |
 | DMF vs AOT names | DMF exports are UPPERCASE, AOT is mixed-case — compare case-insensitively |
-| "Field X does not exist" when `d365_check_field_exists` says false | Two false negatives are known: (a) `LAC*`/`PRN*`-prefixed fields on Microsoft tables (e.g. `SalesConfirmDetailsTmp.LACTransRefRecId`) come from **binary-only ISV models** that no build scans — check the local Lasernet `metadata-inventory` folder; (b) fields with the **`_Custom` suffix** are D365 UI custom fields (System administration › Custom fields), live in no model at all — verify in the environment. Say "not in the metadata snapshot", never "does not exist" |
+| "Field X does not exist" when `d365_check_field_exists` says false | Two false-negative classes. (a) `LAC*`/`PRN*` fields on Microsoft tables (e.g. `SalesConfirmDetailsTmp.LACTransRefRecId`) come from **binary-only ISV models** — try `d365_isv_lookup`, else the local Lasernet `metadata-inventory`. (b) The **`_Custom` suffix** means a D365 UI custom field (System administration › Setup › Custom fields), held in a *runtime* table extension that no build snapshot contains: `d365_check_field_exists` now resolves these live when an environment is configured, and otherwise returns the field-class explanation — **read the note, do not restate the boolean**. Use `d365_custom_fields` to enumerate. Either way say "not in the metadata snapshot", never "does not exist" |
 
 Separate **confirmed** (tool output) from **inferred** (your reasoning) in every deliverable; label the inferred part.
 

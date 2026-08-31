@@ -33,6 +33,10 @@ const TOOL_FILES = [
   // from their own modules; they answer to the same contract as everything else.
   'isv-kb-tools.js',
   'isv-xref-tools.js',
+  // Live custom-field tool (issue #90). Same contract as everything else, with
+  // one sanctioned exception: it declares READ_ONLY_LIVE_ANNOTATIONS instead of
+  // READ_ONLY_DB_ANNOTATIONS — see the PM-03 test below.
+  'custom-fields-tools.js',
 ];
 
 // P6-01: every directory under src/ must not contain a `/* ignore */`
@@ -125,11 +129,20 @@ for (const file of TOOL_FILES) {
     // Count the number of registerTool calls.
     const calls = (src.match(/server\.registerTool\(/g) || []).length;
     // Count the number of `annotations:` fields (assume one per call).
-    const annotations = (src.match(/\bannotations:\s*READ_ONLY_DB_ANNOTATIONS/g) || []).length;
+    //
+    // Two constants are accepted (issue #87). READ_ONLY_DB_ANNOTATIONS is the
+    // default and declares a closed world. READ_ONLY_LIVE_ANNOTATIONS is for a
+    // tool that reads a live D365 environment over HTTPS: that tool genuinely
+    // does reach an external system, so `openWorldHint` must be true, and
+    // forcing the DB constant on it to keep this scan simple would suppress
+    // host approval prompts under a false premise. Both are read-only and
+    // idempotent — a constant that is NOT read-only must never be added here.
+    const annotations =
+      (src.match(/\bannotations:\s*READ_ONLY_(DB|LIVE)_ANNOTATIONS/g) || []).length;
     assert.equal(
       annotations,
       calls,
-      `${file}: ${calls} registerTool calls but only ${annotations} annotations declarations. Every tool must set annotations: READ_ONLY_DB_ANNOTATIONS.`,
+      `${file}: ${calls} registerTool calls but only ${annotations} annotations declarations. Every tool must set annotations: READ_ONLY_DB_ANNOTATIONS (or READ_ONLY_LIVE_ANNOTATIONS for a live-environment tool).`,
     );
   });
 }
@@ -141,6 +154,15 @@ test('given READ_ONLY_DB_ANNOTATIONS, when imported, then it declares read-only 
   assert.equal(READ_ONLY_DB_ANNOTATIONS.readOnlyHint, true);
   assert.equal(READ_ONLY_DB_ANNOTATIONS.idempotentHint, true);
   assert.equal(READ_ONLY_DB_ANNOTATIONS.openWorldHint, false);
+});
+
+test('given READ_ONLY_LIVE_ANNOTATIONS, when imported, then it declares read-only + idempotent + OPEN world', async () => {
+  const { READ_ONLY_LIVE_ANNOTATIONS } = await import('../src/azure/shared.js');
+  assert.equal(READ_ONLY_LIVE_ANNOTATIONS.readOnlyHint, true);
+  assert.equal(READ_ONLY_LIVE_ANNOTATIONS.idempotentHint, true);
+  // The whole point of the second constant: a tool calling a live environment
+  // must not claim a closed world.
+  assert.equal(READ_ONLY_LIVE_ANNOTATIONS.openWorldHint, true);
 });
 
 test('given READ_ONLY_DB_ANNOTATIONS, when mutation attempted, then Object.freeze blocks it', async () => {

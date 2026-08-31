@@ -215,7 +215,8 @@ Health check: `GET` to any MCP endpoint returns `{ name, version, status }`.
 | `d365_get_join_keys` | Join fields between two tables with hallucination warnings |
 | `d365_search` | Full-text search across all object types |
 | `d365_get_enum` | Enum values with numeric IDs and labels |
-| `d365_check_field_exists` | Verify field existence, suggest corrections |
+| `d365_check_field_exists` | Verify field existence, suggest corrections; resolves `_Custom` UI custom fields live |
+| `d365_custom_fields` | UI custom fields (`_Custom`) read LIVE from a configured environment — they exist in no build snapshot |
 | `d365_get_class_methods` | Method signatures, optionally with full X++ source |
 | `d365_get_method_source` | Full X++ source code for a specific method |
 | `d365_find_referencing_tables` | Foreign keys pointing to a table |

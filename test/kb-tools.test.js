@@ -548,6 +548,44 @@ describe('d365_check_field_exists', () => {
     });
     assert.ok(result.includes('YES'));
   });
+
+  // Issue #90 — a `_Custom` name is a UI custom field: it lives in a runtime
+  // table extension and is in NO build snapshot, so a bare "does not exist"
+  // is a false negative. No environment is configured in this suite, which is
+  // the important case: even with nothing wired up the answer must explain the
+  // field class rather than assert absence.
+  it('explains the field class for a _Custom name instead of asserting absence', async () => {
+    const result = await callTool('d365_check_field_exists', {
+      table_name: 'CustTable',
+      field_names: ['TBGSecondaryContact_Custom'],
+    });
+    assert.ok(result.includes('UI custom field'), 'must name the field class');
+    assert.ok(result.includes('not evidence'), 'must refuse to imply absence');
+    assert.ok(result.includes('Set-D365CustomFieldsSource'), 'must say how to resolve it');
+  });
+
+  // Issue #90 — the sibling class: LAC*/PRN* fields come from binary-only ISV
+  // models that no build scan can see (SalesConfirmDetailsTmp.LACTransRefRecId
+  // is real; the KB reports it missing).
+  it('explains the ISV class for a LAC-prefixed name instead of asserting absence', async () => {
+    const result = await callTool('d365_check_field_exists', {
+      table_name: 'CustTable',
+      field_names: ['LACTransRefRecId'],
+    });
+    assert.ok(result.includes('binary-only ISV'), 'must name the cause');
+    assert.ok(result.includes('not'), 'must refuse to imply absence');
+  });
+
+  it('still reports a plain missing field as missing', async () => {
+    // The custom-field pass must not soften ordinary not-found verdicts.
+    const result = await callTool('d365_check_field_exists', {
+      table_name: 'CustTable',
+      field_names: ['FakeField'],
+    });
+    assert.ok(result.includes('DOES NOT EXIST'));
+    assert.ok(!result.includes('UI custom field'));
+    assert.ok(!result.includes('binary-only ISV'));
+  });
 });
 
 describe('d365_get_class_methods', () => {

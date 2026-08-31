@@ -434,6 +434,21 @@ export const READ_ONLY_DB_ANNOTATIONS = Object.freeze({
   openWorldHint: false,
 });
 
+// ── Read-only LIVE tool annotations (issue #87) ─────────────────────────
+// For a tool that reads a live D365 environment over HTTPS instead of a local
+// snapshot. Identical to READ_ONLY_DB_ANNOTATIONS except `openWorldHint`, which
+// must be `true`: the tool does reach an external system, and claiming
+// otherwise to keep the closed-world story tidy would suppress host approval
+// prompts under a false premise.
+//
+// `idempotentHint` stays true — repeating the call has no side effect on the
+// environment; it is a GET against `$metadata`.
+export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
+  readOnlyHint: true,
+  idempotentHint: true,
+  openWorldHint: true,
+});
+
 // ── Response shape helpers ───────────────────────────────────────────────────
 
 /**
