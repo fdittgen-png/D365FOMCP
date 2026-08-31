@@ -41,7 +41,30 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 resource blobServices 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
   parent: storageAccount
   name: 'default'
-  properties: {}
+  properties: {
+    // CORS is REQUIRED, not cosmetic: the d365sec upload page uploads the DMF
+    // ZIP straight from the browser to blob storage with a SAS URL, so the
+    // storage account must accept a cross-origin PUT from the Function App's
+    // own origin. This block was live but undeclared, which meant a plain
+    // template deploy silently DELETED it and broke that upload — `az
+    // deployment group what-if` showed `properties -> None`. Declared here so
+    // the template stops fighting reality.
+    cors: {
+      corsRules: [
+        {
+          allowedOrigins: [ 'https://${funcName}.azurewebsites.net' ]
+          allowedMethods: [ 'PUT' ]
+          allowedHeaders: [ '*' ]
+          exposedHeaders: [ '*' ]
+          maxAgeInSeconds: 3600
+        }
+      ]
+    }
+    deleteRetentionPolicy: {
+      enabled: false
+      allowPermanentDelete: false
+    }
+  }
 }
 
 resource snapshotContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
