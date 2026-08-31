@@ -367,6 +367,25 @@ if ($DeployInfra) {
     # contain Function Apps"), because a family change requires emptying the
     # plan first — i.e. deleting the Function App. Read the live plan and deploy
     # what is actually there unless the operator overrides it deliberately.
+    # Bicep replaces tags wholesale, so any tag this template does not declare is
+    # DELETED on deploy — what-if showed TIS-Owner and CreatedOnDate being
+    # stripped from six resources. Read them off the live Function App and pass
+    # them back as additionalTags. Reading them at deploy time rather than
+    # committing them matters: the repo is public and these tags name people.
+    $script:AdditionalTags = @{}
+    $liveTags = az functionapp show --resource-group $ResourceGroup --name $preFuncName `
+        --query tags -o json 2>$null | ConvertFrom-Json
+    if ($liveTags) {
+        # Keys the template defines itself; it stays authoritative for those.
+        $templateOwned = @('Owner', 'Environment', 'Workload', 'CostCenter', 'ManagedBy')
+        foreach ($k in $liveTags.PSObject.Properties.Name) {
+            if ($templateOwned -notcontains $k) { $script:AdditionalTags[$k] = $liveTags.$k }
+        }
+        if ($script:AdditionalTags.Count -gt 0) {
+            Write-Host "  Preserving $($script:AdditionalTags.Count) tag(s) the template does not declare: $($script:AdditionalTags.Keys -join ', ')" -ForegroundColor DarkGray
+        }
+    }
+
     $aspPreName = "$Prefix-$Environment-$Workload-asp"
     $aspPre = az appservice plan show --name $aspPreName --resource-group $ResourceGroup -o json 2>$null | ConvertFrom-Json
     if ($aspPre) {
@@ -426,6 +445,7 @@ if ($DeployInfra) {
             appServicePlanSkuName = @{ value = $AppServicePlanSkuName }
             appServicePlanSkuTier = @{ value = $AppServicePlanSkuTier }
             appServicePlanKind    = @{ value = $AppServicePlanKind }
+            additionalTags        = @{ value = $script:AdditionalTags }
         }
     }
     $paramsObj | ConvertTo-Json -Depth 5 | Set-Content -Path $paramsFile -Encoding UTF8

@@ -31,6 +31,9 @@ param appServicePlanSkuTier string = 'ElasticPremium'
 
 @description('App Service Plan kind: elastic (Elastic Premium) or linux.')
 param appServicePlanKind string = 'elastic'
+@description('Tags present on the LIVE resources that this template does not define. Bicep replaces tags wholesale, so a deploy would otherwise STRIP organisational tags such as TIS-Owner. Deploy.ps1 reads them from the live Function App and passes them back, which keeps the values out of this repo — the repo is public and they identify people.')
+param additionalTags object = {}
+
 
 
 // ─── Naming ─────────────────────────────────────────────
@@ -43,13 +46,15 @@ var appiName  = '${prefix}-${env}-${workload}-appi'
 var logName   = '${prefix}-${env}-${workload}-log'
 var budgetName = '${prefix}-${env}-${workload}-storage-budget'
 
-var tags = {
+// additionalTags first so the template's own keys win on any conflict; it only
+// ever ADDS keys this template does not define.
+var tags = union(additionalTags, {
   Owner: 'TIS'
   Environment: env == 'p' ? 'Production' : 'Development'
   Workload: workload
   CostCenter: 'IT-Services'
   ManagedBy: 'Florian Dittgen'
-}
+})
 
 // ─── Resource Group ─────────────────────────────────────
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
