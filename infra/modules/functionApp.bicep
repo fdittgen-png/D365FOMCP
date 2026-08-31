@@ -5,6 +5,15 @@ param stName string
 param appiConnectionString string
 param tags object
 
+@description('App Service Plan SKU name. Default EP1 (Elastic Premium) — the family a Premium Function App runs on, and what tis-d-mcpd365fo-asp actually is. The template previously hard-coded P0v3/PremiumV3, which Azure REFUSES to apply to a plan that already hosts Function Apps (BadRequest 11033, "must not contain Function Apps") — a plan family change requires emptying the plan first, i.e. deleting the app.')
+param appServicePlanSkuName string = 'EP1'
+
+@description('App Service Plan SKU tier. Must match the family implied by appServicePlanSkuName.')
+param appServicePlanSkuTier string = 'ElasticPremium'
+
+@description('App Service Plan kind. "elastic" for Elastic Premium, "linux" for a regular Linux plan. Changing this on a populated plan is the same rejected family change as the SKU.')
+param appServicePlanKind string = 'elastic'
+
 @description('Key Vault name. main.bicep has always passed this; until issue #88 it was never declared here, so the value was silently dropped. Surfaced to the app as KEY_VAULT_NAME so src/azure/key-vault.js can resolve secrets under the managed identity.')
 param kvName string
 
@@ -106,15 +115,15 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   location: location
   tags: tags
   sku: {
-    name: 'P0v3'
-    tier: 'PremiumV3'
-    size: 'P0v3'
-    family: 'Pv3'
+    name: appServicePlanSkuName
+    tier: appServicePlanSkuTier
     capacity: 1
   }
-  kind: 'linux'
+  kind: appServicePlanKind
   properties: {
-    reserved: true
+    // Elastic Premium plans report reserved: null; forcing true is part of the
+    // same rejected family change. Only a genuine Linux plan sets it.
+    reserved: appServicePlanKind == 'linux'
   }
 }
 

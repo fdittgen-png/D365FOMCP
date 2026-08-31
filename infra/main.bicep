@@ -23,6 +23,15 @@ param budgetContactEmails array
 
 @description('Enable Key Vault purge protection. IRREVERSIBLE: once on it cannot be turned off, the vault cannot be deleted before its soft-delete retention expires, and its name cannot be reused until the soft-deleted copy is recovered or expires. Defaults to FALSE so a routine -DeployInfra against an EXISTING vault never flips a one-way switch; both deploy scripts pre-flight the live vault before passing true. tis-d-mcpd365fo-kv has it off today.')
 param enablePurgeProtection bool = false
+@description('App Service Plan SKU name. Default EP1 (Elastic Premium), matching the live plan. See modules/functionApp.bicep — changing the plan family is rejected while the plan hosts Function Apps.')
+param appServicePlanSkuName string = 'EP1'
+
+@description('App Service Plan SKU tier, matching appServicePlanSkuName.')
+param appServicePlanSkuTier string = 'ElasticPremium'
+
+@description('App Service Plan kind: elastic (Elastic Premium) or linux.')
+param appServicePlanKind string = 'elastic'
+
 
 // ─── Naming ─────────────────────────────────────────────
 var rgName    = '${prefix}-${env}-${workload}-rg'
@@ -66,6 +75,9 @@ module func 'modules/functionApp.bicep' = {
   scope: rg
   name: 'functionApp'
   params: {
+    appServicePlanSkuName: appServicePlanSkuName
+    appServicePlanSkuTier: appServicePlanSkuTier
+    appServicePlanKind: appServicePlanKind
     location: location
     funcName: funcName
     aspName: aspName

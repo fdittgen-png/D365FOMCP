@@ -141,7 +141,13 @@ param(
     # expires, and the NAME cannot be reused until the soft-deleted copy is
     # recovered. Off by default so a routine deploy never flips it - the
     # existing tis-d-mcpd365fo-kv has it off.
-    [switch]$PurgeProtection
+    [switch]$PurgeProtection,
+
+    # App Service Plan overrides. Left empty they follow the LIVE plan, so
+    # -DeployInfra never attempts the plan family change Azure rejects.
+    [string]$AppServicePlanSkuName,
+    [string]$AppServicePlanSkuTier,
+    [string]$AppServicePlanKind
 )
 
 $ErrorActionPreference = 'Stop'
@@ -353,6 +359,44 @@ if ($DeployInfra) {
     # Report what the deploy would CHANGE; never flip the one-way switch silently.
     $kvPreName = "$Prefix-$Environment-$Workload-kv"
     $kvPre = az keyvault show --name $kvPreName --resource-group $ResourceGroup -o json 2>$null | ConvertFrom-Json
+
+    # The App Service Plan is the other resource this template can be REJECTED
+    # on rather than merely changing. tis-d-mcpd365fo-asp is EP1/ElasticPremium
+    # because that is the family a Premium Function App runs on; a template that
+    # asks for PremiumV3/linux is refused with BadRequest 11033 ("must not
+    # contain Function Apps"), because a family change requires emptying the
+    # plan first — i.e. deleting the Function App. Read the live plan and deploy
+    # what is actually there unless the operator overrides it deliberately.
+    $aspPreName = "$Prefix-$Environment-$Workload-asp"
+    $aspPre = az appservice plan show --name $aspPreName --resource-group $ResourceGroup -o json 2>$null | ConvertFrom-Json
+    if ($aspPre) {
+        $liveSku  = $aspPre.sku.name
+        $liveTier = $aspPre.sku.tier
+        $liveKind = $aspPre.kind
+        Write-Host "  App Service Plan '$aspPreName' exists (sku: $liveSku, tier: $liveTier, kind: $liveKind)" -ForegroundColor DarkGray
+
+        if (-not $AppServicePlanSkuName)  { $AppServicePlanSkuName  = $liveSku }
+        if (-not $AppServicePlanSkuTier)  { $AppServicePlanSkuTier  = $liveTier }
+        if (-not $AppServicePlanKind)     { $AppServicePlanKind     = $liveKind }
+
+        $familyChange = ($AppServicePlanSkuTier -ne $liveTier) -or ($AppServicePlanKind -ne $liveKind)
+        if ($familyChange) {
+            # Fail here with the real reason rather than letting ARM return
+            # BadRequest 11033 three minutes into the deployment.
+            throw ("App Service Plan family change requested ($liveTier/$liveKind -> " +
+                   "$AppServicePlanSkuTier/$AppServicePlanKind) on a plan that hosts Function Apps. " +
+                   "Azure rejects this (BadRequest 11033): the plan must be emptied first, which means " +
+                   "deleting '$FunctionAppName'. Re-run without the SKU overrides to deploy the live plan unchanged.")
+        }
+    } else {
+        # Fresh provision: EP1/ElasticPremium is the correct default for a
+        # Premium Function App.
+        if (-not $AppServicePlanSkuName) { $AppServicePlanSkuName = 'EP1' }
+        if (-not $AppServicePlanSkuTier) { $AppServicePlanSkuTier = 'ElasticPremium' }
+        if (-not $AppServicePlanKind)    { $AppServicePlanKind    = 'elastic' }
+        Write-Host "  App Service Plan '$aspPreName' does not exist — will create $AppServicePlanSkuName/$AppServicePlanSkuTier" -ForegroundColor DarkGray
+    }
+
     if ($kvPre) {
         $kvPurge = [bool]$kvPre.properties.enablePurgeProtection
         $kvRet   = [int]$kvPre.properties.softDeleteRetentionInDays
@@ -379,38 +423,48 @@ if ($DeployInfra) {
             prefix             = @{ value = $Prefix }
             budgetContactEmails = @{ value = @($BudgetEmails) }
             enablePurgeProtection = @{ value = [bool]$PurgeProtection }
+            appServicePlanSkuName = @{ value = $AppServicePlanSkuName }
+            appServicePlanSkuTier = @{ value = $AppServicePlanSkuTier }
+            appServicePlanKind    = @{ value = $AppServicePlanKind }
         }
     }
     $paramsObj | ConvertTo-Json -Depth 5 | Set-Content -Path $paramsFile -Encoding UTF8
     Write-Host "  Parameter file: $paramsFile" -ForegroundColor DarkGray
 
     Write-Host "  Deploying $templateFile (this takes 3-5 min)..." -ForegroundColor Yellow
-    $bicepResult = az deployment group create `
-        --resource-group $ResourceGroup `
-        --name $deploymentName `
-        --template-file $templateFile `
-        --parameters "@$paramsFile" `
-        --output json 2>&1
-    Remove-Item $paramsFile -Force -ErrorAction SilentlyContinue
-    if ($LASTEXITCODE -ne 0) { throw "Bicep deployment failed:`n$bicepResult" }
-    $bicepOut = ($bicepResult | ConvertFrom-Json).properties.outputs
-    Write-Host "  [OK] Function App URL: $($bicepOut.functionAppUrl.value)" -ForegroundColor Green
-
-    # Restore the registry only if the template actually blanked it: never
-    # clobber a value someone set between the capture above and now.
-    if ($script:PreservedCustomFieldSources) {
-        $nowSources = az functionapp config appsettings list `
-            --resource-group $ResourceGroup --name $preFuncName `
-            --query "[?name=='CUSTOM_FIELDS_SOURCES'].value | [0]" -o tsv 2>$null
-        if ([string]::IsNullOrWhiteSpace($nowSources)) {
-            $null = az functionapp config appsettings set `
+    try {
+        $bicepResult = az deployment group create `
+            --resource-group $ResourceGroup `
+            --name $deploymentName `
+            --template-file $templateFile `
+            --parameters "@$paramsFile" `
+            --output json 2>&1
+        Remove-Item $paramsFile -Force -ErrorAction SilentlyContinue
+        if ($LASTEXITCODE -ne 0) { throw "Bicep deployment failed:`n$bicepResult" }
+        $bicepOut = ($bicepResult | ConvertFrom-Json).properties.outputs
+        Write-Host "  [OK] Function App URL: $($bicepOut.functionAppUrl.value)" -ForegroundColor Green
+    }
+    finally {
+        # MUST run even when the deployment threw. A template deploy that got
+        # far enough to blank CUSTOM_FIELDS_SOURCES and then failed would
+        # otherwise leave every configured environment silently disabled —
+        # exactly the failure this preservation exists to prevent. Restoring
+        # only when the value is now empty means a failure before the app
+        # settings were touched is a no-op.
+        if ($script:PreservedCustomFieldSources) {
+            $nowSources = az functionapp config appsettings list `
                 --resource-group $ResourceGroup --name $preFuncName `
-                --settings "CUSTOM_FIELDS_SOURCES=$script:PreservedCustomFieldSources" --output none 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host '  [OK] CUSTOM_FIELDS_SOURCES restored' -ForegroundColor Green
-            } else {
-                Write-Warning '  Could not restore CUSTOM_FIELDS_SOURCES - re-run Set-D365CustomFieldsSource.ps1 per environment.'
-                Write-Warning "  Preserved value (secret-free): $script:PreservedCustomFieldSources"
+                --query "[?name=='CUSTOM_FIELDS_SOURCES'].value | [0]" -o tsv 2>$null
+            if ([string]::IsNullOrWhiteSpace($nowSources)) {
+                $null = az functionapp config appsettings set `
+                    --resource-group $ResourceGroup --name $preFuncName `
+                    --settings "CUSTOM_FIELDS_SOURCES=$script:PreservedCustomFieldSources" --output none 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host '  [OK] CUSTOM_FIELDS_SOURCES restored' -ForegroundColor Green
+                } else {
+                    Write-Warning '  Could not restore CUSTOM_FIELDS_SOURCES - re-run Set-D365CustomFieldsSource.ps1 per environment.'
+                    Write-Warning "  Preserved value (secret-free): $script:PreservedCustomFieldSources"
+                }
             }
         }
     }
