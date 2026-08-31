@@ -21,7 +21,15 @@ Security roles assignment_*.csv
 
 # Local-only deployment workspace — refactored Deploy.ps1 + npm cache.
 # Defaults may contain operator-specific RG / function app / contact info.
-local-deploy/
+# local-deploy/ — the deployment orchestrator IS tracked (it is the only way to
+# deploy this project, and an untracked copy meant its fixes lived on one box).
+# Only the volatile and machine-specific parts stay ignored.
+local-deploy/logs/
+local-deploy/.npm-cache/
+local-deploy/.npm-cache-hash
+local-deploy/skill-workspaces/
+local-deploy/skill-zips/
+local-deploy/pim-activate.json
 
 # Security DMF data exports — contain real role/user/duty data. Keep local-only;
 # never publish to the (public) repo. Feeds build/build-sec.js.
