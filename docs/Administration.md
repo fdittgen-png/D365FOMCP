@@ -771,6 +771,127 @@ The wiki routes log to the same App Insights instance as the other MCPs. Useful 
 - `wiki-mcp catalog error: <msg>` — registry failed to load
 - `wiki-mcp registry error: <msg>` — per-request registry resolution failed
 - `wiki-mcp[<name>] error: <msg>` — MCP transport-level error for a specific wiki
+## 13. Live UI Custom Fields (issues #87–#91)
+
+### Why this exists
+
+Fields added through **System administration > Setup > Custom fields** (the `_Custom` suffix) are stored in a
+*runtime* table extension: `SysCustomFieldModel.getExtensionFieldsForTable()` reads them via
+`tableExtensionManager.GetRuntimeExtension(tableName, SysCustomFieldConstants::ExtensionName)`. They exist in the
+environment and in **no deployed package metadata**, so the KB build cannot see them — `SELECT COUNT(*) FROM
+fields WHERE field_name LIKE '%_Custom'` on a freshly built KB is 0, permanently.
+
+They are also not exportable: the definition table is `SysCustomFieldDefinitionTmp`, a temp table filled on
+demand, and the only related data entity (`SysCustomFieldPicklistValueEntity`) covers picklist *values*.
+
+The consequence was a **false negative**: `d365_check_field_exists('SalesTable', 'TBGSecondaryContact_Custom')`
+answered "does not exist" about a field that is real. The KB service now resolves such names live from an
+environment's OData `/data/$metadata`, where they appear because `SysCustomFieldModel.updateEntityExtensions()`
+propagates every custom field onto the data entities.
+
+### Prerequisites (D365 side — the script cannot do these)
+
+1. An Entra **app registration** (web/confidential client) with a client secret.
+2. That client id registered in the target environment under
+   **System administration > Setup > Microsoft Entra applications**, against a service account user.
+
+Reading `$metadata` needs nothing more. Note that the service account governs OData **data** access, which this
+feature deliberately never uses: only entity and property *names* are read, never rows.
+
+### Provision the vault (one-time)
+
+`infra/main.bicep` has always computed `kvName`; the vault resource itself arrived with issue #88. Deploying the
+template now creates it and grants the Function App's system-assigned identity **Key Vault Secrets User** —
+read secret values, nothing else. It cannot write a secret; that is the operator's job below.
+
+```powershell
+pwsh .\scripts\Deploy-Infrastructure.ps1        # creates tis-<env>-mcpd365fo-kv + role assignment
+```
+
+### Configure an environment
+
+```powershell
+pwsh .\scripts\Set-D365CustomFieldsSource.ps1 `
+    -Key lade-uat -Title 'LADE D365 UAT' `
+    -Url https://ladeuat.sandbox.operations.dynamics.com `
+    -TenantId <guid> -ClientId <guid> -Default
+```
+
+Prompts for the client secret, writes it to Key Vault, merges the environment into the Function App's
+`CUSTOM_FIELDS_SOURCES` registry, then validates the chain end to end (token, then a ranged GET of `$metadata`,
+reporting the EDMX version). The secret goes to the vault and **nowhere else** — not the registry, not Bicep, not
+the repo, not the script's output.
+
+| Command | Purpose |
+|---|---|
+| `-List` | Configured sources, secret names only |
+| `-Key <k> -Validate` | Re-test one source without writing |
+| `-Key <k> -Remove [-DeleteSecret]` | Deprovision. `-DeleteSecret` is separate because the vault has purge protection |
+| `-WhatIf` | Print the `az` commands without executing them |
+
+Guardrails: refuses a non-`https` URL; refuses a Function App name off the naming convention without `-Force`
+(a typo would write settings onto an unrelated app); requires typed confirmation when the URL does not look like
+a sandbox, because the stored credential can read that environment's OData.
+
+### Using it
+
+```
+d365_custom_fields { }                                     → configured sources + cache state, no network call
+d365_custom_fields { table_name: 'SalesTable' }             → custom fields attributable to that table
+d365_custom_fields { field_name: 'TBGSecondaryContact_Custom' }
+d365_lookup_table  { table_name: 'SalesTable', include_custom_fields: true }
+d365_check_field_exists { table_name: 'SalesTable', field_names: ['TBGSecondaryContact_Custom'] }
+```
+
+**What you get per field.** Existence, the entity it was observed on, and its type:
+
+| Column | Source | Note |
+|---|---|---|
+| `property_name` | observed | The field name, suffix included |
+| `type` | observed | The **EDM** type: `Edm.String`, `Edm.Int32`, `Edm.Decimal`, `Edm.Date`, `Edm.DateTimeOffset`, or a namespaced enum (a checkbox custom field is a `NoYes` enum). **Not** the D365 EDT name |
+| `max_length` | observed | Strings only; `null` on every other type — never `0` |
+| `nullable` | observed | OData 4.0 defaults an omitted `Nullable` to `true`, and that default is applied |
+| `table_name` | **derived** | See below |
+
+**The one type gap:** a **picklist** custom field is indistinguishable from Text in `$metadata` — its EDT is
+`SysCustomFieldPicklistValue`, so it arrives as `Edm.String` with a `MaxLength`. Its allowed values are *not* in
+that document; they live in `SysCustomFieldPicklist` / `SysCustomFieldPicklistValues`, exposed as the
+`CustomFieldPicklistValue` OData entity. Enriching from there would be the first call that reads OData *rows*
+rather than metadata, so it is deliberately not implemented — do not infer a picklist's values from this tool.
+
+Two further properties worth knowing:
+
+- **`table_name` attribution is derived.** `$metadata` reports *entity* properties; a custom field is created on
+  a table and propagated to the entities exposing it, so entity → table is inference. Every row carries
+  `attribution`: `primary-table` (the entity's primary table is this table), `derived` (the table is one of the
+  entity's data sources), or `unresolved`. Do not quote a derived table name as observed.
+- **Failure degrades, never breaks.** A field check with no `_Custom` name makes zero network calls. If the
+  environment is unreachable or unconfigured, a `_Custom` check still returns the field-class explanation rather
+  than asserting absence — which is the part that prevents the wrong conclusion.
+
+### Operational notes
+
+| Item | Value |
+|---|---|
+| Cache | 15 min per environment (`CUSTOM_FIELDS_CACHE_TTL_SECONDS`); `refresh: true` bypasses it |
+| Secret cache | 1 h (`KEY_VAULT_SECRET_TTL_SECONDS`) |
+| Size ceiling | 256 MB (`CUSTOM_FIELDS_MAX_BYTES`) — aborts rather than returning a partial inventory as complete |
+| Timeout | 30 s (`CUSTOM_FIELDS_TIMEOUT_MS`) |
+| App-setting writes | restart the Function App; the next call is a cold start |
+| Template redeploys | `infra` sets `CUSTOM_FIELDS_SOURCES` to empty. Re-run the script after a template deploy, or keep the baseline in `config/custom-field-sources.json` (committed, secret-free) |
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `No D365 environment is configured as a custom-field source` | Registry empty — run the script, or check `-List` |
+| `Token request … failed (HTTP 401)` | Wrong/expired secret, or the client id is not under **Microsoft Entra applications** |
+| `returned HTTP 403 for /data/$metadata` | The service account behind the app registration lacks access |
+| `Could not read secret … from vault` | Managed identity missing **Key Vault Secrets User** — redeploy the template |
+| Custom field found but `attribution: unresolved` | The entity is not in the KB snapshot; the field is real, the table mapping is unknown |
+
+---
+
 ## 11. Dependency Update Policy
 
 The runtime is locked to a single Node.js major version and selected dependencies are pinned to exact versions to prevent uncontrolled drift in the deployed Azure Function App and local MCP servers.

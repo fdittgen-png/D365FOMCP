@@ -25,6 +25,7 @@ import { registerSecTools } from '../src/azure/sec-tools.js';
 import { registerTaskRecorderTools } from '../src/azure/taskrecorder-tools.js';
 import { registerWikiTools } from '../src/azure/wiki-tools.js';
 import { registerIsvKbTools } from '../src/azure/isv-kb-tools.js';
+import { registerCustomFieldTools } from '../src/azure/custom-fields-tools.js';
 import { registerIsvXrefTools } from '../src/azure/isv-xref-tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -117,9 +118,12 @@ function firstSentence(d) {
 }
 
 export function generate() {
-  // The sealed-ISV tools register onto the same two services, so they belong
-  // in the same reference files (issue #82).
-  const kb = captureServer(); registerKbTools(kb, stubDb); registerIsvKbTools(kb, stubDb);
+  // The sealed-ISV tools (#82) and the live custom-field tool (#90) register
+  // onto the same services, so they belong in the same reference files.
+  const kb = captureServer();
+  registerKbTools(kb, stubDb);
+  registerIsvKbTools(kb, stubDb);
+  registerCustomFieldTools(kb, stubDb);
   const xref = captureServer(); registerXrefTools(xref, stubDb); registerIsvXrefTools(xref, stubDb);
   const sec = captureServer(); registerSecTools(sec, stubDb);
   const tr = captureServer(); registerTaskRecorderTools(tr);

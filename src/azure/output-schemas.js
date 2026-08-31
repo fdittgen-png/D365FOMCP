@@ -39,6 +39,72 @@ export const modelVersionRowSchema = z.object({
   version: z.string().nullable(),  // VersionMajor.Minor.Build.Revision
 });
 
+// ── Issue #87/#90: UI custom fields, read live from an environment ───────────
+//
+// Naming note: `d365LookupTableOutput.custom_field_count` already means
+// "fields added by an AxTableExtension" — a build-time customisation. These are
+// a different animal: fields created through System administration > Setup >
+// Custom fields, which live in a runtime table extension and appear in NO
+// build snapshot. They are therefore called `ui_custom_fields` wherever both
+// concepts can appear in one payload.
+
+/** One configured environment, secret-free (`secret_name` is a NAME). */
+export const d365CustomFieldSourceSchema = z.object({
+  environment: z.string(),
+  title: z.string(),
+  url: z.string(),
+  is_default: z.boolean(),
+  origin: z.string().nullable().describe('Where the registry entry came from: app setting, config file, or env.'),
+  cached: z.boolean(),
+  cached_property_count: z.number().nullable(),
+  fetched_at: z.string().nullable(),
+  cache_expires_in_seconds: z.number().nullable(),
+  last_error: z.string().nullable(),
+});
+
+/** One custom field as observed in an environment's OData $metadata.
+ *
+ *  `entity_name` + `property_name` are OBSERVED. `table_name` is DERIVED: the
+ *  field is created on a table and propagated to the entities exposing it, so
+ *  the entity → table direction is inference, resolved locally against the KB's
+ *  data_entities / entity_fields. `attribution` records which it is, and must
+ *  never be dropped when rendering. */
+export const d365UiCustomFieldSchema = z.object({
+  entity_name: z.string(),
+  property_name: z.string(),
+  type: z.string().nullable(),
+  nullable: z.boolean().nullable(),
+  max_length: z.number().nullable(),
+  table_name: z.string().nullable(),
+  attribution: z.enum(['primary-table', 'derived', 'unresolved']),
+});
+
+/** The custom-field block attached to a resolved field check. */
+export const d365UiCustomFieldMatchSchema = z.object({
+  environment: z.string(),
+  entity_name: z.string(),
+  property_name: z.string(),
+  type: z.string().nullable(),
+  max_length: z.number().nullable(),
+  fetched_at: z.string(),
+});
+
+export const d365CustomFieldsOutput = z.object({
+  environment: z.string().nullish(),
+  title: z.string().nullish(),
+  url: z.string().nullish(),
+  fetched_at: z.string().nullish(),
+  cached: z.boolean().nullish(),
+  entity_count: z.number().nullish(),
+  property_count: z.number().nullish().describe('Custom properties found in the environment.'),
+  shown: z.number().nullish().describe('Rows in `fields` after filters and limit.'),
+  fields: z.array(d365UiCustomFieldSchema).nullish(),
+  // Present when the tool is called with no filter, or when no source is
+  // configured: "what can I even query" answered in the same call.
+  sources: z.array(d365CustomFieldSourceSchema).nullish(),
+  note: z.string().nullish(),
+});
+
 // ── Pilot 1: d365_lookup_table ───────────────────────────────────────────────
 
 export const d365LookupTableFieldSchema = z.object({
@@ -105,6 +171,13 @@ export const d365LookupTableOutput = z.object({
   outgoing_relations: z.array(d365LookupTableRelationSchema),
   incoming_relations: z.array(d365LookupTableIncomingRelationSchema),
   incoming_relations_truncated: z.boolean(),
+  // Issue #90 — present only with include_custom_fields=true. A SEPARATE
+  // block: UI custom fields are live environment state and must never be
+  // interleaved into `fields`, which means "declared in a scanned model".
+  ui_custom_fields: z.array(d365UiCustomFieldSchema).nullish(),
+  ui_custom_field_environment: z.string().nullish(),
+  ui_custom_field_fetched_at: z.string().nullish(),
+  ui_custom_field_note: z.string().nullish().describe('Why the live block is absent or partial.'),
 });
 
 // ── Pilot 2: d365_get_class_methods ──────────────────────────────────────────
@@ -340,6 +413,13 @@ export const d365CheckFieldResultSchema = z.object({
   correct_name: z.string().nullable(),
   note: z.string().nullable(),
   similar: z.array(z.string()),
+  // Issue #90 — where the field was found. 'build-metadata' is the scanned
+  // snapshot (the historical, implicit meaning of exists=true);
+  // 'custom-field' means it was resolved live from a D365 environment because
+  // it is a UI custom field and therefore absent from every build snapshot by
+  // design. Nullish on databases/clients that predate the distinction.
+  origin: z.enum(['build-metadata', 'custom-field']).nullish(),
+  custom_field: d365UiCustomFieldMatchSchema.nullish(),
 });
 // One table's field checks. `found` distinguishes "table does not exist" from
 // "table exists and none of these fields do" — collapsing those two into an

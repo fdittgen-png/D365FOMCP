@@ -73,6 +73,22 @@ module func 'modules/functionApp.bicep' = {
   }
 }
 
+// ─── Key Vault ──────────────────────────────────────────
+// Deployed after the Function App: the role assignment needs its
+// system-assigned principal. The app does not depend on this module in return
+// (its KEY_VAULT_NAME setting is the same computed `kvName` string), so there
+// is no cycle. Issue #88.
+module keyVault 'modules/keyVault.bicep' = {
+  scope: rg
+  name: 'keyVault'
+  params: {
+    location: location
+    kvName: kvName
+    functionAppPrincipalId: func.outputs.functionAppPrincipalId
+    tags: tags
+  }
+}
+
 // ─── Cost Alerts ────────────────────────────────────────
 module costAlerts 'modules/costAlerts.bicep' = {
   scope: rg
@@ -87,5 +103,7 @@ module costAlerts 'modules/costAlerts.bicep' = {
 // ─── Outputs ────────────────────────────────────────────
 output resourceGroupName string = rg.name
 output functionAppUrl string = func.outputs.functionAppUrl
+output keyVaultName string = keyVault.outputs.keyVaultName
+output keyVaultUri string = keyVault.outputs.keyVaultUri
 output storageBudgetName string = costAlerts.outputs.budgetName
 output storageBudgetAmount int = costAlerts.outputs.budgetAmount

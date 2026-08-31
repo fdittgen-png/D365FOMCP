@@ -29,6 +29,14 @@ import {
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
 import { z } from 'zod';
+import { isCustomFieldName } from './custom-fields.js';
+import { hasIsvData } from './isv-schema.js';
+import {
+  resolveCustomFieldChecks,
+  customFieldsForTable,
+  customFieldClassNote,
+  customFieldKey,
+} from './custom-fields-tools.js';
 import {
   d365LookupTableOutput,
   d365GetClassMethodsOutput,
@@ -121,11 +129,13 @@ export function registerKbTools(server, db) {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'),
         fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field.'),
         custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
+        include_custom_fields: z.boolean().optional().default(false).describe('Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call.'),
+        environment: z.string().min(1).max(100).optional().describe('Environment key for include_custom_fields. Defaults to the source marked default.'),
         format: formatTextParam,
       },
       outputSchema: d365LookupTableOutput.shape,
     },
-    async ({ table_name, fields_like, custom_only, format }) => {
+    async ({ table_name, fields_like, custom_only, include_custom_fields, environment, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
 
@@ -330,6 +340,30 @@ export function registerKbTools(server, db) {
           ['From Table', 'Relation', 'Join Fields'],
         );
         if (typed.incoming_relations_truncated) out += truncationNote('hard', INCOMING_CAP);
+      }
+
+      // Issue #90 — opt-in live block. Kept strictly separate from `fields`:
+      // a `fields` row means "declared in a scanned model at build X", while a
+      // UI custom field is environment state that no build snapshot contains.
+      // Merging them would make a UAT-only field indistinguishable from a
+      // build fact, which is the confusion the ADR (#87) exists to prevent.
+      if (include_custom_fields === true) {
+        const live = await customFieldsForTable(db, typed.table_name, { environment });
+        typed.ui_custom_fields = live.fields;
+        typed.ui_custom_field_environment = live.environment;
+        typed.ui_custom_field_fetched_at = live.fetched_at;
+        typed.ui_custom_field_note = live.note;
+
+        out += '\n## UI custom fields (live)\n';
+        if (live.note) {
+          out += `_Not available: ${live.note}_\n`;
+        } else if (!live.fields.length) {
+          out += `_None on this table in ${live.environment} as of ${live.fetched_at}._\n`;
+        } else {
+          out += `_Live from ${live.environment}, fetched ${live.fetched_at} — environment-local, not in the build snapshot._\n\n`;
+          out += formatMarkdownTable(live.fields, ['property_name', 'type', 'max_length', 'nullable', 'entity_name', 'attribution']);
+          out += '\n';
+        }
       }
 
       return structuredResult(typed, out, format);
@@ -737,6 +771,8 @@ export function registerKbTools(server, db) {
               correct_name: allFields.find(r => r.field_name.toUpperCase() === fnUpper).field_name,
               note: null,
               similar: [],
+              origin: 'build-metadata',
+              custom_field: null,
             };
           }
           const trap = q(
@@ -754,6 +790,8 @@ export function registerKbTools(server, db) {
             correct_name: null,
             note: trap.length > 0 ? trap[0].explanation : null,
             similar,
+            origin: null,
+            custom_field: null,
           };
         });
 
@@ -764,7 +802,9 @@ export function registerKbTools(server, db) {
         let s = '|Field|Exists|Note|\n|---|---|---|\n';
         for (const c of checks) {
           if (c.exists) {
-            s += `|${c.field_name}|YES|${c.correct_name}|\n`;
+            // `note` is null for a snapshot hit and carries the provenance
+            // sentence for a field resolved live (issue #90).
+            s += `|${c.field_name}|YES|${c.note || c.correct_name}|\n`;
           } else {
             let note = 'DOES NOT EXIST';
             if (c.note) note += ` -- ${c.note}`;
@@ -775,9 +815,106 @@ export function registerKbTools(server, db) {
         return s;
       };
 
+      /**
+       * Issue #90 — stop answering "does not exist" to a UI custom field.
+       *
+       * A field name carrying the `_Custom` framework suffix lives in a runtime
+       * table extension (SysCustomFieldModel.getExtensionFieldsForTable), so it
+       * is absent from every build snapshot BY DESIGN and a bare not-found here
+       * is a false negative — the exact wrong answer that cost real analysis
+       * time on work item 99957.
+       *
+       * Two properties this pass must keep:
+       *   - a check with no suffixed name makes NO network call (the early
+       *     return below), so normal field checks keep their latency;
+       *   - a live-source failure never fails the check — the caller still gets
+       *     the class explanation, which is what prevents the wrong conclusion.
+       *
+       * Mutates `tableResults` in place.
+       */
+      const applyCustomFieldPass = async (tableResults) => {
+        const wanted = [];
+        for (const t of tableResults) {
+          for (const c of t.checks) {
+            if (!c.exists && isCustomFieldName(c.field_name)) {
+              wanted.push({ table_name: t.table_name, field_name: c.field_name });
+            }
+          }
+        }
+        if (!wanted.length) return;
+
+        const { resolved, environment, fetched_at, note } = await resolveCustomFieldChecks(db, wanted);
+
+        for (const t of tableResults) {
+          for (const c of t.checks) {
+            if (c.exists || !isCustomFieldName(c.field_name)) continue;
+            const hit = resolved.get(customFieldKey(t.table_name, c.field_name));
+            if (hit) {
+              c.exists = true;
+              c.correct_name = hit.property_name;
+              c.origin = 'custom-field';
+              c.custom_field = {
+                environment: hit.environment,
+                entity_name: hit.entity_name,
+                property_name: hit.property_name,
+                type: hit.type,
+                max_length: hit.max_length,
+                fetched_at: hit.fetched_at,
+              };
+              c.note = `UI custom field — resolved live from ${hit.environment} via entity ${hit.entity_name} (${hit.attribution}).`;
+            } else if (note) {
+              // No source configured, or the environment could not be read:
+              // explain the field class rather than asserting a negative.
+              c.note = note;
+            } else {
+              // An EVIDENCED negative: we did look, in a named environment, at
+              // a known point in time.
+              c.note = customFieldClassNote(`Checked against ${environment} at ${fetched_at}: not present there.`);
+            }
+          }
+        }
+      };
+
+      /**
+       * Issue #90 — the sibling invisibility class.
+       *
+       * `LAC*` / `PRN*` fields on Microsoft tables come from binary-only ISV
+       * models (`SalesConfirmDetailsTmp.LACTransRefRecId` is a real field the
+       * KB reports as missing, because the model ships no XML for any build to
+       * scan). Same wrong answer as the `_Custom` case, different cause and
+       * different fix — so it gets the same treatment: explain why the name is
+       * invisible to a build snapshot instead of asserting absence.
+       *
+       * Purely local: no network call, no extra query beyond the one-off
+       * `hasIsvData` probe that decides whether to point at `d365_isv_lookup`
+       * or at the offline inventory.
+       */
+      const applySealedIsvNote = (tableResults) => {
+        const sealedName = (n) => /^(LAC|PRN)/i.test(String(n));
+        const anySealed = tableResults.some(t => t.checks.some(c => !c.exists && sealedName(c.field_name)));
+        if (!anySealed) return;
+
+        let isvAvailable = false;
+        try { isvAvailable = hasIsvData(db); } catch { isvAvailable = false; }
+        const where = isvAvailable
+          ? 'Look it up with d365_isv_lookup.'
+          : 'This KB carries no sealed-ISV inventory — check the ISV model metadata directly.';
+
+        for (const t of tableResults) {
+          for (const c of t.checks) {
+            if (c.exists || !sealedName(c.field_name) || c.note) continue;
+            c.note = 'LAC/PRN prefix — this may be an extension field added by a binary-only ISV model ' +
+              '(no X++ source, no Ax<Type> XML), which no build scan can see, so its absence here is not ' +
+              `evidence that it does not exist. ${where}`;
+          }
+        }
+      };
+
       if (!batchMode) {
         const result = checkTable(requests[0]);
         if (!result) return notFoundResult('Table', requests[0].table_name);
+        await applyCustomFieldPass([result]);
+        applySealedIsvNote([result]);
 
         // Exactly the pre-batching payload — no batch keys.
         const typed = {
@@ -796,6 +933,9 @@ export function registerKbTools(server, db) {
         if (r) results.push(r);
         else notFound.push(req.table_name);
       }
+
+      await applyCustomFieldPass(results);
+      applySealedIsvNote(results);
 
       const typed = {
         requested_count: requests.length,

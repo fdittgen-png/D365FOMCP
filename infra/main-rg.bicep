@@ -26,6 +26,7 @@ var funcName  = '${prefix}-${env}-${workload}-func'
 var aspName   = '${prefix}-${env}-${workload}-asp'
 var stName    = '${prefix}${env}${workload}st'
 var appiName  = '${prefix}-${env}-${workload}-appi'
+var kvName    = '${prefix}-${env}-${workload}-kv'
 var logName   = '${prefix}-${env}-${workload}-log'
 var budgetName = '${prefix}-${env}-${workload}-storage-budget'
 
@@ -56,7 +57,23 @@ module func 'modules/functionApp.bicep' = {
     funcName: funcName
     aspName: aspName
     stName: stName
+    kvName: kvName
     appiConnectionString: monitoring.outputs.appiConnectionString
+    tags: tags
+  }
+}
+
+// ─── Key Vault ──────────────────────────────────────────
+// Deployed after the Function App: the role assignment needs its
+// system-assigned principal. The app does not depend on this module in return
+// (its KEY_VAULT_NAME setting is the same computed `kvName` string), so there
+// is no cycle. Issue #88.
+module keyVault 'modules/keyVault.bicep' = {
+  name: 'keyVault'
+  params: {
+    location: location
+    kvName: kvName
+    functionAppPrincipalId: func.outputs.functionAppPrincipalId
     tags: tags
   }
 }
@@ -73,5 +90,7 @@ module costAlerts 'modules/costAlerts.bicep' = {
 
 // ─── Outputs ────────────────────────────────────────────
 output functionAppUrl string = func.outputs.functionAppUrl
+output keyVaultName string = keyVault.outputs.keyVaultName
+output keyVaultUri string = keyVault.outputs.keyVaultUri
 output storageBudgetName string = costAlerts.outputs.budgetName
 output storageBudgetAmount int = costAlerts.outputs.budgetAmount

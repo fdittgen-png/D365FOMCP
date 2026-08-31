@@ -5,6 +5,9 @@ param stName string
 param appiConnectionString string
 param tags object
 
+@description('Key Vault name. main.bicep has always passed this; until issue #88 it was never declared here, so the value was silently dropped. Surfaced to the app as KEY_VAULT_NAME so src/azure/key-vault.js can resolve secrets under the managed identity.')
+param kvName string
+
 // ─── Storage Account ────────────────────────────────────
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: stName
@@ -153,6 +156,30 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'XREF_DB_PATH'
           value: '/home/data/d365fo_xref.sqlite'
+        }
+        // ─── Key Vault + live custom fields (issues #87, #88) ──
+        // KEY_VAULT_NAME is all the runtime needs: key-vault.js builds the
+        // vault URI from it and authenticates with the system-assigned
+        // identity, which keyVault.bicep grants "Key Vault Secrets User".
+        {
+          name: 'KEY_VAULT_NAME'
+          value: kvName
+        }
+        // Registry of D365 environments the custom-field reader may query.
+        // A JSON array, SECRET-FREE by construction: each entry names a Key
+        // Vault secret, it never carries one. Empty here on purpose — set
+        // post-deploy with scripts/Set-D365CustomFieldsSource.ps1, which merges
+        // entries by key so a redeploy of this template does not wipe them
+        // (Bicep would: an empty value here overwrites). Keep the committed
+        // baseline in config/custom-field-sources.json instead if it should
+        // survive a template deploy.
+        {
+          name: 'CUSTOM_FIELDS_SOURCES'
+          value: ''
+        }
+        {
+          name: 'CUSTOM_FIELDS_CACHE_TTL_SECONDS'
+          value: '900'
         }
         // ─── OTRS extractor (Function: otrs-extract) ──────────
         // The OTRS TicketSearch/TicketGet filters and endpoint URLs are

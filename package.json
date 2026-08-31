@@ -21,6 +21,7 @@
     "test:xref": "node --test test/xref-tools.test.js",
     "test:taskrecorder": "node --test test/taskrecorder-parser.test.js",
     "test:isv": "node --test test/isv-parsers.test.js",
+    "test:customfields": "node --test test/custom-fields.test.js test/custom-fields-tools.test.js",
     "test:integration": "node --test test/integration/*.test.js",
     "start:azure": "func start",
     "gen:plugin-refs": "node build/gen-plugin-tool-refs.js",
@@ -31,6 +32,8 @@
   },
   "dependencies": {
     "@azure/functions": "^4.9.0",
+    "@azure/identity": "^4.13.2",
+    "@azure/keyvault-secrets": "^4.11.2",
     "@azure/storage-blob": "^12.31.0",
     "@modelcontextprotocol/sdk": "1.27.0",
     "adm-zip": "0.5.16",

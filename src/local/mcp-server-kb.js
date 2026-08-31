@@ -13,6 +13,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerKbTools } from '../azure/kb-tools.js';
 import { registerIsvKbTools } from '../azure/isv-kb-tools.js';
+import { registerCustomFieldTools } from '../azure/custom-fields-tools.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const require = createRequire(import.meta.url);
@@ -34,6 +35,7 @@ const server = new McpServer(serverInfo('kb'), serverOptions('kb'));
 
 registerKbTools(server, db);
 registerIsvKbTools(server, db);
+registerCustomFieldTools(server, db);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });

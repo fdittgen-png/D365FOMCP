@@ -11,6 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { getKbDb } from '../azure/shared.js';
 import { registerKbTools } from '../azure/kb-tools.js';
 import { registerIsvKbTools } from '../azure/isv-kb-tools.js';
+import { registerCustomFieldTools } from '../azure/custom-fields-tools.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
@@ -19,6 +20,7 @@ function createKbServer(baseUrl) {
   const server = new McpServer(serverInfo('kb', { baseUrl }), serverOptions('kb'));
   registerKbTools(server, getKbDb());
   registerIsvKbTools(server, getKbDb());
+  registerCustomFieldTools(server, getKbDb());
   return server;
 }
 

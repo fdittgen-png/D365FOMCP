@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hand-written EDMX fixture for test/custom-fields.test.js.
+
+  Taken from NO real environment: every namespace, entity and field name below
+  is invented. It exercises the shapes the scanner has to survive, not any
+  customer's data:
+    - a custom property alongside standard ones
+    - two custom properties on one entity
+    - a custom property on a staging entity (the updateStagingTable path)
+    - a custom property inside a ComplexType (must still be attributed)
+    - a Property before any type opens (must be ignored)
+    - a self-closing EntityType (must not stay "current")
+    - a Property tag with attributes in an unusual order and extra whitespace
+    - a name that merely contains "_Custom" but does not end with it
+-->
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="Fixture.DataEntities" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+
+      <Property Name="OrphanBefore_Custom" Type="Edm.String" />
+
+      <EntityType Name="WidgetOrderHeader">
+        <Key>
+          <PropertyRef Name="OrderNumber" />
+        </Key>
+        <Property Name="OrderNumber" Type="Edm.String" Nullable="false" MaxLength="20" />
+        <Property Name="dataAreaId" Type="Edm.String" MaxLength="4" />
+        <Property Name="SecondaryContact_Custom" Type="Edm.String" Nullable="true" MaxLength="100" />
+        <Property Name="SecondaryContactPhone_Custom" Type="Edm.String" MaxLength="30" />
+        <Property Name="Custom_NotASuffixMatch" Type="Edm.String" MaxLength="10" />
+        <!-- The type variety a D365 custom field can take in $metadata: the
+             UI offers Text / Integer / Real / Date / Date and time / Checkbox /
+             Picklist, and each surfaces differently here. A picklist arrives as
+             a plain string (its EDT is SysCustomFieldPicklistValue) with its
+             allowed values NOWHERE in $metadata. -->
+        <Property Name="OrderCount_Custom" Type="Edm.Int32" Nullable="false" />
+        <Property Name="Weighting_Custom" Type="Edm.Decimal" Nullable="true" Scale="Variable" />
+        <Property Name="ReviewedOn_Custom" Type="Edm.DateTimeOffset" Nullable="true" />
+        <Property Name="ReviewedDate_Custom" Type="Edm.Date" Nullable="true" />
+        <Property Name="IsFlagged_Custom" Type="Fixture.DataEntities.NoYes" Nullable="false" />
+        <Property Name="HandlingCode_Custom" Type="Edm.String" MaxLength="10" Nullable="true" />
+        <NavigationProperty Name="Lines" Type="Collection(Fixture.DataEntities.WidgetOrderLine)" />
+      </EntityType>
+
+      <EntityType Name="WidgetOrderLine">
+        <Key>
+          <PropertyRef Name="LineNumber" />
+        </Key>
+        <Property Name="LineNumber" Type="Edm.Int32" Nullable="false" />
+        <Property Name="ItemNumber" Type="Edm.String" MaxLength="20" />
+      </EntityType>
+
+      <EntityType Name="WidgetOrderHeaderStaging">
+        <Key>
+          <PropertyRef Name="DefinitionGroup" />
+        </Key>
+        <Property Name="DefinitionGroup" Type="Edm.String" MaxLength="40" />
+        <Property Type="Edm.String"    Name="SecondaryContact_Custom"     MaxLength="100"   Nullable="true" />
+      </EntityType>
+
+      <EntityType Name="SelfClosingThing" BaseType="Fixture.DataEntities.WidgetOrderLine" />
+
+      <Property Name="OrphanBetween_Custom" Type="Edm.String" />
+
+      <ComplexType Name="WidgetAddressPart">
+        <Property Name="Street" Type="Edm.String" MaxLength="60" />
+        <Property Name="RegionCode_Custom" Type="Edm.String" MaxLength="8" Nullable="false" />
+      </ComplexType>
+
+      <EntityContainer Name="Resources">
+        <EntitySet Name="WidgetOrderHeaders" EntityType="Fixture.DataEntities.WidgetOrderHeader" />
+        <EntitySet Name="WidgetOrderLines" EntityType="Fixture.DataEntities.WidgetOrderLine" />
+      </EntityContainer>
+
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>
