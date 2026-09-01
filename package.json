@@ -9,6 +9,8 @@
     "build:xref": "node --env-file-if-exists=.env --max-old-space-size=8192 build/build-xref-db.js",
     "build:sec": "node --env-file-if-exists=.env build/build-sec.js",
     "build:isv": "node --env-file-if-exists=.env build/isv-scan.js",
+    "update:xref": "node --env-file-if-exists=.env build/update-xref-module.js",
+    "update:kb": "node --env-file-if-exists=.env build/update-kb-model.js",
     "start:kb": "node src/local/mcp-server-kb.js",
     "start:xref": "node src/local/mcp-server-xref.js",
     "start:sec": "node src/local/mcp-server-sec.js",

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Post-compile trigger for the D365FO MCP databases.
+
+  INSTALL: copy this file to the directory that CONTAINS your X++ projects, e.g.
+      C:\Workspace\DEV\Projects\Directory.Build.targets
+  MSBuild auto-imports Directory.Build.targets from the nearest ancestor
+  directory (Microsoft.Common.targets does the import), so every .rnrproj
+  beneath it picks this up with no project edits. Uninstall = delete the file.
+
+  WHY AfterTargets="Build;Rebuild"
+  Microsoft.Dynamics.Framework.Tools.BuildTasks.targets defines exactly three
+  targets - Build, Rebuild and CreateManifestResourceNames. MSBuild runs an
+  AfterTargets target only when the target it follows completed without error,
+  so "refresh if the compilation succeeded" needs no extra condition.
+
+  WHY IT DOES NOT WAIT
+  Exec with a hidden, detached process. The refresh takes ~2 minutes against a
+  3.5 GB cross-reference database; running it inline would freeze Visual Studio
+  after every single build. ContinueOnError keeps a refresh problem from ever
+  failing an X++ build - the developer's compile is not this feature's business.
+
+  WHAT FIRES IT
+  A *project* build. The Dynamics 365 > "Build models" dialog drives the
+  compiler directly and never goes through MSBuild, so it will not fire this.
+  Refresh-McpData.ps1 guards against that with a per-module fingerprint, and the
+  same script can be run by hand or on a timer to cover that path.
+
+  DISABLE without deleting: set the environment variable
+      D365FO_MCP_AUTOREFRESH=0
+-->
+<Project>
+
+  <PropertyGroup>
+    <!-- Point this at your clone if it is not C:\working\MCP. -->
+    <D365foMcpRepo Condition="'$(D365foMcpRepo)' == ''">C:\working\MCP</D365foMcpRepo>
+    <D365foMcpRefreshScript>$(D365foMcpRepo)\local-deploy\Refresh-McpData.ps1</D365foMcpRefreshScript>
+
+    <!-- Fires only when: the switch is not off, the project names a model, and
+         the project actually asked the compiler for cross-references. Without
+         GenerateCrossReferences there is no new xref data to harvest. -->
+    <D365foMcpShouldRefresh>true</D365foMcpShouldRefresh>
+    <D365foMcpShouldRefresh Condition="'$(D365FO_MCP_AUTOREFRESH)' == '0'">false</D365foMcpShouldRefresh>
+    <D365foMcpShouldRefresh Condition="'$(Model)' == ''">false</D365foMcpShouldRefresh>
+    <D365foMcpShouldRefresh Condition="'$(GenerateCrossReferences)' != 'True'">false</D365foMcpShouldRefresh>
+    <D365foMcpShouldRefresh Condition="!Exists('$(D365foMcpRefreshScript)')">false</D365foMcpShouldRefresh>
+  </PropertyGroup>
+
+  <Target Name="D365foMcpRefresh" AfterTargets="Build;Rebuild" Condition="'$(D365foMcpShouldRefresh)' == 'true'">
+    <Message Importance="normal" Text="D365FO MCP: queueing a background refresh for model '$(Model)'." />
+
+    <!-- -NoWait queues the model and returns; the second, detached call becomes
+         the worker. Splitting it this way keeps the inline step to a few
+         milliseconds even when a solution builds ten projects at once. -->
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(D365foMcpRefreshScript)&quot; -Model &quot;$(Model)&quot; -NoWait"
+          ContinueOnError="true"
+          StandardOutputImportance="low"
+          StandardErrorImportance="low" />
+
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','$(D365foMcpRefreshScript)','-Model','$(Model)'&quot;"
+          ContinueOnError="true"
+          StandardOutputImportance="low"
+          StandardErrorImportance="low" />
+  </Target>
+
+</Project>
