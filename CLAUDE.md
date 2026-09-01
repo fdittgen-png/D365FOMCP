@@ -153,11 +153,29 @@ in ~15 s when nothing changed.
 and `test/tool-guards.test.js`.
 
 **The tool list is the one cost you cannot filter away.** Every tool's name,
-description and JSON-Schema is re-sent on *every* request; no `limit`, filter or
-format touches it. Measured 2026-09-01: **68,569 B (~17,142 tk)**, ~$0.34 over a
-40-turn session before a single tool runs. `inputSchema` was 74% of it, and the
-single largest line item was the shared `format` parameter's prose — **16,074 B
-of pure duplication**, because every character of it is paid 48 times.
+description, annotations and **both** schemas are re-sent on *every* request; no
+`limit`, filter or format touches it. Verified against the **live** endpoint
+2026-09-01: **114,932 B (~28,733 tk)** across the three services, ~$0.575 over a
+40-turn session before a single tool runs.
+
+Composition, measured on the wire (KB service):
+
+| Field | Bytes | Share |
+|---|---:|---:|
+| `outputSchema` | 40,118 | **59.8%** |
+| `inputSchema` | 17,798 | 26.5% |
+| `description` | 7,396 | 11.0% |
+| `annotations` | 1,364 | 2.0% |
+| `name` | 445 | 0.7% |
+
+> **`outputSchema` is the dominant term and is currently untouched.** The first
+> version of the budget test counted only name + description + inputSchema and
+> reported a third of the real cost — a budget that measures the wrong thing is
+> worse than none. The typed-first contract (rule #5) is what makes those schemas
+> large, and they are genuinely useful to a validating client, so trimming them
+> is a real trade rather than free. Untried levers: shortening `.describe()` text
+> inside `output-schemas.js` (it all ships), and whether Zod's `.nullish()`
+> emits a more verbose JSON Schema than `.nullable()`.
 
 - **Keep shared-parameter descriptions SHORT.** `formatTextParam` now carries only
   what the enum cannot (which value is default, when to override). The long-form
@@ -167,8 +185,9 @@ of pure duplication**, because every character of it is paid 48 times.
 - **`test/tool-schema-budget.test.js`** prints the per-service breakdown on every
   run and fails on a ceiling breach or on any shared parameter wasting >4,000 B.
   Raising a ceiling is a normal, deliberate act; doing it unnoticed is what this
-  prevents. Current: **51,937 B (~12,984 tk), −24%**.
-- **`MCP_TOOL_PROFILE=core`** registers 20 of 51 tools (−50%, ~6,429 tk). Off by
+  prevents. Current: kb 43,975 B · xref 33,545 B · sec 37,412 B.
+- **`MCP_TOOL_PROFILE=core`** registers 23 of 51 tools — 114,932 → 65,052 B
+  (~28,733 → ~16,263 tk, **−43%**, ~$0.25 over a 40-turn session). Off by
   default. The list in `CORE_TOOLS` is hand-picked, not measured — tune it from
   real usage. A test asserts every name in it still exists, because renaming a
   tool would otherwise shrink the profile silently (it caught two wrong names on
