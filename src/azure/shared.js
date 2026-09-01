@@ -16,16 +16,25 @@ import { ensureSecIndexes } from './sec-indexes.js';
 // ── Shared tool input params ─────────────────────────────────────────────────
 //
 // Standard text-channel rendering switch. Add `format: formatTextParam` to a
-// tool's inputSchema and pass the `format` arg as the 3rd argument to
-// structuredResult — the text channel then defaults to TOON (token-efficient)
-// and callers can opt into Markdown. structuredContent JSON is unchanged either
-// way. structuredResult treats any non-'markdown' value as TOON, so no
-// handler-level defensive default is required (rule #13 choke-point).
+// tool's inputSchema and pass the `format` arg STRAIGHT THROUGH as the 3rd
+// argument to structuredResult — do not normalise it in the handler. Anything
+// that is not the literal 'markdown' or 'toon' (including undefined, which is
+// what the test mock server passes) means "adaptive", so structuredResult stays
+// the single choke point (rule #13) and a handler-level default can only break
+// it. structuredContent JSON is unchanged in every case.
 export const formatTextParam = z
-  .enum(['markdown', 'toon'])
+  .enum(['markdown', 'toon', 'auto'])
   .optional()
-  .default('toon')
-  .describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. structuredContent JSON is identical either way.');
+  .default('auto')
+  // KEEP THIS SHORT. It is duplicated into the wire schema of all 48 tools that
+  // take it, so every character costs 48x on `tools/list` — which ships on
+  // EVERY request. The long-form explanation (why "auto", the per-tool
+  // measurements) lives in CLAUDE.md rule #5 and the tooling skill, where it is
+  // paid for once. Measured: the previous 342-character version was 16,074 B
+  // (~4,019 tk) of pure duplication, roughly a quarter of the whole tool list.
+  // Carries ONLY what the enum itself cannot: which value is the default, and
+  // when to override it. Everything else the model reads off the value list.
+  .describe('Default "auto" (smallest). Use "markdown" only when quoting the text verbatim.');
 
 // Standard per-model scope filter. Add `modules: modulesFilterParam` to a
 // search tool's inputSchema to let callers limit the investigation to specific
@@ -467,15 +476,44 @@ export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
  * @param {string} markdownText  Full Markdown rendering (heading + body).
  * @param {'toon'|'markdown'} [format='toon']  Text-channel rendering.
  */
-export function structuredResult(typed, markdownText, format = 'toon') {
-  let text;
+// The default is 'auto', not 'toon': the test mock server bypasses Zod and
+// passes `undefined`, and a 'toon' default here would silently pin the encoding
+// for every such call — which is exactly how this was wrong the first time.
+export function structuredResult(typed, markdownText, format = 'auto') {
+  // An explicit `format: "markdown"` is honoured unconditionally: those callers
+  // quote the text verbatim into a document, so size is not the criterion.
   if (format === 'markdown' && markdownText) {
-    text = markdownText;
-  } else {
-    const heading = extractLeadingHeading(markdownText);
-    const toon = encodeToon(typed);
-    text = heading ? `${heading}\n\n${toon}` : toon;
+    return { content: [{ type: 'text', text: markdownText }], structuredContent: typed };
   }
+
+  const heading = extractLeadingHeading(markdownText);
+  const toon = encodeToon(typed);
+  const toonText = heading ? `${heading}\n\n${toon}` : toon;
+
+  // An explicit `format: "toon"` pins the encoding too — only the DEFAULT is
+  // adaptive, so a caller that has decided still gets what it asked for.
+  if (format === 'toon') {
+    return { content: [{ type: 'text', text: toonText }], structuredContent: typed };
+  }
+
+  // ADAPTIVE, because the data says neither encoding wins universally. Measured
+  // across six real KB calls (tokens, text channel):
+  //
+  //   d365_get_entity_sources   TOON 4,448   markdown 5,216   -> TOON
+  //   d365_lookup_table         TOON 9,725   markdown 6,772   -> markdown (-30%)
+  //   d365_get_class_methods    TOON 5,912   markdown 6,082   -> TOON
+  //   d365_get_enum             TOON   749   markdown   651   -> markdown
+  //   d365_list_modules         TOON   117   markdown   114   -> markdown
+  //   d365_search               TOON   780   markdown   818   -> TOON
+  //   TOTAL                     TOON 21,731  markdown 19,653  adaptive 18,677
+  //
+  // TOON's tabular form wins on nested payloads; a Markdown table wins on wide
+  // flat ones, where TOON repeats a long key header. Picking the smaller per
+  // response is never worse than either fixed choice (-14% against the TOON
+  // default here) and loses nothing: both are renderings of the same `typed`
+  // object, and rule #5 already directs post-processing at structuredContent.
+  const text = (markdownText && markdownText.length < toonText.length) ? markdownText : toonText;
+
   return {
     content: [{ type: 'text', text }],
     structuredContent: typed,

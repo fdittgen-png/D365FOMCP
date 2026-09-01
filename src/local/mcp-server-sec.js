@@ -17,6 +17,13 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerSecTools } from '../azure/sec-tools.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
+// Agent guardrails are a SESSION concern, so they are switched on here — at the
+// MCP entry point — rather than defaulting on inside the tool library, where a
+// test or a batch script would be caught by loop detection it never asked for.
+// See src/azure/tool-guards.js. Set MCP_TOOL_GUARDS=off to disable.
+process.env.MCP_TOOL_GUARDS ??= 'on';
+
+
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 

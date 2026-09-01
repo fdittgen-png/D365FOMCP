@@ -16,6 +16,13 @@ import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
 
+// Agent guardrails are a SESSION concern, so they are switched on here — at the
+// MCP entry point — rather than defaulting on inside the tool library, where a
+// test or a batch script would be caught by loop detection it never asked for.
+// See src/azure/tool-guards.js. Set MCP_TOOL_GUARDS=off to disable.
+process.env.MCP_TOOL_GUARDS ??= 'on';
+
+
 function createKbServer(baseUrl) {
   const server = new McpServer(serverInfo('kb', { baseUrl }), serverOptions('kb'));
   registerKbTools(server, getKbDb());

@@ -188,6 +188,19 @@ function parseClassDeclaration(declSource) {
 /**
  * Recursively find all directories matching a name pattern under a base path.
  */
+/**
+ * Dirent.isDirectory() is FALSE for a directory symlink or an NTFS junction —
+ * those report isSymbolicLink() instead. Metadata roots legitimately contain
+ * both (D365 keeps RuntimeSymLinks that way, and build/update-kb-model.js
+ * assembles a per-model scope out of junctions), and skipping them silently
+ * scanned zero objects. Resolve the link before deciding.
+ */
+function isDirEntry(dir, entry) {
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  try { return statSync(join(dir, entry.name)).isDirectory(); } catch { return false; }
+}
+
 function findAxDirs(basePath, dirName) {
   const results = [];
 
@@ -196,7 +209,7 @@ function findAxDirs(basePath, dirName) {
     try {
       const entries = readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
+        if (!isDirEntry(dir, entry)) continue;
         // XppMetadata is a compiled mirror of the model's Ax* dirs — skipping
         // it avoids double-processing every object in customization models.
         if (entry.name === 'bin' || entry.name === 'node_modules' ||
@@ -277,7 +290,7 @@ function loadLabels() {
       try {
         const entries = readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
-          if (!entry.isDirectory()) {
+          if (!isDirEntry(dir, entry)) {
             if (entry.name.endsWith('.label.txt') &&
                 (dir.includes('en-US') || dir.includes('en-us'))) {
               labelFiles.push(join(dir, entry.name));

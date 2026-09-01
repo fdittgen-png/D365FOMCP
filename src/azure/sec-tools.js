@@ -26,6 +26,7 @@ import {
   queryModelVersions,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
+import { installToolGuards } from './tool-guards.js';
 import { z } from 'zod';
 import {
   secLookupUserOutput,
@@ -89,6 +90,11 @@ function highestTier(tierNames) {
 // ── Register all 18 Security tools ──────────────────────────────────────────
 
 export function registerSecTools(server, db) {
+  // Agent guardrails (loop detection + one-shot staleness note) wrap every
+  // tool registered below. Returns a proxy, so the shared McpServer is not
+  // mutated and a second register*Tools() call cannot double-wrap it.
+  server = installToolGuards(server, { service: 'sec', db });
+
 
   const q = (sql, params = []) => query(db, sql, params);
 
@@ -113,7 +119,7 @@ export function registerSecTools(server, db) {
     'sec_lookup_role',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.',
       inputSchema: { role_name: z.string().min(1).max(500).describe('Role name (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupRoleOutput.shape,
     },
@@ -218,7 +224,7 @@ export function registerSecTools(server, db) {
     'sec_lookup_duty',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get duty details: parent roles, privileges granted, and entry points. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get duty details: parent roles, privileges granted, and entry points.',
       inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupDutyOutput.shape,
     },
@@ -288,7 +294,7 @@ export function registerSecTools(server, db) {
     'sec_lookup_privilege',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get privilege details: entry points with CRUD grants, parent duties, and parent roles. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get privilege details: entry points with CRUD grants, parent duties, and parent roles.',
       inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupPrivilegeOutput.shape,
     },
@@ -377,7 +383,7 @@ export function registerSecTools(server, db) {
     'sec_lookup_user',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get user profile: roles, company scoping, enabled status, and email. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get user profile: roles, company scoping, enabled status, and email.',
       inputSchema: { user_id: z.string().min(1).max(500).describe('User ID (case-insensitive)'), format: formatTextParam },
       outputSchema: secLookupUserOutput.shape,
     },
@@ -558,7 +564,7 @@ export function registerSecTools(server, db) {
     'sec_role_hierarchy',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Show the sub-role hierarchy for a role (children that inherit from it, or parents it inherits from).',
       inputSchema: {
       role_name: z.string().min(1).max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
@@ -612,7 +618,7 @@ export function registerSecTools(server, db) {
     'sec_find_users_by_role',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all users assigned to a role, optionally filtered to a specific company. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all users assigned to a role, optionally filtered to a specific company.',
       inputSchema: {
       role_name: z.string().min(1).max(500).describe('Role name'),
       company_id: z.string().min(1).max(500).optional().describe('Filter to users scoped to this company'),
@@ -705,7 +711,7 @@ export function registerSecTools(server, db) {
     'sec_find_roles_by_duty',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all roles that contain a specific duty. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all roles that contain a specific duty.',
       inputSchema: { duty_name: z.string().min(1).max(500).describe('Duty ID or name'), format: formatTextParam },
       outputSchema: secFindRolesByDutyOutput.shape,
     },
@@ -762,7 +768,7 @@ export function registerSecTools(server, db) {
     'sec_find_roles_by_privilege',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all roles that grant a privilege (via the duty chain or directly). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all roles that grant a privilege (via the duty chain or directly).',
       inputSchema: { privilege_name: z.string().min(1).max(500).describe('Privilege name'), format: formatTextParam },
       outputSchema: secFindRolesByPrivilegeOutput.shape,
     },
@@ -836,7 +842,7 @@ export function registerSecTools(server, db) {
     'sec_company_users',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List all users and their roles for a specific company (legal entity). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'List all users and their roles for a specific company (legal entity).',
       inputSchema: {
       company_id: z.string().min(1).max(500).describe('Company / legal entity ID (e.g., LADE, TAB)'),
       limit: z.number().int().min(1).max(500).optional().default(200).describe('Max results'),
@@ -899,7 +905,7 @@ export function registerSecTools(server, db) {
     'sec_permission_trace',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. Optionally filter to a specific target object.',
       inputSchema: {
       role_name: z.string().min(1).max(500).describe('Role name'),
       object_name: z.string().min(1).max(500).optional().describe('Filter to entry points targeting this object'),
@@ -1039,7 +1045,7 @@ export function registerSecTools(server, db) {
     'sec_compare_roles',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Compare two roles side by side: shared vs unique duties and privileges. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Compare two roles side by side: shared vs unique duties and privileges.',
       inputSchema: {
       role1: z.string().min(1).max(500).describe('First role name'),
       role2: z.string().min(1).max(500).describe('Second role name'),
@@ -1392,7 +1398,7 @@ export function registerSecTools(server, db) {
     'sec_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across roles, duties, privileges, and users. Scope with `modules` to search only security objects from specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see sec_stats for the scanned build versions). Note: users carry no module and are excluded when the filter is set. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Full-text search across roles, duties, privileges, and users. Scope with `modules` to search only security objects from specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see sec_stats for the scanned build versions). Note: users carry no module and are excluded when the filter is set.',
       inputSchema: {
       query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
@@ -1500,7 +1506,7 @@ export function registerSecTools(server, db) {
     'sec_stats',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML provenance: version, layer, origin microsoft/isv/custom). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML provenance: version, layer, origin microsoft/isv/custom).',
       inputSchema: { format: formatTextParam },
       outputSchema: secStatsOutput.shape,
     },
@@ -1580,7 +1586,7 @@ export function registerSecTools(server, db) {
     'sec_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Text channel defaults to TOON (compact, ~25-35% fewer tokens than Markdown for large uniform row sets). Pass format="markdown" for human-readable tables.',
+      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Text channel: see the shared `format` parameter.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query'),
         format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),

@@ -108,11 +108,14 @@ test('d365_get_enum: a single-target call is unchanged by batching', async () =>
   assert.equal(t.value_count, 2);
   assert.equal(t.values[0].name, 'Backorder');
   assert.equal(t.label, 'Sales status', 'label resolution still runs');
-  assert.equal(t.parse_error, false);
+  // parse_error is emitted ONLY when true — absence is the success case. The
+  // visibility that matters (a parse failure must never be silent) is pinned by
+  // the malformed-values_json test in kb-tools.test.js.
+  assert.ok(!('parse_error' in t), 'parse_error must be absent when nothing failed');
   // No batch keys at all: a single call pays nothing for the feature.
   assert.deepEqual(Object.keys(t).sort(),
-    ['enum_name', 'label', 'module_id', 'parse_error', 'value_count', 'values'],
-    'a single-target payload must be exactly what it was before batching existed');
+    ['enum_name', 'label', 'module_id', 'value_count', 'values'],
+    'a single-target payload must carry no batch keys and no dead keys');
 });
 
 test('d365_get_enum: batch mode resolves several enums in one call', async () => {
