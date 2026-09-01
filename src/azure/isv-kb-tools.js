@@ -203,7 +203,7 @@ export function registerIsvKbTools(server, db) {
     'd365_isv_list_models',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List the sealed (binary-only) ISV models scanned into this KB — publisher, version, declared dependencies, and what was recovered from each. Sealed models ship no X++ source and no Ax<Type> XML, so they are absent from every other KB tool. Use this to find out which third-party models exist and how much is known about them. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'List the sealed (binary-only) ISV models scanned into this KB — publisher, version, declared dependencies, and what was recovered from each. Sealed models ship no X++ source and no Ax<Type> XML, so they are absent from every other KB tool. Use this to find out which third-party models exist and how much is known about them.',
       inputSchema: { format: formatTextParam },
       outputSchema: d365IsvListModelsOutput.shape,
     },
@@ -275,7 +275,7 @@ export function registerIsvKbTools(server, db) {
     'd365_isv_lookup',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Look up an object inside the sealed ISV models: does it exist, in which model, and as which AOT type. Use when a table, class, form, enum — or a FIELD an ISV added to a Microsoft table — is reported as not found by the normal KB tools but is suspected to belong to a third-party model. Set `search_properties` to find an identifier that appears inside an element rather than as its name: that is how an ISV extension field such as `LACTransRefRecId` on `SalesConfirmDetailsTmp` is located, since the KB has no row for it. Sealed models publish an element inventory and the identifiers inside each element, not a resolved field list. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Look up an object inside the sealed ISV models: does it exist, in which model, and as which AOT type. Use when a table, class, form, enum — or a FIELD an ISV added to a Microsoft table — is reported as not found by the normal KB tools but is suspected to belong to a third-party model. Set `search_properties` to find an identifier that appears inside an element rather than as its name: that is how an ISV extension field such as `LACTransRefRecId` on `SalesConfirmDetailsTmp` is located, since the KB has no row for it. Sealed models publish an element inventory and the identifiers inside each element, not a resolved field list.',
       inputSchema: {
         name: z.string().min(1).max(500).describe('Object name to look for, e.g. "LACReportTable". Matched case-insensitively, exact by default.'),
         element_type: z.string().min(1).max(100).optional().describe('Restrict to one AOT type, e.g. "AxTable", "AxClass", "AxForm", "AxTableExtension".'),
@@ -515,7 +515,7 @@ export function registerIsvKbTools(server, db) {
     'd365_isv_extension_points',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Show where sealed ISV models hook into standard D365FO code: Chain-of-Command wrappers, delegate/event subscriptions, and class/table/EDT extensions. Ask by standard object (which ISVs touch SalesFormLetter?) or by module (everything Lasernet hooks). This is the first question in any upgrade-risk or defect-triage review and cannot be answered by the normal XRef tools for binary-only models. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Show where sealed ISV models hook into standard D365FO code: Chain-of-Command wrappers, delegate/event subscriptions, and class/table/EDT extensions. Ask by standard object (which ISVs touch SalesFormLetter?) or by module (everything Lasernet hooks). This is the first question in any upgrade-risk or defect-triage review and cannot be answered by the normal XRef tools for binary-only models.',
       inputSchema: {
         target: z.string().min(1).max(500).optional().describe('Standard object the ISV extends, e.g. "SalesFormLetter", "CustTable", "DocuView".'),
         module: z.string().min(1).max(100).optional().describe('Sealed ISV model to list, e.g. "Lasernet". Combine with `target` to narrow further.'),

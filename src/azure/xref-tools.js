@@ -29,6 +29,7 @@ import {
   timeoutErrorResult,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
+import { installToolGuards } from './tool-guards.js';
 import { z } from 'zod';
 import {
   xrefFindReferencesOutput,
@@ -123,6 +124,11 @@ function buildInClause(values) {
 // ── Public registration function ────────────────────────────────────────────
 
 export function registerXrefTools(server, db) {
+  // Agent guardrails (loop detection + one-shot staleness note) wrap every
+  // tool registered below. Returns a proxy, so the shared McpServer is not
+  // mutated and a second register*Tools() call cannot double-wrap it.
+  server = installToolGuards(server, { service: 'xref', db });
+
 
   // Batch cap (issue #83): xref_object_summary is the recommended first call
   // before drilling into an object, so batching it removes the most common
@@ -176,7 +182,7 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
@@ -261,7 +267,7 @@ export function registerXrefTools(server, db) {
     'xref_find_usages',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all objects that a given D365FO object references (what it calls/reads/extends). This is the "Uses" / outgoing references query. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all objects that a given D365FO object references (what it calls/reads/extends). This is the "Uses" / outgoing references query.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or full path'),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
@@ -328,7 +334,7 @@ export function registerXrefTools(server, db) {
     'xref_find_method_callers',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all callers of a specific method on a class or table. Returns source locations with line numbers. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all callers of a specific method on a class or table. Returns source locations with line numbers.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
         method_name: z.string().min(1).max(500).describe('Method name (e.g. "construct", "run")'),
@@ -391,7 +397,7 @@ export function registerXrefTools(server, db) {
     'xref_class_hierarchy',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find the full class inheritance hierarchy — all subclasses (recursive) or the parent chain of a given class. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find the full class inheritance hierarchy — all subclasses (recursive) or the parent chain of a given class.',
       inputSchema: {
         class_name: z.string().min(1).max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
         direction: z.enum(['subclasses', 'parents']).default('subclasses')
@@ -476,7 +482,7 @@ export function registerXrefTools(server, db) {
     'xref_interface_implementors',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all classes that implement a given interface, including indirect implementors through inheritance. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all classes that implement a given interface, including indirect implementors through inheritance.',
       inputSchema: {
         interface_name: z.string().min(1).max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
         limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max implementors to return (default 200, max 1000). Framework interfaces have thousands.'),
@@ -545,7 +551,7 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see xref_list_modules for the scanned build versions). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see xref_list_modules for the scanned build versions).',
       inputSchema: {
         pattern: z.string().min(1).max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
@@ -615,7 +621,7 @@ export function registerXrefTools(server, db) {
     'xref_method_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all outgoing references from a specific method — what objects/methods/types does it call or use. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all outgoing references from a specific method — what objects/methods/types does it call or use.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name'),
         method_name: z.string().min(1).max(500).describe('Method name'),
@@ -686,7 +692,7 @@ export function registerXrefTools(server, db) {
     'xref_module_objects',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List all top-level objects (classes, tables, forms, etc.) in a given D365FO module from the cross-reference database. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'List all top-level objects (classes, tables, forms, etc.) in a given D365FO module from the cross-reference database.',
       inputSchema: {
         module_name: z.string().min(1).max(500).describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views'])
@@ -745,7 +751,7 @@ export function registerXrefTools(server, db) {
     'xref_cross_module_deps',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it).',
       inputSchema: {
         module_name: z.string().min(1).max(500).describe('Module name'),
         direction: z.enum(['depends_on', 'depended_by']).default('depends_on')
@@ -812,7 +818,7 @@ export function registerXrefTools(server, db) {
     'xref_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Text channel defaults to TOON (compact, token-efficient); pass format="markdown" for human-readable tables.',
+      description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Text channel: see the shared `format` parameter.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max rows (default 100, max 500)'),
@@ -865,7 +871,7 @@ export function registerXrefTools(server, db) {
     'xref_impact_analysis',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
         limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set.'),
@@ -941,7 +947,7 @@ export function registerXrefTools(server, db) {
     'xref_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface.',
       inputSchema: {
         origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
         layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
@@ -1040,7 +1046,7 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. This is the recommended first call before drilling into an object — pass `object_names` to summarise up to 10 objects in one call instead of one call each. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.",
+      description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. This is the recommended first call before drilling into an object — pass `object_names` to summarise up to 10 objects in one call instead of one call each.",
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name or path. Use this or `object_names`.'),
         object_names: z.array(z.string().min(1).max(500)).min(1).max(SUMMARY_BATCH_MAX).optional()
@@ -1153,7 +1159,7 @@ export function registerXrefTools(server, db) {
     'xref_find_extensions',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. Shows [ExtensionOf] classes that wrap the target with CoC methods using "next". Finds extensions by naming convention. Results may include false positives for common name prefixes. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. Shows [ExtensionOf] classes that wrap the target with CoC methods using "next". Finds extensions by naming convention. Results may include false positives for common name prefixes.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'DataEntityViews']).default('All')
@@ -1245,7 +1251,7 @@ export function registerXrefTools(server, db) {
     'xref_find_field_usages',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all code locations that read or write a specific field on a D365FO table. Returns callers with line numbers, grouped by kind (Read vs Call/Write). Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all code locations that read or write a specific field on a D365FO table. Returns callers with line numbers, grouped by kind (Read vs Call/Write).',
       inputSchema: {
         table_name: z.string().min(1).max(500).describe('Table name (e.g. "CustTable", "SalesTable")'),
         field_name: z.string().min(1).max(500).describe('Field name (e.g. "AccountNum", "InvoiceId")'),
@@ -1325,7 +1331,7 @@ export function registerXrefTools(server, db) {
     'xref_find_event_handlers',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all event handlers and delegates for a D365FO object or method. Discovers [SubscribesTo], [DataEventHandler], [PreHandlerFor], [PostHandlerFor] subscriptions, and delegate definitions. Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+      description: 'Find all event handlers and delegates for a D365FO object or method. Discovers [SubscribesTo], [DataEventHandler], [PreHandlerFor], [PostHandlerFor] subscriptions, and delegate definitions.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
         method_name: z.string().min(1).max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),

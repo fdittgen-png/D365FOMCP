@@ -655,11 +655,19 @@ describe('d365_get_class_methods', () => {
     assert.equal(result.structuredContent.extends_class, 'FormLetterService');
     assert.equal(typeof result.structuredContent.is_abstract, 'boolean');
     assert.ok(Array.isArray(result.structuredContent.methods));
-    // Signatures-only mode must NOT leak source_code
+    // Signatures-only mode must not merely null source_code — it must OMIT the
+    // key. Emitting `"source_code":null` per method was measured at 10.7-12.0%
+    // of the listing. In its place each method carries its body's line count,
+    // which is what makes tier 2 a decision instead of a guess.
+    let totalLines = 0;
     for (const m of result.structuredContent.methods) {
-      assert.equal(m.source_code, null);
+      assert.ok(!('source_code' in m), `${m.method_name}: source_code must be absent, not null`);
       assert.equal(typeof m.is_static, 'boolean');
+      assert.equal(typeof m.source_lines, 'number', `${m.method_name}: source_lines must be reported`);
+      totalLines += m.source_lines;
     }
+    assert.equal(result.structuredContent.source_lines_total, totalLines,
+      'source_lines_total must be the sum of the listed methods');
   });
 
   it('given include_source=true, then structuredContent carries source_code strings', async () => {
@@ -671,6 +679,96 @@ describe('d365_get_class_methods', () => {
     // At least one method has a non-null source_code string
     const withSource = result.structuredContent.methods.filter(m => typeof m.source_code === 'string');
     assert.ok(withSource.length > 0);
+  });
+});
+
+// The two-tier code path: signatures first, bodies on demand. Tier 2 has to be
+// reachable in ONE turn, or callers reach for include_source:true instead and
+// pay ~6x for the whole class.
+describe('d365_get_method_source — batch (tier 2 in one round trip)', () => {
+  it('fetches several bodies on one owner in a single call', async () => {
+    const res = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_names: ['run', 'validate'],
+    });
+    const t = res.structuredContent;
+    assert.equal(t.requested_count, 2);
+    assert.equal(t.resolved_count, 2);
+    assert.deepEqual(t.not_found, []);
+    assert.deepEqual(t.methods.map(m => m.method_name).sort(), ['run', 'validate']);
+    for (const m of t.methods) {
+      assert.equal(typeof m.source_code, 'string');
+      assert.equal(typeof m.line_count, 'number');
+    }
+  });
+
+  it('a partial batch is a success — misses go to not_found', async () => {
+    const res = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_names: ['run', 'noSuchMethodHere'],
+    });
+    assert.ok(!res.isError, 'a partial batch must not be an error');
+    assert.equal(res.structuredContent.resolved_count, 1);
+    assert.deepEqual(res.structuredContent.not_found, ['noSuchMethodHere']);
+  });
+
+  it('a single-target miss is still a not-found error', async () => {
+    const res = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_name: 'noSuchMethodHere',
+    });
+    assert.equal(res.isError, true);
+  });
+
+  it('single and batch payloads are disjoint', async () => {
+    const single = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_name: 'run',
+    });
+    for (const k of ['requested_count', 'resolved_count', 'not_found', 'methods']) {
+      assert.ok(!(k in single.structuredContent), `single call must not carry batch key ${k}`);
+    }
+    const batch = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_names: ['run'],
+    });
+    for (const k of ['source_code', 'line_count', 'method_name']) {
+      assert.ok(!(k in batch.structuredContent), `batch call must not carry single key ${k}`);
+    }
+  });
+
+  it('neither argument is an invalid-input error, not a crash', async () => {
+    const res = await callToolFull('d365_get_method_source', { owner_name: 'SalesFormLetter' });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /method_name/);
+  });
+
+  // The owner is carried ONCE, not per entry. That is what makes the batch win
+  // on bytes as well as on round trips — before it was hoisted, repeating
+  // owner_type/owner_name per method made a 4-method batch LARGER than the four
+  // single calls it replaced. This test is what stops that regressing.
+  it('does not repeat the owner per method — it is hoisted', async () => {
+    const res = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_names: ['run', 'validate'],
+    });
+    assert.equal(res.structuredContent.owner_name, 'SalesFormLetter');
+    assert.equal(typeof res.structuredContent.owner_type, 'string');
+    for (const m of res.structuredContent.methods) {
+      assert.ok(!('owner_name' in m), `${m.method_name}: owner_name must be hoisted, not repeated`);
+      assert.ok(!('owner_type' in m), `${m.method_name}: owner_type must be hoisted, not repeated`);
+    }
+  });
+
+  it('at three or more methods the batch is strictly smaller than the single calls', async () => {
+    const names = ['run', 'validate', 'construct'];
+    const batch = await callToolFull('d365_get_method_source', {
+      owner_name: 'SalesFormLetter', method_names: names,
+    });
+    assert.equal(batch.structuredContent.resolved_count, names.length, 'fixture must carry all three');
+    let singlesBytes = 0;
+    for (const n of names) {
+      const one = await callToolFull('d365_get_method_source', { owner_name: 'SalesFormLetter', method_name: n });
+      singlesBytes += JSON.stringify(one.structuredContent).length;
+    }
+    const batchBytes = JSON.stringify(batch.structuredContent).length;
+    // Not "comparable" — smaller. The batch also saves N-1 turns on top.
+    assert.ok(batchBytes <= singlesBytes,
+      `batch ${batchBytes}B must not exceed ${singlesBytes}B across ${names.length} single calls`);
   });
 });
 
@@ -1025,17 +1123,44 @@ describe('d365_raw_sql', () => {
     assert.deepEqual(md.structuredContent, toon.structuredContent);
   });
 
-  it('TOON: text channel defaults to TOON when format is omitted (feat/toon-default-on-raw-sql)', async () => {
-    // Call handlers directly to bypass the markdown-injecting test harness and
-    // verify the SHIPPED default: omitted format → TOON text channel.
-    const result = await toolHandlers['d365_raw_sql'].handler({
-      sql: 'SELECT table_name FROM tables ORDER BY table_name',
-    });
-    assert.match(result.content[0].text, /^rows\[\d+\]\{table_name\}:/m);
+  it('TOON: the default text channel is ADAPTIVE — never larger than either fixed encoding', async () => {
+    // Call handlers directly to bypass the markdown-injecting test harness.
+    //
+    // The default used to be a hard TOON. Measured on the production KB neither
+    // encoding wins universally — TOON is smaller on nested payloads
+    // (get_entity_sources 4,448 vs 5,216 tk) and LARGER on wide flat ones
+    // (lookup_table 9,725 vs 6,772 tk, +44%), because TOON repeats a long key
+    // header. So the default is now "auto": emit whichever is smaller.
+    //
+    // Asserting the INVARIANT rather than a particular encoding is the point —
+    // which one wins depends on the payload, and on this small fixture it is
+    // not the one that wins on the real database.
+    for (const [tool, args] of [
+      ['d365_raw_sql', { sql: 'SELECT table_name FROM tables ORDER BY table_name' }],
+      ['d365_lookup_table', { table_name: 'CustTable' }],
+      ['d365_get_class_methods', { name: 'SalesFormLetter' }],
+    ]) {
+      const auto = await toolHandlers[tool].handler({ ...args });
+      const toon = await toolHandlers[tool].handler({ ...args, format: 'toon' });
+      const md = await toolHandlers[tool].handler({ ...args, format: 'markdown' });
+      const len = r => r.content[0].text.length;
+      assert.ok(len(auto) <= len(toon), `${tool}: auto (${len(auto)}) must not exceed toon (${len(toon)})`);
+      assert.ok(len(auto) <= len(md), `${tool}: auto (${len(auto)}) must not exceed markdown (${len(md)})`);
+      assert.ok(len(auto) === len(toon) || len(auto) === len(md),
+        `${tool}: auto must emit one of the two renderings verbatim, not a third thing`);
+      // structuredContent is the contract; it never varies with format.
+      assert.deepEqual(auto.structuredContent, toon.structuredContent);
+      assert.deepEqual(auto.structuredContent, md.structuredContent);
+    }
 
-    // A normal (non-raw_sql) tool also defaults to TOON: the H2 context heading
-    // is kept, the body is TOON (no Markdown pipe tables).
-    const lookup = await toolHandlers['d365_lookup_table'].handler({ table_name: 'CustTable' });
+    // An explicit format is still honoured exactly — a caller that has decided
+    // gets what it asked for, regardless of which is smaller.
+    const pinnedToon = await toolHandlers['d365_raw_sql'].handler({
+      sql: 'SELECT table_name FROM tables ORDER BY table_name', format: 'toon',
+    });
+    assert.match(pinnedToon.content[0].text, /^rows\[\d+\]\{table_name\}:/m);
+
+    const lookup = await toolHandlers['d365_lookup_table'].handler({ table_name: 'CustTable', format: 'toon' });
     assert.match(lookup.content[0].text, /^## CustTable$/m);
     assert.match(lookup.content[0].text, /^table_name: CustTable$/m);
     assert.doesNotMatch(lookup.content[0].text, /^\| /m);
@@ -1303,9 +1428,16 @@ describe('PM-06 KB structured output', () => {
     assert.ok(result.structuredContent);
     assert.doesNotThrow(() => d365GetEnumOutput.parse(result.structuredContent));
     assert.equal(result.structuredContent.enum_name, 'StatusIssue');
-    assert.equal(result.structuredContent.parse_error, false);
+    // Emitted only when true — see the malformed-values_json test below, which
+    // is what actually guards the "a parse failure is never silent" contract.
+    assert.ok(!('parse_error' in result.structuredContent),
+      'parse_error must be absent on a clean parse, not emitted as false');
     assert.equal(result.structuredContent.value_count, 3);
     assert.ok(result.structuredContent.values.find(v => v.name === 'None'));
+    // A value with no label omits the key rather than carrying null.
+    for (const v of result.structuredContent.values) {
+      if ('label' in v) assert.equal(typeof v.label, 'string', `${v.name}: label present means a real string`);
+    }
   });
 
   it('d365_get_enum: malformed values_json sets parse_error=true', async () => {
@@ -1999,6 +2131,68 @@ describe('response shaping — d365_get_entity_sources', () => {
     assert.equal(t.entity_fields[0].is_extension, true);
   });
 
+  // Provenance trimming: on the reference entity 262 of 284 fields carried
+  // `"source_module":"ApplicationSuite","is_extension":false` — ~27% of the
+  // response saying nothing. The pair is now emitted only where it informs.
+  // Every row of a response must have the SAME keys. Dropping a key on only
+  // some rows saves JSON bytes but makes the rows ragged, which drops the TOON
+  // text channel out of its tabular form — measured at +65% on this entity,
+  // against a −27% JSON saving. So the provenance decision is made per
+  // response, from the filter, never per row.
+  const assertUniformFieldShape = (fields, label) => {
+    if (fields.length < 2) return;
+    const keys = Object.keys(fields[0]).sort().join(',');
+    for (const f of fields) {
+      assert.equal(Object.keys(f).sort().join(','), keys,
+        `${label}: ${f.field_name} has a different key set — ragged rows break the TOON encoding`);
+    }
+  };
+
+  it('emits no provenance by default, and does so uniformly across every field', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2' });
+    const fields = res.structuredContent.entity_fields;
+    assertUniformFieldShape(fields, 'default');
+    for (const f of fields) {
+      assert.ok(!('source_module' in f), `${f.field_name}: source_module must not be emitted by default`);
+      assert.ok(!('is_extension' in f), `${f.field_name}: is_extension must not be emitted by default`);
+    }
+  });
+
+  it('custom_only emits provenance on every row — they are all extensions, so it stays uniform', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', custom_only: true });
+    const fields = res.structuredContent.entity_fields;
+    assertUniformFieldShape(fields, 'custom_only');
+    for (const f of fields) {
+      assert.equal(f.is_extension, true);
+      assert.ok('source_module' in f, `${f.field_name}: custom_only must say which model the field came from`);
+    }
+  });
+
+  it('include_provenance restores the pair on every field', async () => {
+    const res = await call({ entity_name: 'ReleasedProductsV2', include_provenance: true });
+    assertUniformFieldShape(res.structuredContent.entity_fields, 'include_provenance');
+    for (const f of res.structuredContent.entity_fields) {
+      assert.ok('source_module' in f, `${f.field_name}: source_module must be present`);
+      assert.ok('is_extension' in f, `${f.field_name}: is_extension must be present`);
+    }
+    // Opting in must cost more than the default, or the default is not an optimisation.
+    const lean = await call({ entity_name: 'ReleasedProductsV2' });
+    assert.ok(
+      JSON.stringify(lean.structuredContent).length < JSON.stringify(res.structuredContent).length,
+      'the default payload must be smaller than the include_provenance one',
+    );
+  });
+
+  it('trimming provenance does not change which fields custom_only selects', async () => {
+    const lean = await call({ entity_name: 'ReleasedProductsV2', custom_only: true });
+    const full = await call({ entity_name: 'ReleasedProductsV2', custom_only: true, include_provenance: true });
+    assert.deepEqual(
+      lean.structuredContent.entity_fields.map(f => f.field_name),
+      full.structuredContent.entity_fields.map(f => f.field_name),
+      'filtering runs on the internal rows, not the trimmed payload',
+    );
+  });
+
   it('computed_only returns the fields with no backing data field', async () => {
     const res = await call({ entity_name: 'ReleasedProductsV2', computed_only: true });
     assert.deepEqual(res.structuredContent.entity_fields.map(f => f.field_name), ['ProductSubType']);
@@ -2086,12 +2280,20 @@ describe('response shaping — d365_list_modules', () => {
     assert.deepEqual(byPublisher.structuredContent.modules.map(m => m.module_id), ['iExtension']);
   });
 
-  it('include_counts:false drops the count columns from the payload', async () => {
+  it('include_counts:false OMITS the count keys — nulling them costs more than emitting them', async () => {
     const res = await call({ include_counts: false, origin: 'custom' });
     const m = res.structuredContent.modules[0];
-    assert.equal(m.table_count, null);
-    assert.equal(m.class_count, null);
+    for (const k of ['table_count', 'class_count', 'enum_count', 'entity_count', 'form_count']) {
+      assert.ok(!(k in m), `${k} must be absent from the payload, not null — '"${k}":null' is LONGER than '"${k}":8'`);
+    }
     assert.equal(m.version, '10.0.32.7', 'provenance is kept');
+
+    // The whole point of the option: it has to make the payload smaller.
+    const withCounts = await call({ include_counts: true, origin: 'custom' });
+    assert.ok(
+      JSON.stringify(res.structuredContent).length < JSON.stringify(withCounts.structuredContent).length,
+      'include_counts:false must shrink the payload, not grow it',
+    );
   });
 
   it('limit truncates the list but module_count stays the match total', async () => {

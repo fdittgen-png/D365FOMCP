@@ -186,7 +186,16 @@ export const d365ClassMethodSchema = z.object({
   method_name: z.string(),
   signature: z.string().nullable(),
   is_static: z.boolean(),
-  source_code: z.string().nullable(),
+  // OMITTED entirely on a signature listing (include_source false) rather than
+  // emitted as null: measured at 10.7-12.0% of the listing on real classes
+  // (2,741 tokens of literal `"source_code":null` on InventMovement's 577
+  // methods). Same defect as the include_counts nulling.
+  source_code: z.string().nullable().optional(),
+  // Body line count, present on a signature listing INSTEAD of the dead null —
+  // and cheaper than it was. This is the signal that makes the two-tier pattern
+  // a decision rather than a guess: the caller can see that a method is 9 lines
+  // or 270 before spending a turn on d365_get_method_source.
+  source_lines: z.number().int().optional(),
 });
 
 export const d365GetClassMethodsOutput = z.object({
@@ -198,6 +207,9 @@ export const d365GetClassMethodsOutput = z.object({
   include_source: z.boolean(),
   method_count: z.number(),
   methods: z.array(d365ClassMethodSchema),
+  // Signature listings only: what the whole class would cost at tier 2, so the
+  // caller can price `include_source: true` before paying for it.
+  source_lines_total: z.number().int().optional(),
   truncated: z.boolean(),
 });
 
@@ -374,6 +386,12 @@ export const d365SearchOutput = z.object({
 export const d365EnumValueSchema = z.object({
   name: z.string(),
   value: z.number().nullable(),
+  // DELIBERATELY an explicit null, not an omission — the one place the
+  // omit-dead-keys rule is wrong. 12.3% of enum values carry no label; omitting
+  // the key there saves ~1% of the JSON and costs +107% of the TOON text
+  // channel, because ragged rows drop TOON out of its tabular form
+  // (`values[8]{name,value,label}:` + one line each) into a per-row key/value
+  // list. Omit a key only when it is absent from EVERY row of an array.
   label: z.string().nullable(),
 });
 // One enum's payload. Shared by the single-target fields and the batch array
@@ -384,7 +402,10 @@ export const d365EnumPayloadSchema = z.object({
   label: z.string().nullable(),
   value_count: z.number(),
   values: z.array(d365EnumValueSchema),
-  parse_error: z.boolean(),
+  // Present ONLY when true. A parse failure has to be visible and must never be
+  // silent, but it is the rare case — emitting `"parse_error":false` on every
+  // enum spent 171 chars per 9-enum batch saying nothing happened.
+  parse_error: z.boolean().optional(),
 });
 
 // Batching (issue #83) is a backward-compatible superset, and the two modes are
@@ -442,16 +463,35 @@ export const d365CheckFieldExistsOutput = z.object({
 });
 
 // d365_get_method_source — single method source
-export const d365GetMethodSourceOutput = z.object({
-  owner_type: z.string(),
-  owner_name: z.string(),
+// Backward-compatible superset — see d365GetEnumOutput for the pattern.
+// Single-target and batch payloads are disjoint: a single call emits exactly
+// the pre-batching shape, a batch call emits only the batch keys.
+//
+// NOTE the absent owner_type / owner_name: a batch is scoped to ONE owner, so
+// those are hoisted to the top level and carried once. Repeating them per entry
+// cost 208 chars on a 4-method call and was the entire reason the batch payload
+// was bigger than the single calls it replaces.
+export const d365MethodSourcePayloadSchema = z.object({
   method_name: z.string(),
   signature: z.string().nullable(),
   is_static: z.boolean(),
   source_code: z.string().nullable(),
+  line_count: z.number().int().nullable(),
+});
+export const d365GetMethodSourceOutput = z.object({
+  owner_type: z.string().nullish(),
+  owner_name: z.string().nullish(),
+  method_name: z.string().nullish(),
+  signature: z.string().nullish(),
+  is_static: z.boolean().nullish(),
+  source_code: z.string().nullish(),
   // Body-relative line count (null when no source). Lets callers cite a line
   // range knowing the upper bound; the rendered Markdown is line-numbered.
-  line_count: z.number().int().nullable(),
+  line_count: z.number().int().nullish(),
+  requested_count: z.number().nullish().describe('Batch mode only: how many methods were asked for.'),
+  resolved_count: z.number().nullish(),
+  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested names not on this owner. A single-target miss still returns a not-found error.'),
+  methods: z.array(d365MethodSourcePayloadSchema).nullish().describe('Batch mode only: per-method payloads.'),
 });
 
 // d365_find_referencing_tables — tables referencing this table
@@ -507,8 +547,15 @@ export const d365EntityFieldSchema = z.object({
   is_mandatory: z.number().nullable(),
   // Model attribution of the backing table field (null when the entity data
   // source is an alias rather than a table, or on pre-attribution KB builds).
-  source_module: z.string().nullable(),
-  is_extension: z.boolean().nullable(),
+  //
+  // OPTIONAL, and omitted by default for fields that are NOT extensions
+  // (measured: 262 of 284 fields on EcoResReleasedProductV2Entity carried
+  // `"source_module":"ApplicationSuite","is_extension":false`, ~3,400 tokens
+  // of payload that says nothing a caller cannot read off the entity's own
+  // module). Pass `include_provenance: true` to get the pair on every field.
+  // A field that IS an extension always carries both.
+  source_module: z.string().nullable().optional(),
+  is_extension: z.boolean().nullable().optional(),
 });
 export const d365GetEntitySourcesOutput = z.object({
   entity_name: z.string(),
@@ -603,11 +650,15 @@ export const d365FieldRenamesOutput = z.object({
 // d365_list_modules — module count + rows
 export const d365ModuleRowSchema = z.object({
   module_id: z.string(),
-  table_count: z.number().nullable(),
-  class_count: z.number().nullable(),
-  enum_count: z.number().nullable(),
-  entity_count: z.number().nullable(),
-  form_count: z.number().nullable(),
+  // OPTIONAL: with `include_counts: false` these keys are OMITTED, not nulled.
+  // Nulling them made the payload BIGGER (measured +5.6%): `"table_count":null`
+  // is 18 chars against 15 for `"table_count":8`, and most models have small
+  // counts. Omission is what makes the option worth having.
+  table_count: z.number().nullable().optional(),
+  class_count: z.number().nullable().optional(),
+  enum_count: z.number().nullable().optional(),
+  entity_count: z.number().nullable().optional(),
+  form_count: z.number().nullable().optional(),
   // Build provenance (null on KB databases built before model_versions
   // capture). version joins distinct model versions in the package.
   version: z.string().nullable(),

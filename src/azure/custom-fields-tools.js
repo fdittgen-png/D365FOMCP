@@ -260,8 +260,7 @@ export function registerCustomFieldTools(server, db) {
         'Each row carries the OData/EDM type (Edm.String, Edm.Int32, Edm.Decimal, Edm.DateTimeOffset, or a ' +
         'namespaced enum for a checkbox), MaxLength and nullability — NOT the D365 EDT name. A picklist custom ' +
         'field is indistinguishable from Text here (Edm.String) and its allowed values are not in $metadata: do ' +
-        'not claim to know them from this tool. ' +
-        'Returns both a typed JSON payload (structuredContent) and a Markdown rendering.',
+        'not claim to know them from this tool.',
       inputSchema: {
         table_name: z.string().min(1).max(500).optional()
           .describe('Only custom fields attributable to this table. Attribution is derived from the entity model — see `attribution` on each row.'),
