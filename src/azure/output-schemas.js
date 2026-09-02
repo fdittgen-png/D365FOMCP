@@ -278,6 +278,8 @@ export const secLookupUserOutput = z.object({
   email: z.string().nullable(),
   enabled: z.boolean(),
   default_company: z.string().nullable(),
+  // true when any of the four lists was cut at `limit`; the *_count keys are exact.
+  truncated: z.boolean(),
   role_count: z.number(),
   roles: z.array(secLookupUserRoleSchema),
   company_scoped_role_count: z.number(),
@@ -1019,6 +1021,10 @@ export const secLookupDutyOutput = z.object({
   duty_name: z.string().nullable(),
   module_id: z.string().nullable(),
   description: z.string().nullable(),
+  // Exact totals; each list holds at most `limit` rows (#107.6).
+  role_count: z.number(),
+  privilege_count: z.number(),
+  truncated: z.boolean(),
   roles: z.array(secLookupDutyRoleSchema),
   privileges: z.array(secLookupDutyPrivilegeSchema),
 });
@@ -1043,6 +1049,11 @@ export const secLookupPrivilegeOutput = z.object({
   privilege_name: z.string(),
   module_id: z.string().nullable(),
   label: z.string().nullable(),
+  // Exact totals; each list holds at most `limit` rows (#107.6).
+  entry_point_count: z.number(),
+  parent_duty_count: z.number(),
+  granting_role_count: z.number(),
+  truncated: z.boolean(),
   entry_points: z.array(secLookupPrivilegeEntryPointSchema),
   parent_duties: z.array(secLookupPrivilegeDutySchema),
   granting_roles: z.array(z.object({
@@ -1093,6 +1104,7 @@ export const secFindRolesByDutyRowSchema = z.object({
 export const secFindRolesByDutyOutput = z.object({
   duty_id: z.string(),
   result_count: z.number(),
+  truncated: z.boolean(),
   roles: z.array(secFindRolesByDutyRowSchema),
 });
 
@@ -1109,6 +1121,7 @@ export const secFindRolesByPrivilegeOutput = z.object({
   privilege_name: z.string(),
   via_chain_count: z.number(),
   direct_count: z.number(),
+  truncated: z.boolean(),
   via_chain: z.array(secFindRolesByPrivilegeViaChainRowSchema),
   direct: z.array(secFindRolesByPrivilegeDirectRowSchema),
 });

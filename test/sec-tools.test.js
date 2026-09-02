@@ -1544,4 +1544,44 @@ describe('W3 summary-by-default on the wide-role tools', () => {
     assert.equal(wideList.structuredContent.duties_shared.length, 55);
     assert.equal(wideList.structuredContent.truncated, false);
   });
+
+  // #107.6 — the remaining lookup / find tools cap their lists and keep exact counts.
+  it('sec_lookup_duty: limit caps roles and privileges; counts stay exact', async () => {
+    // WideDuty001 is in W1 and W2 (2 roles) — cap at 1 to prove the cut.
+    const r = await call('sec_lookup_duty', { duty_name: 'WideDuty001', limit: 1, format: 'markdown' });
+    const t = r.structuredContent;
+    assert.equal(t.role_count, 2);
+    assert.equal(t.roles.length, 1);
+    assert.equal(t.truncated, true);
+    assert.match(r.content[0].text, /Roles containing this duty \(2\)/);
+    assert.match(r.content[0].text, /Showing first 1 results/);
+    assert.doesNotThrow(() => z.object(wide['sec_lookup_duty'].outputSchema).parse(t));
+    const full = await call('sec_lookup_duty', { duty_name: 'WideDuty001' });
+    assert.equal(full.structuredContent.truncated, false);
+    assert.equal(full.structuredContent.roles.length, 2);
+  });
+
+  it('sec_find_roles_by_duty: limit caps the list; result_count is the exact total', async () => {
+    const r = await call('sec_find_roles_by_duty', { duty_name: 'WideDuty001', limit: 1, format: 'markdown' });
+    const t = r.structuredContent;
+    assert.equal(t.result_count, 2);
+    assert.equal(t.roles.length, 1);
+    assert.equal(t.truncated, true);
+    assert.match(r.content[0].text, /caller `limit`/);
+    const dflt = await call('sec_find_roles_by_duty', { duty_name: 'WideDuty001' });
+    assert.equal(dflt.structuredContent.roles.length, 2);
+    assert.equal(dflt.structuredContent.truncated, false);
+  });
+
+  it('sec_lookup_privilege / sec_lookup_user / sec_find_roles_by_privilege: uncut lists report truncated=false and validate', async () => {
+    const r = await wide['sec_lookup_privilege'].handler({ privilege_name: 'WidePriv001' });
+    // WidePriv001 is a direct privilege with no privileges-table row: not found is the honest answer here.
+    assert.equal(r.isError, true);
+    const u = await call('sec_lookup_user', { user_id: 'nobody' });
+    assert.equal(u.isError, true);
+    const p = await call('sec_find_roles_by_privilege', { privilege_name: 'WidePriv001' });
+    assert.equal(p.structuredContent.truncated, false);
+    assert.equal(p.structuredContent.direct_count, 1);
+    assert.doesNotThrow(() => z.object(wide['sec_find_roles_by_privilege'].outputSchema).parse(p.structuredContent));
+  });
 });

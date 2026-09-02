@@ -45,6 +45,7 @@ Get duty details: parent roles, privileges granted, and entry points.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name (case-insensitive) |
+| `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list (default 200) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_lookup_privilege`
@@ -54,6 +55,7 @@ Get privilege details: entry points with CRUD grants, parent duties, and parent 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name (case-insensitive) |
+| `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list (default 200) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_lookup_user`
@@ -63,6 +65,7 @@ Get user profile: roles, company scoping, enabled status, and email.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `user_id` | string (min 1, max 500) | yes | User ID (case-insensitive) |
+| `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list (default 200) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_role_hierarchy`
@@ -94,6 +97,7 @@ Find all roles that contain a specific duty.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name |
+| `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list (default 100) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_find_roles_by_privilege`
@@ -103,6 +107,7 @@ Find all roles that grant a privilege (via the duty chain or directly).
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name |
+| `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list (default 100) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_company_users`
