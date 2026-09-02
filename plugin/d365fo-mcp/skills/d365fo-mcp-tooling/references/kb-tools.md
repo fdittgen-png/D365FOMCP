@@ -14,20 +14,20 @@ AOT metadata snapshot: tables, fields, indexes, relations, enums, EDTs, classes 
 | `d365_get_enum` | All values of a D365FO enum with their numeric values — essential for correct SQL and X++. |
 | `d365_check_field_exists` | Verify that fields exist on a D365FO table; suggests corrections for wrong names. |
 | `d365_get_class_methods` | Method signatures of a class, table or data entity — TIER 1: signatures plus each body's line count (`source_lines`), no source. |
-| `d365_get_method_source` | Full X++ source of specific methods on a class, table or data entity — TIER 2 after `d365_get_class_methods`. |
+| `d365_get_method_source` | Full X++ source of specific methods on a class, table or data entity — TIER 2. |
 | `d365_find_referencing_tables` | Find all tables that have foreign key relationships TO a given table. |
 | `d365_get_module_summary` | Get a summary of a D365FO module/package: object counts and key tables/classes. |
 | `d365_get_entity_sources` | Data source chain and fields of a data entity, by AOT name, OData public name or collection name. |
 | `d365_sql_template` | Get a pre-validated SQL query template for common D365FO scenarios. |
 | `d365_hallucination_check` | Check for known D365FO hallucination traps for a table. |
-| `d365_raw_sql` | Raw READ-ONLY SQL against the KB (500-row cap), for what no other tool covers. |
+| `d365_raw_sql` | Raw READ-ONLY SQL against the KB (500-row cap). |
 | `d365_graph_traverse` | Traverse the D365FO object dependency graph. |
 | `d365_field_renames` | Look up AX2012-to-D365FO field renames for a table. |
 | `d365_list_modules` | List modules/packages with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher) — the Level-0 directory of the KB. |
 | `d365_resolve_label` | Resolve D365FO label IDs (like @SYS12345) to human-readable text. |
 | `d365_effective_schema` | Merged view of a table as it exists here: base fields plus every table-extension field, each attributed to its model (origin, module, model_origin microsoft/isv |
 | `d365_isv_list_models` | List the sealed (binary-only) ISV models scanned into this KB — publisher, version, declared dependencies, what was recovered. |
-| `d365_isv_lookup` | Look up an object in the sealed ISV models: exists, in which model, as which AOT type. |
+| `d365_isv_lookup` | Look up an object in the sealed ISV models: exists, in which model, as which AOT type — for tables, classes, forms, enums, and ISV-added FIELDS on Microsoft tables. |
 | `d365_isv_extension_points` | Where sealed ISV models hook into standard code: Chain-of-Command wrappers, delegate/event subscriptions, class/table/EDT extensions — by standard object (who t |
 | `d365_custom_fields` | UI custom fields (`_Custom` suffix) read LIVE from a configured environment — created in System administration > Setup > Custom fields, they exist in NO build snapshot. |
 
@@ -38,12 +38,13 @@ Get complete metadata for a D365FO table: fields (name, type, EDT), primary key,
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `table_name` | string (min 1, max 500) | yes | Table name (case-insensitive, e.g. CustInvoiceJour) |
-| `fields_like` | string (min 1, max 200) | no | Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field. |
+| `fields_like` | string (min 1, max 200) | no | Only list fields whose name contains this text (case-insensitive). |
 | `custom_only` | boolean | default `false` | Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected. |
 | `field_limit` | integer (≥1, ≤2000) | default `200` | Max fields to list; field_count is always the whole table. |
 | `include_provenance` | boolean | default `false` | Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension. |
 | `include_custom_fields` | boolean | default `false` | Also read UI custom fields (`_Custom` suffix) LIVE from the configured environment into a separate ui_custom_fields block. Off by default: makes a network call. |
 | `environment` | string (min 1, max 100) | no | Environment key for include_custom_fields. Defaults to the source marked default. |
+| `functional_context` | string (max 64) | no | Vocabulary entity id (e.g. sales_order) — enriches not-found and records the association. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_join_keys`
@@ -58,7 +59,7 @@ Get the exact join fields between two D365FO tables. Critical for writing correc
 
 ## `d365_search`
 
-Full-text search across all D365FO objects (tables, classes, enums, entities) for discovery, e.g. "tables related to inventory". Scope with `modules` to specific models (see d365_list_modules).
+Full-text search across all D365FO objects (tables, classes, enums, entities) for discovery, e.g. "tables related to inventory". Scope with `modules` to specific models.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -68,6 +69,7 @@ Full-text search across all D365FO objects (tables, classes, enums, entities) fo
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `functional_context` | string (max 64) | no | Vocabulary entity id (e.g. sales_order) — enriches not-found and records the association. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_enum`
@@ -82,7 +84,7 @@ All values of a D365FO enum with their numeric values — essential for correct 
 
 ## `d365_check_field_exists`
 
-Verify that fields exist on a D365FO table; suggests corrections for wrong names. Use BEFORE generating SQL. Pass `tables` to check several tables in one call (the usual case for a multi-table join).
+Verify that fields exist on a D365FO table; suggests corrections for wrong names. `tables` checks several tables in one call.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -93,20 +95,21 @@ Verify that fields exist on a D365FO table; suggests corrections for wrong names
 
 ## `d365_get_class_methods`
 
-Method signatures of a class, table or data entity — TIER 1: signatures plus each body's line count (`source_lines`), no source. Then pull only the bodies you need with `d365_get_method_source`. `include_source: true` is ~6x this response; use it on at most one class per investigation.
+Method signatures of a class, table or data entity — TIER 1: signatures plus each body's line count (`source_lines`), no source. `include_source: true` is ~6x this response.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `name` | string (min 1, max 500) | yes | Class, table, or data entity name |
 | `filter` | string (min 1, max 500) | no | Optional filter on method name (LIKE pattern). Cheapest way to narrow a wide class. |
-| `include_source` | boolean | default `false` | Full X++ body of EVERY method (~6x the signature listing); prefer d365_get_method_source for specific methods. |
+| `include_source` | boolean | default `false` | Full X++ body of EVERY method (~6x the signature listing). |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `functional_context` | string (max 64) | no | Vocabulary entity id (e.g. sales_order) — enriches not-found and records the association. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_method_source`
 
-Full X++ source of specific methods on a class, table or data entity — TIER 2 after `d365_get_class_methods`. One method -> `method_name`; two or more -> `method_names` (a batch of 4 is smaller than 4 single calls and costs one turn instead of four).
+Full X++ source of specific methods on a class, table or data entity — TIER 2. One method -> `method_name`; two or more -> `method_names` (a batch of 4 is smaller than 4 single calls).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -150,6 +153,7 @@ Data source chain and fields of a data entity, by AOT name, OData public name or
 | `include_provenance` | boolean | default `false` | Emit source_module/is_extension on EVERY field (default: only on extension fields — on standard fields it repeats the entity's module, ~27% of the response). |
 | `limit` | integer (≥1, ≤1000) | default `500` | Max fields to return |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `functional_context` | string (max 64) | no | Vocabulary entity id (e.g. sales_order) — enriches not-found and records the association. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_sql_template`
@@ -172,7 +176,7 @@ Check for known D365FO hallucination traps for a table. Returns common LLM mista
 
 ## `d365_raw_sql`
 
-Raw READ-ONLY SQL against the KB (500-row cap), for what no other tool covers. Tables: tables, fields, enums, enum_values, classes, methods, relations, data_entities, entity_fields, modules, model_versions, labels, kb_search (no kb_ prefix otherwise). Columns: PRAGMA table_info(<table>) or d365_sql_template.
+Raw READ-ONLY SQL against the KB (500-row cap). Tables: tables, fields, enums, enum_values, classes, methods, relations, data_entities, entity_fields, modules, model_versions, labels, kb_search (no kb_ prefix otherwise). Columns: PRAGMA table_info(<table>) or d365_sql_template.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -214,7 +218,7 @@ List modules/packages with object counts and Descriptor provenance (version, lay
 
 ## `d365_resolve_label`
 
-Resolve D365FO label IDs (like @SYS12345) to human-readable text. Use when you encounter unresolved label references.
+Resolve D365FO label IDs (like @SYS12345) to human-readable text.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -223,7 +227,7 @@ Resolve D365FO label IDs (like @SYS12345) to human-readable text. Use when you e
 
 ## `d365_effective_schema`
 
-Merged view of a table as it exists here: base fields plus every table-extension field, each attributed to its model (origin, module, model_origin microsoft/isv/custom), with indexes, relations and the sealed-ISV extensions known by name. Replaces lookup_table + find_extensions + one lookup per model.
+Merged view of a table as it exists here: base fields plus every table-extension field, each attributed to its model (origin, module, model_origin microsoft/isv/custom), with indexes, relations and the sealed-ISV extensions known by name.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -231,6 +235,7 @@ Merged view of a table as it exists here: base fields plus every table-extension
 | `include_isv` | boolean | default `true` | Include sealed-ISV table extensions (inventory only — no field list exists for them). Default true. |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `field_limit` | integer (≥1, ≤2000) | default `300` | Max fields to list; counts are always whole-table. |
+| `functional_context` | string (max 64) | no | Vocabulary entity id (e.g. sales_order) — enriches not-found and records the association. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_isv_list_models`
@@ -243,7 +248,7 @@ List the sealed (binary-only) ISV models scanned into this KB — publisher, ver
 
 ## `d365_isv_lookup`
 
-Look up an object in the sealed ISV models: exists, in which model, as which AOT type. Use when the normal KB tools report a table, class, form, enum — or an ISV-added FIELD on a Microsoft table — as not found. `search_properties` finds an identifier inside an element, which is how an ISV extension field is located (sealed models publish no resolved field list).
+Look up an object in the sealed ISV models: exists, in which model, as which AOT type — for tables, classes, forms, enums, and ISV-added FIELDS on Microsoft tables. `search_properties` finds an identifier inside an element, which is how an ISV extension field is located (sealed models publish no resolved field list).
 
 | Param | Type | Required | Description |
 |---|---|---|---|

@@ -40,6 +40,23 @@ import { z } from 'zod';
 // `.meta({ id })` fails there, not in a client. Re-open only with a hook the
 // register functions themselves install, or an SDK option to pass `reused`.
 
+// ── Shared: coverage-boundary keys (#116, Q3) ────────────────────────────────
+// Emitted by `coverageNotes()` in shared.js and merged into the typed payload by
+// `structuredResult(..., { coverage })` ONLY when the signal fires (rule #14) —
+// hence `.optional()`, never `.nullable()`. A tool spreads the subset it can
+// fire; `partial_build` is on every KB data tool because the delta-merge path
+// (#86) affects the whole KB, not one tool.
+export const coverageKeys = Object.freeze({
+  partial_build: z.boolean().optional(),
+  field_limit_hit: z.boolean().optional(),
+  provenance_omitted: z.number().optional(),
+  isv_not_scanned: z.boolean().optional(),
+  isv_excluded: z.number().optional(),
+});
+/** Pick a subset of `coverageKeys` to spread into an output schema. */
+export const coverage = (...names) => Object.fromEntries(names.map(n => [n, coverageKeys[n]]));
+const kbCoverage = coverage('partial_build');
+
 // ── Shared: model build provenance row ───────────────────────────────────────
 // One scanned model's descriptor data (model_versions table). Shared by
 // d365_get_module_summary, sec_stats, and the list-modules tools. All fields
@@ -168,6 +185,8 @@ export const d365LookupTableIncomingRelationSchema = z.object({
 });
 
 export const d365LookupTableOutput = z.object({
+  ...kbCoverage,
+  ...coverage('field_limit_hit', 'provenance_omitted', 'isv_not_scanned'),
   table_name: z.string(),
   module_id: z.string().nullish(),
   label: z.string().nullish(),
@@ -219,6 +238,8 @@ export const d365EffectiveFieldSchema = z.object({
   model_origin: z.string().nullish(),
 });
 export const d365EffectiveSchemaOutput = z.object({
+  ...kbCoverage,
+  ...coverage('field_limit_hit', 'isv_not_scanned'),
   table_name: z.string(),
   module_id: z.string().nullish(),
   model_origin: z.string().nullish(),
@@ -272,6 +293,7 @@ export const pageShape = { has_more: z.boolean(), next_cursor: z.string().option
 export const pageShapeOptional = { has_more: z.boolean().optional(), next_cursor: z.string().optional() };
 
 export const d365GetClassMethodsOutput = z.object({
+  ...kbCoverage,
   owner_name: z.string(),
   owner_type: z.string(),
   extends_class: z.string().nullish(),
@@ -296,6 +318,7 @@ export const xrefImpactReferencingObjectSchema = z.object({
 });
 
 export const xrefImpactAnalysisOutput = z.object({
+  ...coverage('isv_not_scanned', 'isv_excluded'),
   target_path: z.string(),
   total_refs: z.number(),
   sample_cap: z.number(),
@@ -432,6 +455,7 @@ export const d365GetJoinKeysTrapSchema = z.object({
   explanation: z.string().nullish(),
 });
 export const d365GetJoinKeysOutput = z.object({
+  ...kbCoverage,
   table1: z.string(),
   table2: z.string(),
   has_relationship: z.boolean(),
@@ -458,6 +482,8 @@ export const d365SearchQueryPayloadSchema = z.object({
   results: z.array(d365SearchResultSchema),
 });
 export const d365SearchOutput = z.object({
+  ...kbCoverage,
+  ...coverage('isv_not_scanned'),
   query: z.string().optional(),
   object_type: z.string().nullish(),
   modules: z.array(z.string()).nullish(),
@@ -507,6 +533,7 @@ export const d365EnumPayloadSchema = z.object({
 // tools/list, and it promised a null the handler never emits. Only module_id /
 // label can genuinely be null.
 export const d365GetEnumOutput = z.object({
+  ...kbCoverage,
   enum_name: z.string().optional(),
   module_id: z.string().nullish(),
   label: z.string().nullish(),
@@ -546,6 +573,7 @@ export const d365CheckFieldTableSchema = z.object({
 
 // Backward-compatible superset — see d365GetEnumOutput for the pattern.
 export const d365CheckFieldExistsOutput = z.object({
+  ...kbCoverage,
   table_name: z.string().optional(),
   check_count: z.number().optional(),
   checks: z.array(d365CheckFieldResultSchema).optional(),
@@ -571,6 +599,7 @@ export const d365MethodSourcePayloadSchema = z.object({
   line_count: z.number().int().nullish(),
 });
 export const d365GetMethodSourceOutput = z.object({
+  ...kbCoverage,
   // owner_type is null on a batch whose every method missed; owner_name falls
   // back to the requested name and is never null.
   owner_type: z.string().nullish(),
@@ -599,8 +628,13 @@ export const d365FindReferencingTableSchema = z.object({
   })),
 });
 export const d365FindReferencingTablesOutput = z.object({
+  ...kbCoverage,
   table_name: z.string(),
   reference_count: z.number(),
+  // Rows in `references` after `limit` (#107.6). The handler always emits it on
+  // the data path; the schema lacked it and the SDK's AJV (additionalProperties:
+  // false) rejected EVERY non-empty response — caught by the eval replay.
+  returned_count: z.number().optional(),
   references: z.array(d365FindReferencingTableSchema),
 });
 
@@ -618,6 +652,7 @@ export const d365ModuleKeyClassSchema = z.object({
   method_count: z.number().nullish(),
 });
 export const d365GetModuleSummaryOutput = z.object({
+  ...kbCoverage,
   module_id: z.string(),
   // Build provenance of the models in this package (empty on KB databases
   // built before model_versions capture).
@@ -652,6 +687,8 @@ export const d365EntityFieldSchema = z.object({
   is_extension: z.boolean().nullish(),
 });
 export const d365GetEntitySourcesOutput = z.object({
+  ...kbCoverage,
+  ...coverage('provenance_omitted'),
   entity_name: z.string(),
   module_id: z.string().nullish(),
   label: z.string().nullish(),
@@ -688,6 +725,7 @@ export const d365SqlTemplateSchema = z.object({
   tables_used: z.string().nullish(),
 });
 export const d365SqlTemplateOutput = z.object({
+  ...kbCoverage,
   scenario: z.string().nullish(),
   template_count: z.number(),
   templates: z.array(d365SqlTemplateSchema),
@@ -701,6 +739,7 @@ export const d365HallucinationTrapSchema = z.object({
   explanation: z.string().nullish(),
 });
 export const d365HallucinationCheckOutput = z.object({
+  ...kbCoverage,
   table_name: z.string(),
   trap_count: z.number(),
   traps: z.array(d365HallucinationTrapSchema),
@@ -723,6 +762,7 @@ export const d365GraphNodeSchema = z.object({
   depth: z.number(),
 });
 export const d365GraphTraverseOutput = z.object({
+  ...kbCoverage,
   start_node: z.string(),
   max_depth: z.number(),
   edge_type: z.string().nullish(),
@@ -737,6 +777,7 @@ export const d365FieldRenameSchema = z.object({
   d365fo_name: z.string(),
 });
 export const d365FieldRenamesOutput = z.object({
+  ...kbCoverage,
   table_name: z.string(),
   rename_count: z.number(),
   renames: z.array(d365FieldRenameSchema),
@@ -762,6 +803,7 @@ export const d365ModuleRowSchema = z.object({
   layer: z.string().nullish(),
 });
 export const d365ListModulesOutput = z.object({
+  ...kbCoverage,
   // module_count = modules matching the filter; returned_count = rows in
   // `modules` after `limit`.
   module_count: z.number(),
@@ -775,6 +817,7 @@ export const d365ResolvedLabelSchema = z.object({
   text: z.string(),
 });
 export const d365ResolveLabelOutput = z.object({
+  ...kbCoverage,
   requested_count: z.number(),
   resolved_count: z.number(),
   not_found_count: z.number(),
@@ -813,6 +856,7 @@ export const xrefFindReferencesObjectSchema = z.object({
   isv: z.object({ reference_count: z.number(), module_summary: xrefIsvModuleSummarySchema }).optional(),
 });
 export const xrefFindReferencesOutput = z.object({
+  ...coverage('isv_not_scanned', 'isv_excluded'),
   target_path: z.string().optional(),
   kind_filter: z.string(),
   limit: z.number(),
@@ -834,6 +878,7 @@ export const xrefFindReferencesOutput = z.object({
 
 // xref_find_usages
 export const xrefFindUsagesOutput = z.object({
+  ...coverage('isv_not_scanned'),
   source_path: z.string(),
   kind_filter: z.string(),
   limit: z.number(),
@@ -1432,6 +1477,37 @@ export const secObjectAccessOutput = z.object({
     person_name: z.string().nullish(),
     role_name: z.string(),
   })),
+});
+
+// ── Preflight existence checks (#118, Q5) ────────────────────────────────────
+// Batch is the ONLY shape: one target is a batch of one, a miss is data in
+// `not_found` (batching rule 2), never notFoundResult. Kept deliberately small —
+// these tools exist to be cheap on tools/list (≤ 1.2 KB output schema each,
+// asserted in test/tool-schema-budget.test.js).
+export const xrefCheckExistsOutput = z.object({
+  requested_count: z.number(),
+  found_count: z.number(),
+  objects: z.array(z.object({
+    name: z.string(),
+    exists: z.boolean(),
+    type: z.string(),
+    module: z.string().nullish(),
+    path: z.string(),
+  })),
+  not_found: z.array(z.object({ name: z.string(), suggestions: z.array(z.string()) })),
+});
+
+export const secCheckExistsOutput = z.object({
+  requested_count: z.number(),
+  found_count: z.number(),
+  artefacts: z.array(z.object({
+    name: z.string(),
+    exists: z.boolean(),
+    kind: z.string(),
+    label: z.string().nullish(),
+    canonical_name: z.string(),
+  })),
+  not_found: z.array(z.object({ name: z.string(), kind: z.string(), suggestions: z.array(z.string()) })),
 });
 
 // ── Task Recorder (1) ────────────────────────────────────────────────────────

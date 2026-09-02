@@ -29,8 +29,95 @@
  * reaches every tool set, not only the three that install guards.
  */
 
+import { z } from 'zod';
 import { getRequestContext } from './request-context.js';
 import { readBuildDate } from './shared.js';
+import {
+  openSemanticDb, ensureVocabulary, getVocabularyEntry, upsertMapping, confidenceFor, OBJECT_TYPES,
+} from './semantic-store.js';
+
+/* ── Semantic context hints (#115, Q2) ────────────────────────────────────── */
+//
+// `functional_context` on the top read tools is W7's implicit capture path:
+// the caller names the business entity it is working on (a vocabulary id), and
+// a SUCCESSFUL call records a low-confidence `context_hint` mapping from that
+// entity to the object it resolved — the semantic map grows from real work,
+// not from a data-entry session. On a MISS the same id lets notFoundResult
+// list the objects already mapped to the entity.
+//
+// This lives here, not in a tool file, because kb-/xref-/sec-tools.js all
+// already import this module and it imports none of them (no cycle), and the
+// lazily-opened handle is per-process session state — the same category as
+// the loop-detection buffer above.
+
+/** Shared by the 9 tools that take it — one string, paid ×9 on tools/list, so it stays short. */
+export const functionalContextParam = z.string().max(64).optional()
+  .describe('Vocabulary entity id (e.g. sales_order) — enriches not-found and records the association.');
+
+const SEM_HANDLE = Symbol.for('d365fo.mcp.semanticDbHandle');
+
+/**
+ * The semantic store, opened on FIRST USE and shared per process (a Symbol.for
+ * slot on globalThis, so every tool file and every import path shares ONE
+ * handle). Never opened at registration: `serviceToolNames()` dry-runs every
+ * register function and must not create a database file. Returns null — and
+ * remembers the failure — when the store cannot be opened: a read tool must
+ * never fail because its side channel is unavailable. Tests inject their own
+ * handle through the register function's `{ semanticDb }` option instead.
+ */
+export function semanticStore() {
+  const slot = globalThis[SEM_HANDLE];
+  if (slot === null) return null;
+  if (slot) return slot;
+  try {
+    const db = openSemanticDb();
+    globalThis[SEM_HANDLE] = db;
+    return db;
+  } catch (err) {
+    console.error('[semantic-store] unavailable — context hints disabled:', err?.message ?? err);
+    globalThis[SEM_HANDLE] = null;
+    return null;
+  }
+}
+
+/**
+ * Record one `context_hint` mapping `{entity, object_type, object_name,
+ * role:'reference'}` after a successful call. Never throws, never fails the
+ * caller. Rules:
+ *   - unknown vocabulary id → nothing is written (the id still reaches
+ *     notFoundResult, which explains it);
+ *   - `upsertMapping` keeps the STRONGER source, so a hint never overwrites a
+ *     `user_confirmed` (or any stronger) mapping;
+ *   - a repeat of an existing context_hint bumps `confirmations` (+0.03
+ *     confidence each, capped in confidenceFor) — upsertMapping only bumps for
+ *     user_confirmed, so that step is done here, and only on hint-sourced rows.
+ * @returns {{action:'inserted'|'confirmed'|'unchanged'|'skipped', reason?:string}|null}
+ */
+export function recordContextHint(semDb, { functional_context, object_type, object_name } = {}) {
+  if (!semDb || typeof semDb.prepare !== 'function') return null;
+  const id = typeof functional_context === 'string' ? functional_context.trim().slice(0, 64) : '';
+  const name = typeof object_name === 'string' ? object_name.trim() : '';
+  if (!id || !name) return null;
+  try {
+    try { ensureVocabulary(semDb); } catch { /* vocabulary file absent: the table may still hold rows */ }
+    const entry = getVocabularyEntry(semDb, id);
+    if (!entry) return { action: 'skipped', reason: 'unknown_entity' };
+    const type = OBJECT_TYPES.includes(object_type) ? object_type : 'other';
+    const r = upsertMapping(semDb, {
+      entity_id: entry.entity_id, object_type: type, object_name: name, role: 'reference', source: 'context_hint',
+    });
+    if (r.action === 'unchanged' && r.row?.source === 'context_hint') {
+      const confirmations = Number(r.row.confirmations ?? 0) + 1;
+      semDb.prepare('UPDATE sem_mappings SET confirmations = ?, confidence = ?, updated_at = ? WHERE id = ?')
+        .run(confirmations, confidenceFor('context_hint', confirmations), new Date().toISOString(), r.row.id);
+      return { action: 'confirmed' };
+    }
+    return { action: r.action };
+  } catch (err) {
+    console.error('[semantic-store] context hint not recorded:', err?.message ?? err);
+    return null;
+  }
+}
 
 /* ── Loop detection ───────────────────────────────────────────────────────── */
 
@@ -167,11 +254,11 @@ export const CORE_TOOLS = new Set([
   'd365_search', 'd365_lookup_table', 'd365_get_join_keys', 'd365_get_enum',
   'd365_check_field_exists', 'd365_get_class_methods', 'd365_get_method_source',
   'd365_get_entity_sources', 'd365_list_modules', 'd365_resolve_label',
-  // XRef — what uses it, what extends it
-  'xref_search_names', 'xref_object_summary', 'xref_find_references',
+  // XRef — what uses it, what extends it (check_exists: the preflight, #118)
+  'xref_check_exists', 'xref_search_names', 'xref_object_summary', 'xref_find_references',
   'xref_find_extensions', 'xref_find_method_callers', 'xref_list_modules',
-  // Sec — can this user do this thing
-  'sec_search', 'sec_lookup_user', 'sec_object_access',
+  // Sec — can this user do this thing (check_exists: the preflight, #118)
+  'sec_check_exists', 'sec_search', 'sec_lookup_user', 'sec_object_access',
   'sec_effective_permissions', 'sec_lookup_role', 'sec_permission_trace', 'sec_stats',
 ]);
 

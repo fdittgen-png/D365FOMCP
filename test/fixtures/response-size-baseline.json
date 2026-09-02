@@ -3,12 +3,12 @@
   "tolerance": 0.1,
   "calls": {
     "d365_lookup_table": {
-      "json": 32055,
-      "text": 15855
+      "json": 32125,
+      "text": 16139
     },
     "d365_search": {
-      "json": 3355,
-      "text": 2247
+      "json": 3378,
+      "text": 2338
     },
     "d365_get_enum": {
       "json": 1993,
@@ -19,16 +19,16 @@
       "text": 6094
     },
     "d365_get_entity_sources": {
-      "json": 25615,
-      "text": 10397
+      "json": 25639,
+      "text": 10513
     },
     "d365_list_modules": {
       "json": 30840,
       "text": 11037
     },
     "xref_find_references": {
-      "json": 9632,
-      "text": 5479
+      "json": 9655,
+      "text": 5570
     },
     "xref_object_summary": {
       "json": 682,
