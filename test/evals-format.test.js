@@ -18,7 +18,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { XMLParser } from 'fast-xml-parser';
@@ -123,9 +123,10 @@ for (const svc of SERVICES) {
 }
 
 test('evals/ — privacy: no e-mail address, no user-centred Sec tool', () => {
-  for (const f of readdirSync(EVALS)) {
-    const text = readFileSync(join(EVALS, f), 'utf8');
-    assert.ok(!EMAIL_RE.test(text), `${f} contains an e-mail address`);
+  for (const d of readdirSync(EVALS, { withFileTypes: true })) {
+    if (!d.isFile()) continue; // results/ is scanned by its own test
+    const text = readFileSync(join(EVALS, d.name), 'utf8');
+    assert.ok(!EMAIL_RE.test(text), `${d.name} contains an e-mail address`);
   }
   const secCalls = readJson(join(EVALS, 'sec.calls.json'));
   for (const p of secCalls.pairs) {
@@ -141,9 +142,42 @@ test('evals/ — privacy: no e-mail address, no user-centred Sec tool', () => {
 });
 
 test('evals/ — every service has the four files and nothing else is stray', () => {
-  const expected = new Set(['README.md']);
+  const expected = new Set(['README.md', 'results']);
   for (const s of SERVICES) for (const ext of ['xml', 'calls.json', 'budget.json', 'answers.md']) expected.add(`${s}.${ext}`);
   const actual = readdirSync(EVALS).filter(f => !f.startsWith('.'));
   for (const f of expected) assert.ok(actual.includes(f), `missing evals/${f}`);
   for (const f of actual) assert.ok(expected.has(f), `unexpected file evals/${f} — add it to the contract or move it`);
+});
+
+// Issue #119: the LLM leg writes evals/results/<svc>-<YYYY-MM-DD>.json.
+test('evals/results/ — exists, and every committed results file has the harness shape', () => {
+  const dir = join(EVALS, 'results');
+  assert.ok(existsSync(dir) && statSync(dir).isDirectory(), 'evals/results/ missing (keep the .gitkeep)');
+  const NAME_RE = new RegExp(`^(${SERVICES.join('|')})-\\d{4}-\\d{2}-\\d{2}\\.json$`);
+  for (const f of readdirSync(dir).filter(f => !f.startsWith('.'))) {
+    assert.match(f, NAME_RE, `evals/results/${f}: name must be <service>-<YYYY-MM-DD>.json`);
+    const r = readJson(join(dir, f));
+    assert.equal(r.schema, 'd365fo-evals-results/1', `${f}: schema`);
+    assert.ok(SERVICES.includes(r.service) && f.startsWith(`${r.service}-`), `${f}: service`);
+    assert.ok(['llm', 'replay'].includes(r.mode), `${f}: mode`);
+    assert.ok(r.metrics && typeof r.metrics.pass_rate === 'number', `${f}: metrics.pass_rate`);
+    assert.ok(Array.isArray(r.questions) && r.questions.length >= 1, `${f}: questions`);
+    for (const q of r.questions) {
+      assert.ok(Array.isArray(q.tool_calls), `${f} #${q.id}: tool_calls`);
+      for (const c of q.tool_calls) {
+        // Privacy: names and argument KEYS only — never values or payloads.
+        assert.deepEqual(Object.keys(c).sort(), ['arg_keys', 'is_error', 'structured_bytes', 'text_bytes', 'tool'], `${f} #${q.id}: a tool call record carries only name/arg_keys/flags/bytes`);
+        assert.ok(registered[r.service].has(c.tool), `${f} #${q.id}: "${c.tool}" is not a ${r.service} tool`);
+      }
+    }
+    assert.ok(!EMAIL_RE.test(JSON.stringify(r)), `${f} contains an e-mail address`);
+  }
+});
+
+test('evals/<svc>.budget.json — every budget file parses and names its service', () => {
+  for (const svc of SERVICES) {
+    const b = readJson(join(EVALS, `${svc}.budget.json`));
+    assert.equal(b.service, svc);
+    assert.ok(b.pairs && typeof b.pairs === 'object' && !Array.isArray(b.pairs), `${svc}: pairs is an object keyed by pair id`);
+  }
 });

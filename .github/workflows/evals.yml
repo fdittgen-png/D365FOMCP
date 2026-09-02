@@ -1,0 +1,113 @@
+# MCP evals (issue #119).
+#
+#   replay — every PR and push to main. The eval-file contract and the harness
+#            unit tests run unconditionally; the replay verifier itself needs
+#            the KB/XRef/Sec snapshots, which CI does not have, so
+#            `run-evals.mjs all` prints "skipped: no snapshot" for those and
+#            exits 0 (Task Recorder has no database and does run).
+#   llm    — manual (workflow_dispatch) and weekly. Gated on the
+#            ANTHROPIC_API_KEY secret: secrets cannot be read in a job-level
+#            `if`, so the secret is mapped to an env var and a first step
+#            decides; without it the job prints a notice and ends green.
+#            NOTE: the LLM leg ALSO needs the snapshots. Until a runner with
+#            the .sqlite files exists (self-hosted, or a restore step), it
+#            reports the same skip — the operator runs it locally and commits
+#            evals/results/<svc>-<date>.json; the weekly job then compares
+#            against that file.
+#
+# Pushing this file needs the `workflow` OAuth scope on the gh token:
+#   gh auth refresh -h github.com -s workflow
+
+name: Evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Service to evaluate (kb, xref, sec, taskrecorder, all)
+        default: all
+        required: false
+      model:
+        description: Anthropic model id for the LLM leg
+        default: claude-sonnet-5
+        required: false
+  schedule:
+    - cron: '0 5 * * 1' # Mondays 05:00 UTC
+
+jobs:
+  replay:
+    name: Replay verifier + eval contract
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        run: echo "version=$(cat .nvmrc)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.version }}
+          cache: npm
+
+      - run: npm ci
+
+      - name: Eval-file contract + harness unit tests (no snapshot, no network)
+        run: node --test test/evals-format.test.js test/evals-harness.test.js
+
+      - name: Replay verifier (skips services whose snapshot is absent)
+        run: node scripts/run-evals.mjs all
+
+  llm:
+    name: LLM leg (needs ANTHROPIC_API_KEY)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Check for API key
+        id: key
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=LLM evals skipped::ANTHROPIC_API_KEY secret is not set — the LLM leg needs it (and a snapshot). See evals/README.md."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        if: steps.key.outputs.present == 'true'
+        run: echo "version=$(cat .nvmrc)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: ${{ steps.nvm.outputs.version }}
+          cache: npm
+
+      - run: npm ci
+        if: steps.key.outputs.present == 'true'
+
+      - name: LLM leg, compared against the last committed results file
+        if: steps.key.outputs.present == 'true'
+        run: >
+          node scripts/run-evals.mjs "${{ github.event.inputs.service || 'all' }}" --llm
+          --model "${{ github.event.inputs.model || 'claude-sonnet-5' }}"
+          --compare auto
+
+      - name: Upload results
+        if: steps.key.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-results
+          path: evals/results/*.json
+          if-no-files-found: ignore
