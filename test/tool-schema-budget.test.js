@@ -91,10 +91,13 @@ const emptyDb = () => new Database(':memory:');
 const BUDGET = {
   kb: { maxBytes: 70_400, tools: 21 },
   xref: { maxBytes: 37_300, tools: 17 },
-  sec: { maxBytes: 37_500, tools: 18 },
+  // sec raised 37,500 -> 38,700 on 2026-09-02 (W3 #107.1): sec_lookup_role /
+  // sec_role_hierarchy / sec_compare_roles gained the summary-view inputs and
+  // the exact-count keys that make a capped list honest (+824 B measured).
+  sec: { maxBytes: 38_700, tools: 18 },
   taskrecorder: { maxBytes: 13_500, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 158_700;
+const TOTAL_MAX_BYTES = 159_900;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {

@@ -8,7 +8,7 @@ Security configuration snapshot (AOT roles/duties/privileges + user/role assignm
 
 | Tool | One-line purpose |
 |---|---|
-| `sec_lookup_role` | Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges. |
+| `sec_lookup_role` | Get security role details: description, license type, Grant/Deny, sub-roles, duties, direct privileges and entity permissions. |
 | `sec_lookup_duty` | Get duty details: parent roles, privileges granted, and entry points. |
 | `sec_lookup_privilege` | Get privilege details: entry points with CRUD grants, parent duties, and parent roles. |
 | `sec_lookup_user` | Get user profile: roles, company scoping, enabled status, and email. |
@@ -29,11 +29,13 @@ Security configuration snapshot (AOT roles/duties/privileges + user/role assignm
 
 ## `sec_lookup_role`
 
-Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.
+Get security role details: description, license type, Grant/Deny, sub-roles, duties, direct privileges and entity permissions. Summary by default: first 50 per list + exact counts.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `role_name` | string (min 1, max 500) | yes | Role name (case-insensitive) |
+| `include_entity_permissions` | boolean | default `false` | true: complete lists (can exceed 400 KB on wide roles) |
+| `entity_permission_limit` | integer (≥1, ≤5000) | default `50` | Max entity permissions in the summary view (default 50) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_lookup_duty`
@@ -71,6 +73,7 @@ Show the sub-role hierarchy for a role (children that inherit from it, or parent
 |---|---|---|---|
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `direction` | `children` \| `parents` | default `"children"` | Traverse direction |
+| `limit` | integer (≥1, ≤1000) | default `100` | Max related roles (default 100) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_find_users_by_role`
@@ -131,6 +134,7 @@ Compare two roles side by side: shared vs unique duties and privileges.
 |---|---|---|---|
 | `role1` | string (min 1, max 500) | yes | First role name |
 | `role2` | string (min 1, max 500) | yes | Second role name |
+| `list_limit` | integer (≥1, ≤2000) | default `50` | Max names per list (default 50); counts stay exact |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_effective_permissions`

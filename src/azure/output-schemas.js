@@ -961,16 +961,21 @@ export const secLookupRoleDutySchema = z.object({
   duty_name: z.string().nullable(),
   permission_type: z.string().nullable(),
 });
+// A grant column is emitted on every row of a response or on none (rule #14):
+// it is omitted only when it is null on EVERY row of that response. Hence
+// nullish — present-null must be nullable, absent must be optional.
 export const secLookupRoleDirectEntityPermissionSchema = z.object({
   entity_name: z.string(),
-  grant_read: z.string().nullable(),
-  grant_create: z.string().nullable(),
-  grant_update: z.string().nullable(),
-  grant_delete: z.string().nullable(),
-  grant_correct: z.string().nullable(),
-  grant_invoke: z.string().nullable(),
+  grant_read: z.string().nullish(),
+  grant_create: z.string().nullish(),
+  grant_update: z.string().nullish(),
+  grant_delete: z.string().nullish(),
+  grant_correct: z.string().nullish(),
+  grant_invoke: z.string().nullish(),
 });
-export const secLookupRoleOutput = z.object({
+// Summary by default (W3 #107.1): each list is capped, and `*_count` holds the
+// real total so the array length is never mistaken for it.
+export const secLookupRolePayloadSchema = z.object({
   role_id: z.string(),
   role_name: z.string(),
   module_id: z.string().nullable(),
@@ -981,10 +986,17 @@ export const secLookupRoleOutput = z.object({
   source: z.string().nullable(),
   sub_roles: z.array(secLookupRoleSubRoleSchema),
   duties: z.array(secLookupRoleDutySchema),
+  duty_count: z.number(),
+  duties_truncated: z.boolean(),
   direct_privileges: z.array(z.string()),
+  direct_privilege_count: z.number(),
+  direct_privileges_truncated: z.boolean(),
   direct_entity_permissions: z.array(secLookupRoleDirectEntityPermissionSchema),
+  direct_entity_permission_count: z.number(),
+  direct_entity_permissions_truncated: z.boolean(),
   assigned_user_count: z.number(),
 });
+export const secLookupRoleOutput = secLookupRolePayloadSchema;
 
 // sec_lookup_duty
 export const secLookupDutyRoleSchema = z.object({
@@ -1040,7 +1052,9 @@ export const secRoleHierarchyEntrySchema = z.object({
 export const secRoleHierarchyOutput = z.object({
   role_name: z.string(),
   direction: z.enum(['children', 'parents']),
+  // Total number of related roles; `entries` holds at most `limit` of them.
   result_count: z.number(),
+  truncated: z.boolean(),
   entries: z.array(secRoleHierarchyEntrySchema),
 });
 
@@ -1134,16 +1148,26 @@ export const secPermissionTraceOutput = z.object({
 });
 
 // sec_compare_roles
+// Each of the six lists is capped at `list_limit`; the `*_count` keys hold the
+// full sizes and `truncated` says whether any list was cut.
 export const secCompareRolesOutput = z.object({
   role1: z.string(),
   role2: z.string(),
+  list_limit: z.number(),
+  truncated: z.boolean(),
   duties_total_1: z.number(),
   duties_total_2: z.number(),
+  duties_shared_count: z.number(),
+  duties_only_1_count: z.number(),
+  duties_only_2_count: z.number(),
   duties_shared: z.array(z.string()),
   duties_only_1: z.array(z.string()),
   duties_only_2: z.array(z.string()),
   direct_privs_total_1: z.number(),
   direct_privs_total_2: z.number(),
+  direct_privs_shared_count: z.number(),
+  direct_privs_only_1_count: z.number(),
+  direct_privs_only_2_count: z.number(),
   direct_privs_shared: z.array(z.string()),
   direct_privs_only_1: z.array(z.string()),
   direct_privs_only_2: z.array(z.string()),
