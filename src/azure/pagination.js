@@ -28,7 +28,10 @@ export const CURSOR_MAX_LENGTH = 500;
 export const cursorParam = z.string().max(CURSOR_MAX_LENGTH).optional()
   .describe('Page cursor: the `next_cursor` of the previous response.');
 
-/** Opaque cursor for the page starting at `offset`. */
+/**
+ * Opaque cursor for the page starting at `offset`.
+ * @param {{ offset?: number, sort_key?: unknown }} [cursor]
+ */
 export function encodeCursor({ offset, sort_key } = {}) {
   const o = Number.isInteger(offset) && offset > 0 ? offset : 0;
   const payload = sort_key === undefined ? { o } : { o, k: sort_key };
@@ -40,10 +43,17 @@ export function encodeCursor({ offset, sort_key } = {}) {
  * this module produced -> `{ ok: false, error }` where `error` is an
  * `errorResult('invalid-input', …)` ready to return as-is.
  *
- * @returns {{ok:true, offset:number, sort_key?:unknown} | {ok:false, error:object}}
+ * Typed as ONE shape rather than a discriminated union on purpose: every
+ * caller writes `if (!page.ok) return page.error;`, and with `strict: false`
+ * (no `strictNullChecks`) TypeScript does not narrow a union on the truthiness
+ * of `ok`, so the union form reported `error` as missing at all eight call sites.
+ *
+ * @typedef {{ ok: boolean, offset?: number, sort_key?: unknown, error?: ReturnType<typeof errorResult> }} DecodedCursor
+ * @returns {DecodedCursor}
  */
 export function decodeCursor(str) {
   if (str === undefined || str === null || str === '') return { ok: true, offset: 0 };
+  /** @returns {DecodedCursor} */
   const invalid = () => ({
     ok: false,
     error: errorResult('invalid-input',

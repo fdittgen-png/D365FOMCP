@@ -244,7 +244,7 @@ const PHONE_RE = /(?:\+|00)\d[\d\s().-]{7,}\d|\b\d{3}[\s.-]\d{3}[\s.-]\d{4}\b/;
 /**
  * Scan one free-text value for party-like data. Returns null when clean, else a
  * short reason. Object/field names never trip it (no digits-after-letters
- * patterns, no @); "CustAccount" or "SalesTable.SalesId" are fine.
+ * patterns, no at-sign); "CustAccount" or "SalesTable.SalesId" are fine.
  */
 export function privacyViolation(text) {
   if (text == null) return null;

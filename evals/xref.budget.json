@@ -1,0 +1,24 @@
+{
+  "service": "xref",
+  "note": "Token-discipline dimension: for three questions, the tool sequence a disciplined agent should use and a ceiling on the summed structuredContent bytes (measured x 1.5). The runner sums the bytes of the recorded calls and fails on a breach or a different sequence.",
+  "pairs": {
+    "2": {
+      "lever": "xref_find_extensions with a small limit (one CoC class exists) and the dependency COUNT from result_count — limit must exceed the count (24), because result_count is the returned count",
+      "expected_tools": ["xref_find_extensions", "xref_cross_module_deps"],
+      "measured_bytes": 1427,
+      "max_structured_bytes": 2141
+    },
+    "4": {
+      "lever": "xref_method_references on the one method (4 rows) + the parents chain; never xref_find_references on the class",
+      "expected_tools": ["xref_method_references", "xref_class_hierarchy"],
+      "measured_bytes": 1221,
+      "max_structured_bytes": 1832
+    },
+    "10": {
+      "lever": "one batched xref_find_references (objects[]) with limit:1 and include_isv:true carries the ISV counts of both enums; xref_isv_find_usages with limit:1 confirms — no reference listing is ever paged",
+      "expected_tools": ["xref_find_references", "xref_isv_find_usages"],
+      "measured_bytes": 1745,
+      "max_structured_bytes": 2618
+    }
+  }
+}

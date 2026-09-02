@@ -54,8 +54,29 @@ function isYes(v) {
   return s === 'yes' || s === '1' || s === 'true';
 }
 
+/**
+ * A KB row as this seed reads it: column names are discovered at run time
+ * (`columnsOf`), so no static shape exists — the type says only "an object
+ * keyed by column name", which is exactly what `PRAGMA table_info` promises.
+ * @typedef {Record<string, any>} Row
+ */
+
+/**
+ * `db.prepare()` with the row type fixed to `Row`. `@types/better-sqlite3`
+ * defaults the result type to `unknown`, so without this every `.get()` /
+ * `.all()` consumer below would need its own cast. The assertion is a plain
+ * narrowing of the result generic — no behaviour, no runtime cost.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} sql
+ * @returns {import('better-sqlite3').Statement<unknown[], Row>}
+ */
+function stmt(db, sql) {
+  return /** @type {import('better-sqlite3').Statement<unknown[], Row>} */ (db.prepare(sql));
+}
+
 function columnsOf(db, table) {
-  try { return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)); }
+  try { return new Set(stmt(db, `PRAGMA table_info(${table})`).all().map(c => c.name)); }
   catch { return new Set(); }
 }
 
@@ -99,9 +120,9 @@ export function seedDqRules(kbDb, semDb, { tables = [], all = false, log = () =>
   // Resolve the table list against the KB so names come back in canonical case.
   let tableNames;
   if (all) {
-    tableNames = kbDb.prepare('SELECT table_name FROM tables ORDER BY table_name').all().map(r => r.table_name);
+    tableNames = stmt(kbDb, 'SELECT table_name FROM tables ORDER BY table_name').all().map(r => r.table_name);
   } else {
-    const find = kbDb.prepare('SELECT table_name FROM tables WHERE table_name = ? COLLATE NOCASE');
+    const find = stmt(kbDb, 'SELECT table_name FROM tables WHERE table_name = ? COLLATE NOCASE');
     tableNames = [];
     for (const t of tables) {
       const row = find.get(t);
@@ -110,6 +131,7 @@ export function seedDqRules(kbDb, semDb, { tables = [], all = false, log = () =>
     }
   }
 
+  /** @type {Record<string, {inserted:number, unchanged:number, versioned:number, confirmed:number}>} */
   const counts = {};
   const bump = (dim, action) => {
     counts[dim] ??= { inserted: 0, unchanged: 0, versioned: 0, confirmed: 0 };
@@ -117,13 +139,13 @@ export function seedDqRules(kbDb, semDb, { tables = [], all = false, log = () =>
   };
   const skipped = [];
 
-  const fieldsStmt = kbDb.prepare(`SELECT * FROM fields WHERE table_name = ? COLLATE NOCASE ORDER BY field_name`);
-  const edtStmt = cols.edts.has('edt_name') ? kbDb.prepare(`SELECT * FROM edts WHERE edt_name = ? COLLATE NOCASE`) : null;
-  const enumStmt = cols.enums.has('enum_name') ? kbDb.prepare(`SELECT * FROM enums WHERE enum_name = ? COLLATE NOCASE`) : null;
-  const idxStmt = cols.indexes.has('table_name') ? kbDb.prepare(`SELECT * FROM indexes_tbl WHERE table_name = ? COLLATE NOCASE`) : null;
-  const relStmt = cols.relations.has('source_table') ? kbDb.prepare(`SELECT * FROM relations WHERE source_table = ? COLLATE NOCASE`) : null;
-  const entStmt = cols.data_entities.has('primary_table') ? kbDb.prepare(`SELECT * FROM data_entities WHERE primary_table = ? COLLATE NOCASE`) : null;
-  const entFieldsStmt = cols.entity_fields.has('entity_name') ? kbDb.prepare(`SELECT * FROM entity_fields WHERE entity_name = ? COLLATE NOCASE`) : null;
+  const fieldsStmt = stmt(kbDb, `SELECT * FROM fields WHERE table_name = ? COLLATE NOCASE ORDER BY field_name`);
+  const edtStmt = cols.edts.has('edt_name') ? stmt(kbDb, `SELECT * FROM edts WHERE edt_name = ? COLLATE NOCASE`) : null;
+  const enumStmt = cols.enums.has('enum_name') ? stmt(kbDb, `SELECT * FROM enums WHERE enum_name = ? COLLATE NOCASE`) : null;
+  const idxStmt = cols.indexes.has('table_name') ? stmt(kbDb, `SELECT * FROM indexes_tbl WHERE table_name = ? COLLATE NOCASE`) : null;
+  const relStmt = cols.relations.has('source_table') ? stmt(kbDb, `SELECT * FROM relations WHERE source_table = ? COLLATE NOCASE`) : null;
+  const entStmt = cols.data_entities.has('primary_table') ? stmt(kbDb, `SELECT * FROM data_entities WHERE primary_table = ? COLLATE NOCASE`) : null;
+  const entFieldsStmt = cols.entity_fields.has('entity_name') ? stmt(kbDb, `SELECT * FROM entity_fields WHERE entity_name = ? COLLATE NOCASE`) : null;
 
   /** Resolve an EDT's string size, following extends_edt up to 8 levels. */
   function edtStringSize(edtName) {

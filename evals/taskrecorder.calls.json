@@ -1,0 +1,96 @@
+{
+  "service": "taskrecorder",
+  "note": "Every pair converts the two fixture recordings with taskrecorder_to_markdown (`@b64:<path>` is expanded by the runner to the file's base64). r[0] = taskrec-sample.axtr (A), r[1] = test.axtr (B); each structuredContent is {markdown, file_name}. `expr` parses the markdown and must evaluate to the <answer> string.",
+  "pairs": [
+    {
+      "id": 1,
+      "title": "Total user actions across A and B",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "r.map(x => +/\\*\\*Total User Actions\\*\\* \\| (\\d+)/.exec(x.markdown)[1]).reduce((a, b) => a + b, 0)"
+    },
+    {
+      "id": 2,
+      "title": "Form visited in B but not in A",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(forms => forms(r[1]).filter(n => !forms(r[0]).includes(n)).join(','))(x => [...x.markdown.split('## Forms Visited')[1].split('## Recorded Steps')[0].matchAll(/\\| \\d+ \\| `(\\w+)`/g)].map(m => m[1]))"
+    },
+    {
+      "id": 3,
+      "title": "Which recording navigates, and to which menu item",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(hits => hits.length === 1 ? hits[0].file_name + ',' + /\\*\\*Menu Item:\\*\\* `(\\w+)`/.exec(hits[0].markdown)[1] : 'not unique')(r.filter(x => x.markdown.includes('**Navigate:**')))"
+    },
+    {
+      "id": 4,
+      "title": "Data-source tables: B minus A",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(ds => ds(r[1]) - ds(r[0]))(x => x.markdown.split('## Data Sources')[1].split('## Security Roles')[0].split('\\n').filter(l => /^\\| `/.test(l)).reduce((n, l) => n + (l.split('|')[2].match(/`[^`]+`/g) || []).length, 0))"
+    },
+    {
+      "id": 5,
+      "title": "Null-control recording and the other's hyperlink control",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(a => a.file_name + ',' + /\\*\\*Action:\\*\\* Command \\(ExecuteHyperlink\\)\\n- \\*\\*Control:\\*\\* [^\\n]*?\\[(\\w+)\\]/.exec(r.find(x => x !== a).markdown)[1])(r.find(x => /\\*\\*Control:\\*\\* null/.test(x.markdown)))"
+    },
+    {
+      "id": 6,
+      "title": "Distinct command action types across both",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "[...new Set(r.flatMap(x => [...x.markdown.matchAll(/\\*\\*Action:\\*\\* Command \\((\\w+)\\)/g)].map(m => m[1])))].sort().join(',')"
+    },
+    {
+      "id": 7,
+      "title": "Distinct privileges in both BPM role tables",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "new Set(r.flatMap(x => x.markdown.split('## Security Roles')[1].split('## Scope Tree')[0].split('\\n').filter(l => /^\\| /.test(l) && !/^\\| Role|^\\| ---/.test(l)).map(l => /`([^`]+)`/.exec(l.split('|')[3])[1]))).size"
+    },
+    {
+      "id": 8,
+      "title": "Full-control privilege in A, Full-control rows in B",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(rows => [...new Set(rows(r[0]).filter(l => /Full control/.test(l)).map(l => /`([^`]+)`/.exec(l.split('|')[3])[1]))].join('+') + ',' + rows(r[1]).filter(l => /Full control/.test(l)).length)(x => x.markdown.split('## Security Roles')[1].split('## Scope Tree')[0].split('\\n').filter(l => /^\\| /.test(l) && !/^\\| Role|^\\| ---/.test(l)))"
+    },
+    {
+      "id": 9,
+      "title": "Same recording name? Same canonical ID?",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(g => (g(r[0], 'Recording Name') === g(r[1], 'Recording Name') ? 'True' : 'False') + ',' + (g(r[0], 'Canonical ID') === g(r[1], 'Canonical ID') ? 'True' : 'False'))((x, k) => new RegExp('\\\\*\\\\*' + k + '\\\\*\\\\* \\\\| `?([^|`]+)').exec(x.markdown)[1].trim())"
+    },
+    {
+      "id": 10,
+      "title": "The one list/grid-context step",
+      "calls": [
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/taskrec-sample.axtr", "file_name": "taskrec-sample.axtr" } },
+        { "tool": "taskrecorder_to_markdown", "arguments": { "file_content": "@b64:test/fixtures/test.axtr", "file_name": "test.axtr" } }
+      ],
+      "expr": "(hits => hits.length === 1 ? hits[0].file_name + ',' + /### Step (\\d+)\\n[^#]*?List\\/Grid Context:\\*\\* (\\w+)/.exec(hits[0].markdown).slice(1).join(',') : 'not unique')(r.filter(x => x.markdown.includes('List/Grid Context')))"
+    }
+  ]
+}

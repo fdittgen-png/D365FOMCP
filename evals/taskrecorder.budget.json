@@ -1,0 +1,24 @@
+{
+  "service": "taskrecorder",
+  "note": "Token-discipline dimension. The Task Recorder has one read-only tool, so the lever is not filtering but tool CHOICE within the service: taskrecorder_to_markdown (~3 KB and ~7 KB for the two fixtures) answers every question here; taskrecorder_to_document is 12 KB of structuredContent plus a 9 KB .mhtml written to disk, and is never the right call for a fact question. Ceilings are measured x 1.5.",
+  "pairs": {
+    "1": {
+      "lever": "two taskrecorder_to_markdown calls, one per file; never taskrecorder_to_document",
+      "expected_tools": ["taskrecorder_to_markdown", "taskrecorder_to_markdown"],
+      "measured_bytes": 9773,
+      "max_structured_bytes": 14660
+    },
+    "4": {
+      "lever": "same two conversions; the Data Sources table is in the markdown, no KB call needed",
+      "expected_tools": ["taskrecorder_to_markdown", "taskrecorder_to_markdown"],
+      "measured_bytes": 9773,
+      "max_structured_bytes": 14660
+    },
+    "7": {
+      "lever": "same two conversions; the BPM role table is in the markdown, no Sec call needed",
+      "expected_tools": ["taskrecorder_to_markdown", "taskrecorder_to_markdown"],
+      "measured_bytes": 9773,
+      "max_structured_bytes": 14660
+    }
+  }
+}
