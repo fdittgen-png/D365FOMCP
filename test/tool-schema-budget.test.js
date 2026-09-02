@@ -102,20 +102,30 @@ const BUDGET = {
   // -> 76,400 and 22 tools (#85 d365_effective_schema, +5,679 B); -> 77,100
   // (#109 cursor pagination); -> 91,100 and 26 tools (W7 #111, four semantic
   // tools +11,656 B); W1 (#105) 88,940 measured -> 74,354, ceiling 75,800.
-  kb: { maxBytes: 75_800, tools: 26 },
+  // Q2–Q5 (#115–#118, 2026-09-02): 74,354 -> 75,439 (+1,085): functional_context
+  // on 5 tools +697 inputSchema · coverage keys (partial_build on 17 schemas +
+  // the field/provenance/ISV keys) +858 outputSchema · routing prose out of 8
+  // descriptions −470. Ceiling 76,900.
+  kb: { maxBytes: 76_900, tools: 26 },
   // xref 37,300 -> 38,600 (#83 objects[]); W1: 38,702 measured -> 35,047, ceiling 35,700.
-  xref: { maxBytes: 35_700, tools: 17 },
+  // Q2–Q5: 35,047 -> 36,800 (+1,753): xref_check_exists +1,599 (18 tools) ·
+  // functional_context ×2 +280 · coverage keys +177 · description trims −304. Ceiling 37,500.
+  xref: { maxBytes: 37_500, tools: 18 },
   // sec 37,500 -> 38,700 (W3 #107.1 summary views) -> 39,800 (#107.6 limits) ->
   // 42,600 (#83 sec_lookup_role role_names[]: +2,363 B, mostly the payload keys
   // repeated as optional beside roles[] — the price of a disjoint single/batch
   // contract inside ONE object schema; W1 could not remove it without $ref).
   // W1: 42,881 measured -> 38,234, ceiling 39,000.
-  sec: { maxBytes: 39_000, tools: 18 },
+  // Q2–Q5: 38,278 -> 40,430 (+2,152): sec_check_exists +1,847 (19 tools) ·
+  // functional_context ×2 +320 · description trim −16. Ceiling 41,200.
+  sec: { maxBytes: 41_200, tools: 19 },
   // W1: 13,287 measured -> 8,131 (descriptions 1,755+755 chars and 2.7 KB of
   // output prose on taskrecorder_to_document), ceiling 8,290.
   taskrecorder: { maxBytes: 8_290, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 158_800;
+// 160,800 B measured after Q2–Q5 (was 155,810): +4,990 = two preflight tools
+// +3,446 · functional_context ×9 +1,297 · coverage keys +1,035 · trims −790.
+const TOTAL_MAX_BYTES = 163_500;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {
@@ -402,4 +412,30 @@ test('tool-schema budget: no parameter description is duplicated at ruinous cost
     'A shared parameter description is duplicated across too many tools. Shorten it — '
     + 'the long form belongs in CLAUDE.md / the skill, where it is paid once, not on '
     + `every request. Offenders: ${offenders.map(o => `${o.param}: "${o.description.slice(0, 60)}…"`).join(' | ')}`);
+});
+
+test('tool-schema budget: the preflight check tools stay tiny on the wire (#118)', async () => {
+  // These two exist to be CHEAP on tools/list — a preflight that costs as much
+  // as the lookups it replaces has no reason to exist. Output schema ≤ 1.2 KB
+  // each (the issue's contract); the whole tool entry is asserted too so a
+  // description or input-schema creep is caught the same way.
+  // Measured 2026-09-02: xref_check_exists 1,599 B (outputSchema 724, inputSchema
+  // 576 — the `type` enum), sec_check_exists 1,847 B (outputSchema 779,
+  // inputSchema 730 — four name arrays). The issue's ≤2,500 B for the PAIR was
+  // not reachable without dropping one of those; the pair is 3,446 B.
+  const OUTPUT_MAX = 1_200;
+  const TOOL_MAX = 1_900;
+  const found = [];
+  for (const [svc, name] of [['xref', 'xref_check_exists'], ['sec', 'sec_check_exists']]) {
+    const m = await measureService(svc);
+    const t = m.tools.find(x => x.name === name);
+    assert.ok(t, `${svc}: ${name} is not registered`);
+    found.push(t);
+  }
+  console.log(`\npreflight check tools (#118):\n${found.map(t =>
+    `  ${t.name.padEnd(18)} ${String(t.bytes).padStart(5)} B total · outputSchema ${t.fields.outputSchema} B · inputSchema ${t.fields.inputSchema} B · description ${t.fields.description} B`).join('\n')}\n`);
+  for (const t of found) {
+    assert.ok(t.fields.outputSchema <= OUTPUT_MAX, `${t.name}: outputSchema is ${t.fields.outputSchema} B, over the ${OUTPUT_MAX} B contract`);
+    assert.ok(t.bytes <= TOOL_MAX, `${t.name}: ${t.bytes} B on the wire, over the ${TOOL_MAX} B ceiling`);
+  }
 });

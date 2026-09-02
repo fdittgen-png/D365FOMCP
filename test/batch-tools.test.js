@@ -18,9 +18,16 @@ import { registerKbTools } from '../src/azure/kb-tools.js';
 import { registerXrefTools } from '../src/azure/xref-tools.js';
 import { registerSecTools } from '../src/azure/sec-tools.js';
 import { ensureIsvSchema } from '../src/azure/isv-schema.js';
+import { coverageKeys } from '../src/azure/output-schemas.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
+
+// Coverage-boundary keys (#116) are per-RESPONSE signals that fire on the
+// fixture (no ISV scan → `isv_not_scanned`); they are not batch keys, so the
+// "single payload is exactly the pre-batching shape" assertions look past them.
+const COVERAGE = new Set(Object.keys(coverageKeys));
+const dataKeys = (t) => Object.keys(t).filter(k => !COVERAGE.has(k)).sort();
 
 function mockServer() {
   const tools = new Map();
@@ -313,7 +320,7 @@ test('d365_search: a single-query call is unchanged by batching', async () => {
   const t = r.structuredContent;
   assert.equal(t.query, 'payment');
   assert.equal(t.result_count, 2);
-  assert.deepEqual(Object.keys(t).sort(),
+  assert.deepEqual(dataKeys(t),
     ['has_more', 'limit', 'modules', 'object_type', 'query', 'result_count', 'results', 'truncated'],
     'a single-query payload must carry no batch keys (has_more is the W5 page key)');
 });
@@ -354,7 +361,7 @@ test('xref_find_references: a single-object call is unchanged by batching', asyn
   const t = r.structuredContent;
   assert.equal(t.target_path, '/Tables/CustTable');
   assert.equal(t.result_count, 3);
-  assert.deepEqual(Object.keys(t).sort(),
+  assert.deepEqual(dataKeys(t),
     ['has_more', 'isv', 'kind_filter', 'limit', 'references', 'result_count', 'target_path', 'truncated'],
     'a single-object payload must be exactly the pre-batching shape (has_more is the W5 page key)');
 });
@@ -501,4 +508,108 @@ test('xref_find_references: an object with only ISV callers is not reported as e
   assert.ok(!r.isError, 'this is not an emptyResult — there *are* references, just not indexed ones');
   assert.match(r.content[0].text, /Sealed ISV models/,
     'reporting "no references" here would be exactly the wrong answer');
+});
+
+/* ── xref_check_exists / sec_check_exists (issue #118, Q5) ───────────────── */
+//
+// Batch is the ONLY shape: one target is a batch of one, a miss is data in
+// `not_found` (rule 2), never notFoundResult. Path-vs-name aware on XRef,
+// casing-tolerant with canonical spelling on Sec.
+
+test('xref_check_exists: acceptance — one miss with SalesTable suggested, one table, one method', async () => {
+  const s = mockServer();
+  registerXrefTools(s, xrefDb());
+  const r = await s.call('xref_check_exists', { objects: [{ name: 'SalesTabel' }, { name: 'SalesTable' }, { name: 'SalesFormLetter.run' }] });
+  assert.ok(!r.isError, 'a partial batch is a success');
+  const t = r.structuredContent;
+  assert.equal(t.requested_count, 3);
+  assert.equal(t.found_count, 2);
+  assert.deepEqual(t.objects, [
+    { name: 'SalesTable', exists: true, type: 'table', module: 'ApplicationSuite', path: '/Tables/SalesTable' },
+    { name: 'SalesFormLetter.run', exists: true, type: 'method', module: 'ApplicationSuite', path: '/Classes/SalesFormLetter/Methods/run' },
+  ]);
+  assert.deepEqual(t.not_found, [{ name: 'SalesTabel', suggestions: ['SalesTable'] }]);
+  const h2 = r.content[0].text.split('\n').filter(l => /^## /.test(l));
+  assert.equal(h2.length, 1, 'exactly one H2 (rule #3)');
+  assert.match(r.content[0].text, /did you mean `SalesTable`/);
+});
+
+test('xref_check_exists: case-only spelling is a hit with the canonical path; paths, typed lookups and method near-misses', async () => {
+  const s = mockServer();
+  registerXrefTools(s, xrefDb());
+  const r = await s.call('xref_check_exists', { objects: [
+    { name: 'custtable' },                       // case-only → exists, canonical path
+    { name: '/Classes/SalesFormLetter' },        // explicit path
+    { name: 'SalesFormLetter', type: 'table' },  // wrong node → miss
+    { name: 'SalesFormLetter.runn' },            // method near-miss → owner.method suggestion
+    { name: 'Nothing' },                         // no suggestion at all → empty list, still data
+  ] });
+  const t = r.structuredContent;
+  assert.equal(t.found_count, 2);
+  assert.deepEqual(t.objects.map(o => [o.name, o.type, o.path]), [
+    ['custtable', 'table', '/Tables/CustTable'],
+    ['/Classes/SalesFormLetter', 'class', '/Classes/SalesFormLetter'],
+  ]);
+  assert.deepEqual(t.not_found, [
+    { name: 'SalesFormLetter', suggestions: [] },
+    { name: 'SalesFormLetter.runn', suggestions: ['SalesFormLetter.run'] },
+    { name: 'Nothing', suggestions: [] },
+  ]);
+  assert.equal((await s.call('xref_check_exists', { objects: [] })).isError, true, 'no names is invalid input');
+  assert.equal((await s.call('xref_check_exists', { objects: [{ name: 'Ghost' }] })).isError, undefined, 'a batch of one miss is still a success');
+});
+
+function secCheckDb() {
+  const db = secDb();
+  db.exec(`
+    CREATE TABLE privileges (privilege_name TEXT PRIMARY KEY, module_id TEXT, label TEXT);
+    CREATE TABLE privilege_entry_points (privilege_name TEXT, entry_point_name TEXT, object_type TEXT, object_name TEXT,
+      grant_read TEXT, grant_create TEXT, grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT);
+    INSERT INTO roles (role_id, role_name, license_type) VALUES ('AccountsPayableClerk', 'Accounts payable clerk', 'Activity');
+    INSERT INTO privileges VALUES ('CustGroupView', 'ApplicationSuite', 'View customer groups');
+    INSERT INTO privilege_entry_points VALUES ('CustGroupView', 'CustGroup', 'MenuItemDisplay', 'CustGroup', 'Allow', NULL, NULL, NULL, NULL, NULL);
+  `);
+  return db;
+}
+
+test('sec_check_exists: acceptance — DMF-UPPERCASE role id and a privilege both exist, canonical AOT casing returned', async () => {
+  const s = mockServer();
+  registerSecTools(s, secCheckDb());
+  const r = await s.call('sec_check_exists', { roles: ['ACCOUNTSPAYABLECLERK'], privileges: ['custgroupview'] });
+  assert.ok(!r.isError);
+  const t = r.structuredContent;
+  assert.equal(t.requested_count, 2);
+  assert.equal(t.found_count, 2);
+  assert.deepEqual(t.artefacts, [
+    { name: 'ACCOUNTSPAYABLECLERK', exists: true, kind: 'role', label: 'Accounts payable clerk', canonical_name: 'AccountsPayableClerk' },
+    { name: 'custgroupview', exists: true, kind: 'privilege', label: 'View customer groups', canonical_name: 'CustGroupView' },
+  ]);
+  assert.deepEqual(t.not_found, []);
+  const h2 = r.content[0].text.split('\n').filter(l => /^## /.test(l));
+  assert.equal(h2.length, 1, 'exactly one H2 (rule #3)');
+});
+
+test('sec_check_exists: display names, duties, entry points; misses are data with suggestions; a partial batch is a success', async () => {
+  const s = mockServer();
+  registerSecTools(s, secCheckDb());
+  const r = await s.call('sec_check_exists', {
+    roles: ['ap CLERK', 'AP clerkk', 'Ghost'], duties: ['duty ONE', 'D1'], entry_points: ['custgroup', 'Nope'],
+  });
+  assert.ok(!r.isError);
+  const t = r.structuredContent;
+  assert.equal(t.requested_count, 7);
+  assert.equal(t.found_count, 4);
+  assert.deepEqual(t.artefacts.map(a => [a.kind, a.canonical_name, a.label]), [
+    ['role', 'AP clerk', 'AP clerk'],            // matched on the display name → its stored spelling
+    ['duty', 'Duty one', 'Duty one'],
+    ['duty', 'D1', 'Duty one'],                  // matched on the id → the id
+    ['entry_point', 'CustGroup', 'MenuItemDisplay'],
+  ]);
+  assert.deepEqual(t.not_found, [
+    { name: 'AP clerkk', kind: 'role', suggestions: ['AP clerk'] },
+    { name: 'Ghost', kind: 'role', suggestions: [] },
+    { name: 'Nope', kind: 'entry_point', suggestions: [] },
+  ]);
+  assert.equal((await s.call('sec_check_exists', {})).isError, true, 'no names is invalid input');
+  assert.equal((await s.call('sec_check_exists', { roles: ['Ghost'] })).isError, undefined, 'a batch of one miss is still a success');
 });

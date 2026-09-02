@@ -9,12 +9,13 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { registerResources, snapshotInfo, modulesInfo, RESOURCE_URIS } from '../src/azure/resources.js';
-import { registerServiceTools, deriveToolTitle, TOOL_SETS } from '../src/azure/tool-sets.js';
+import { registerResources, snapshotInfo, modulesInfo, RESOURCE_URIS, toolGuideText, TOOL_GUIDE_PATH } from '../src/azure/resources.js';
+import { registerServiceTools, deriveToolTitle, TOOL_SETS, serviceToolNames } from '../src/azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../src/azure/server-metadata.js';
 import { MODEL_VERSIONS_SCHEMA } from '../src/azure/model-descriptors.js';
 
@@ -94,11 +95,29 @@ describe('resources — over the wire, registered by registerServiceTools', () =
     const { client, close } = await connect(server);
     try {
       const list = await client.listResources();
-      assert.deepEqual(list.resources.map(r => r.uri).sort(), [RESOURCE_URIS.modules, RESOURCE_URIS.snapshot]);
+      assert.deepEqual(list.resources.map(r => r.uri).sort(), [RESOURCE_URIS.modules, RESOURCE_URIS.snapshot, RESOURCE_URIS.toolGuide]);
       for (const r of list.resources) {
-        assert.equal(r.mimeType, 'application/json');
+        assert.equal(r.mimeType, r.uri === RESOURCE_URIS.toolGuide ? 'text/markdown' : 'application/json');
         assert.ok(r.title && r.description, `${r.uri} carries title + description`);
       }
+
+      // #117 item 3: the long-form routing guide, served from docs/Tool-Guide.md.
+      const guide = await client.readResource({ uri: RESOURCE_URIS.toolGuide });
+      assert.equal(guide.contents[0].mimeType, 'text/markdown');
+      const md = guide.contents[0].text;
+      assert.equal(md, toolGuideText());
+      assert.equal(md, readFileSync(TOOL_GUIDE_PATH, 'utf8'), 'the resource IS the checked-in document');
+      assert.ok(md.startsWith('# D365FO MCP — Tool Guide'));
+      for (const section of ['## Verb contract', '## First-call rules', '## Workflow recipes', '## Anti-patterns']) {
+        assert.ok(md.includes(section), `tool guide has ${section}`);
+      }
+      assert.ok(md.split('\n').length <= 200, `tool guide is ≤ 200 lines (${md.split('\n').length})`);
+      assert.equal((md.match(/^\d+\. \*\*/gm) ?? []).length, 14, 'the 14 workflow recipes');
+      assert.doesNotMatch(md, /C:\\Users|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, 'no personal paths or e-mails');
+      // Every tool the guide names exists on some service.
+      const known = new Set(['kb', 'xref', 'sec', 'taskrecorder'].flatMap(s => serviceToolNames(s, kbDb())));
+      const named = [...new Set(md.match(/\b(?:d365|xref|sec|taskrecorder)_[a-z0-9_]+/g) ?? [])];
+      assert.deepEqual(named.filter(n => !known.has(n)), [], 'tool guide names only registered tools');
 
       const snap = await client.readResource({ uri: RESOURCE_URIS.snapshot });
       assert.equal(snap.contents[0].uri, RESOURCE_URIS.snapshot);
@@ -119,13 +138,14 @@ describe('resources — over the wire, registered by registerServiceTools', () =
     } finally { await close(); }
   });
 
-  it('Task Recorder (no database) exposes the snapshot resource only', async () => {
+  it('Task Recorder (no database) exposes the snapshot resource and the tool guide, not the modules list', async () => {
     const server = new McpServer(serverInfo('taskrecorder'), serverOptions('taskrecorder'));
     registerServiceTools('taskrecorder', server);
     const { client, close } = await connect(server);
     try {
       const list = await client.listResources();
-      assert.deepEqual(list.resources.map(r => r.uri), [RESOURCE_URIS.snapshot]);
+      assert.deepEqual(list.resources.map(r => r.uri).sort(), [RESOURCE_URIS.snapshot, RESOURCE_URIS.toolGuide], 'no modules without a db; the tool guide is for every service');
+      assert.ok((await client.readResource({ uri: RESOURCE_URIS.toolGuide })).contents[0].text.includes('taskrecorder_to_markdown'));
       const s = JSON.parse((await client.readResource({ uri: RESOURCE_URIS.snapshot })).contents[0].text);
       assert.equal(s.service, 'taskrecorder');
       assert.equal(s.build_date, null);

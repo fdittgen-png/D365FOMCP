@@ -44,7 +44,7 @@ export function registerIsvXrefTools(server, db) {
     'xref_isv_find_usages',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Where sealed (binary-only) ISV models reference a standard D365FO object — cross-references the main XRef database lacks for every model without X++ source. Use with xref_find_usages before changing or deprecating an object: the main tool cannot see ISV callers.',
+      description: 'Where sealed (binary-only) ISV models reference a standard D365FO object — the cross-references the main XRef database lacks for every model without X++ source (the main tools cannot see ISV callers).',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object to find ISV references to, e.g. "CustTable", "SalesFormLetter". Matched against the reference target path.'),
         object_type: z.enum(['Tables', 'Classes', 'Forms', 'Enums', 'Edts', 'Queries', 'Views', 'any'])

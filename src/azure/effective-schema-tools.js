@@ -37,9 +37,12 @@ import {
   queryModelVersions,
   validateLikePattern,
   patternErrorResult,
+  coverageNotes,
+  readKbMetadataFlag,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
 import { hasIsvData, isvProvenance, isvProvenanceNote } from './isv-schema.js';
+import { semanticStore, recordContextHint, functionalContextParam } from './tool-guards.js';
 import { d365EffectiveSchemaOutput } from './output-schemas.js';
 
 const FIELD_LIMIT_DEFAULT = 300;
@@ -73,29 +76,37 @@ function toNum(v) {
 }
 const toStr = (v) => (v == null ? null : String(v));
 
-export function registerEffectiveSchemaTools(server, db) {
+/** @param {{ semanticDb?: any }} [opts] test injection of the semantic store (#115) */
+export function registerEffectiveSchemaTools(server, db, opts = {}) {
+  const { semanticDb } = opts;
   const q = (sql, params = []) => query(db, sql, params);
   const tableHasColumn = (table, col) => {
     try { return q(`PRAGMA table_info(${table})`).some(c => c.name === col); } catch { return false; }
   };
   const fieldsHaveCustomization = tableHasColumn('fields', 'is_extension');
+  // Same wiring as registerKbTools (#115 / #116): lazy semantic store, and the
+  // build-level coverage facts read once per registration.
+  const semDb = () => semanticDb ?? semanticStore();
+  const partialBuildSince = readKbMetadataFlag(db, 'partial_build');
+  const isvScanned = hasIsvData(db);
 
   server.registerTool(
     'd365_effective_schema',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Merged view of a table as it exists here: base fields plus every table-extension field, each attributed to its model (origin, module, model_origin microsoft/isv/custom), with indexes, relations and the sealed-ISV extensions known by name. Replaces lookup_table + find_extensions + one lookup per model.',
+      description: 'Merged view of a table as it exists here: base fields plus every table-extension field, each attributed to its model (origin, module, model_origin microsoft/isv/custom), with indexes, relations and the sealed-ISV extensions known by name.',
       inputSchema: {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive)'),
         include_isv: z.boolean().optional().default(true).describe('Include sealed-ISV table extensions (inventory only — no field list exists for them). Default true.'),
         modules: modulesFilterParam,
         field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT)
           .describe(`Max fields to list; counts are always whole-table.`),
+        functional_context: functionalContextParam,
         format: formatTextParam,
       },
       outputSchema: d365EffectiveSchemaOutput.shape,
     },
-    async ({ table_name, include_isv, modules, field_limit, format }) => {
+    async ({ table_name, include_isv, modules, field_limit, functional_context, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = String(table_name ?? '').trim();
       // Defensive defaults - the test mock server bypasses Zod (rule #13).
@@ -113,9 +124,12 @@ export function registerEffectiveSchemaTools(server, db) {
         const pv = validateLikePattern(tn);
         if (pv) return patternErrorResult(pv);
         const fuzzy = q(`SELECT table_name FROM tables WHERE table_name LIKE ? COLLATE NOCASE LIMIT 10`, [`%${tn}%`]);
-        return notFoundResult('Table', tn, fuzzy.map(r => r.table_name));
+        return notFoundResult('Table', tn, fuzzy.map(r => r.table_name), {
+          db, kind: 'table', functional_context, semanticDb: functional_context ? semDb() : undefined,
+        });
       }
       const row = tbl[0];
+      if (functional_context) recordContextHint(semDb(), { functional_context, object_type: 'table', object_name: row.table_name });
 
       // Model origin (microsoft / isv / custom) keyed by model name and package.
       const originByModel = new Map();
@@ -170,7 +184,7 @@ export function registerEffectiveSchemaTools(server, db) {
 
       // Sealed ISV: an inventory of table extensions and delete actions, never
       // fields. Absent (not empty) when not asked for or on a pre-ISV database.
-      const isvAvailable = wantIsv && hasIsvData(db);
+      const isvAvailable = wantIsv && isvScanned;
       let isvExt = [];
       let isvDel = [];
       if (isvAvailable) {
@@ -283,7 +297,15 @@ export function registerEffectiveSchemaTools(server, db) {
         out += '_Sealed models publish an element inventory, not a field list: the fields these extensions add are not enumerable here._\n';
       }
 
-      return structuredResult(typed, out, format);
+      // Coverage (#116): field cap, whether sealed-ISV extensions could be in
+      // this snapshot at all, and the delta-merge flag.
+      return structuredResult(typed, out, format, {
+        coverage: coverageNotes({
+          field_limit_hit: typed.fields_truncated ? { shown: typed.fields_shown, total: typed.field_count } : null,
+          isv_not_scanned: !isvScanned,
+          partial_build: partialBuildSince ? { since: partialBuildSince } : null,
+        }),
+      });
     },
   );
 }

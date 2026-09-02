@@ -27,15 +27,46 @@
  * them; a mock server without `registerResource` is a silent no-op.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
 import { query, queryModelVersions, snapshotDate, readBuildDate } from './shared.js';
 import { hasIsvData } from './isv-schema.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export const RESOURCE_URIS = Object.freeze({
   snapshot: 'd365://snapshot',
   modules: 'd365://modules',
+  // Q4 (#117 item 3): the long-form routing guide — verb contract, first-call
+  // rules, the 14 workflow recipes, anti-patterns. The SHORT form is each
+  // server's `instructions` (server-metadata.js); tool descriptions carry
+  // neither, because they are paid on every request.
+  toolGuide: 'd365://tool-guide',
 });
 
 const MIME = 'application/json';
+const MIME_MD = 'text/markdown';
+
+export const TOOL_GUIDE_PATH = join(__dirname, '..', '..', 'docs', 'Tool-Guide.md');
+
+let _toolGuide = null;
+/**
+ * The `d365://tool-guide` text, read once per process from docs/Tool-Guide.md.
+ * Never throws: a missing file yields a one-line Markdown note so the resource
+ * read stays a document, not a protocol error.
+ */
+export function toolGuideText() {
+  if (_toolGuide !== null) return _toolGuide;
+  try {
+    _toolGuide = readFileSync(TOOL_GUIDE_PATH, 'utf8');
+  } catch (err) {
+    console.error(`[resources] tool-guide unavailable: ${err?.message ?? err}`);
+    _toolGuide = '# D365FO MCP — Tool Guide\n\n_Guide file not shipped with this build; see the server instructions._\n';
+  }
+  return _toolGuide;
+}
 
 function metaValue(db, key) {
   if (!db || typeof db.prepare !== 'function') return null;
@@ -130,6 +161,20 @@ export function registerResources(server, { db = null, service = 'snapshot', too
     );
     registered.push(RESOURCE_URIS.modules);
   }
+
+  // All four services, database or not: routing is a property of the tool set,
+  // not of the snapshot.
+  server.registerResource(
+    'tool-guide',
+    RESOURCE_URIS.toolGuide,
+    {
+      title: 'Tool guide',
+      description: 'Verb contract, first-call rules per service, the 14 workflow recipes and anti-patterns for the D365FO MCP tools.',
+      mimeType: MIME_MD,
+    },
+    (uri) => ({ contents: [{ uri: String(uri), mimeType: MIME_MD, text: toolGuideText() }] }),
+  );
+  registered.push(RESOURCE_URIS.toolGuide);
 
   return registered;
 }

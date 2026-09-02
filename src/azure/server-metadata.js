@@ -80,10 +80,18 @@ export const SERVICES = Object.freeze({
       'forms, menu items, labels and per-model build provenance (Microsoft / ISV / custom layer). ' +
       'Includes curated anti-hallucination data: AX2012→D365 field renames, hallucination traps and verified SQL templates. ' +
       'Read-only snapshot; every data response carries its snapshot date.',
+    // ≤ 600 chars (#117): verb contract · first-call rule · the habits that save
+    // the most · the boundary line. Routing prose lives HERE (paid once per
+    // session), not in tool descriptions (paid on every request). Long form:
+    // resource d365://tool-guide. Every claim is tested against the registered
+    // tools in test/server-metadata.test.js.
     instructions:
-      'Start with d365_search or d365_lookup_table; use d365_check_field_exists before asserting a field exists; ' +
-      'resolve enums with d365_get_enum; use the `modules` filter to scope to custom/ISV models; ' +
-      'd365_raw_sql is last resort (read-only, LIMIT, COLLATE NOCASE). Responses default to TOON — pass format:"markdown" only for human-facing prose.',
+      'lookup_* = one object in full · get_* = one aspect · find_*/list_* = a list · check_* = boolean, batchable · ' +
+      'search = ranked by text · resolve_* = id→text · isv_* = sealed-ISV metadata. ' +
+      'First call: d365_lookup_table when the name is known, d365_search when not; d365_check_field_exists before asserting a field. ' +
+      'Save tokens: limit / fields_like / custom_only, the modules filter, batch params (enum_names, tables), cursor paging. ' +
+      'Every data response carries its snapshot date and states what it does NOT cover; a not-found lists the closest names. ' +
+      'd365_raw_sql is last resort (LIMIT).',
   },
   xref: {
     name: 'd365fo-xref',
@@ -95,8 +103,11 @@ export const SERVICES = Object.freeze({
       'Impact analysis, Chain-of-Command extension discovery, event handlers, class hierarchies, interface implementors, ' +
       'cross-module dependencies. Read-only snapshot; every data response carries its snapshot date.',
     instructions:
-      'Use xref_object_summary first for counts, then xref_find_references / xref_find_method_callers / xref_find_extensions for detail; ' +
-      'xref_impact_analysis before modifying an object. Always pass `limit`; the database is 3 GB — never SELECT * via xref_raw_sql.',
+      'find_* = a list · check_* = boolean, batch · object_summary = counts · class_*/interface_*/method_* = one aspect · impact_analysis = blast radius · ' +
+      'search_names = PATH pattern · list_*/module_*/cross_* = catalogues · isv_* = sealed ISV. ' +
+      'First call: xref_check_exists for names, xref_object_summary for counts, then find_*; xref_impact_analysis before modifying. ' +
+      'limit; modules; batch object_names; cursor paging. Responses state what they do not cover (ISV unless include_isv). ' +
+      '0 rows from search_names without leading % = path miss, not absence — retry %name%. raw_sql: LIMIT only.',
   },
   sec: {
     name: 'd365fo-sec',
@@ -108,8 +119,12 @@ export const SERVICES = Object.freeze({
       'and licence (Team Members / Activity / Operations) assessment. Labels resolved to English text. ' +
       'Internal staff data only — no customer or vendor records. Read-only snapshot; every data response carries its snapshot date.',
     instructions:
-      'For "can user X do Y" use sec_effective_permissions or sec_permission_trace (walks role→duty→privilege→entry point, Deny wins). ' +
-      'Object names are case-insensitive. Verify every permission claim with a trace before stating it. sec_raw_sql is last resort.',
+      'lookup_* = one object in full · find_* = a list · check_* = boolean, batch · effective_*/permission_*/object_* = net access ' +
+      '(role→duty→privilege→entry point, Deny wins) · compare_* = diff · search = ranked · stats = counts. ' +
+      'First call: sec_check_exists for names; "can user X do Y" → sec_effective_permissions; "who reaches Y" → sec_object_access; roles → sec_lookup_role ' +
+      '(entity perms opt-in). Case-insensitive; pass menu items/tables, not entities. ' +
+      'limit, modules, batch role_names, cursor. Responses carry snapshot date and state what they do not cover; ' +
+      'verify with a trace; raw_sql last resort.',
   },
   taskrecorder: {
     name: 'd365fo-taskrecorder',
@@ -121,8 +136,10 @@ export const SERVICES = Object.freeze({
       'and the roles/duties/privileges that grant access to every form. Used for process documentation, ' +
       'test cases, support reproduction and training material. Stateless — nothing is stored.',
     instructions:
-      'Pass the recording file content as text. Use taskrecorder_to_markdown for a quick step list, ' +
-      'taskrecorder_to_document for the full enriched document (screenshots + KB + security). Output is a document — treat it as markdown.',
+      'to_markdown = a quick step list · to_document = the full enriched MHTML document (screenshots + KB + security). ' +
+      'Pass the recording file content as text (.axtr / task-recording XML; optionally the client reproReport or .docx). ' +
+      'First call: taskrecorder_to_markdown; taskrecorder_to_document only when the document itself is the deliverable. ' +
+      'Stateless — nothing is stored. Output is a document — treat it as markdown.',
   },
 });
 

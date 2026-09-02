@@ -24,14 +24,18 @@ import {
   validateLikePattern,
   patternErrorResult,
   customLayerNote,
+  coverageNotes,
+  closestNames,
+  levenshtein,
   runWithBudget,
   QueryBudgetExceededError,
   timeoutErrorResult,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
-import { installToolGuards } from './tool-guards.js';
+import { installToolGuards, semanticStore, recordContextHint, functionalContextParam } from './tool-guards.js';
 import { z } from 'zod';
 import {
+  xrefCheckExistsOutput,
   xrefFindReferencesOutput,
   xrefFindUsagesOutput,
   xrefFindMethodCallersOutput,
@@ -122,13 +126,77 @@ function buildInClause(values) {
   return { clause, params: [...values] };
 }
 
+// AOT path segment ↔ object type. The semantic layer's OBJECT_TYPES vocabulary
+// on the right; `xref_check_exists` accepts the same words as `type`.
+const XREF_TYPE_BY_SEGMENT = Object.freeze({
+  Tables: 'table', Classes: 'class', Forms: 'form', Enums: 'enum', DataEntityViews: 'data_entity',
+  Edts: 'edt', Views: 'view', Maps: 'map', Queries: 'query', Reports: 'report',
+  MenuItemDisplays: 'menu_item', MenuItemActions: 'menu_item', MenuItemOutputs: 'menu_item',
+});
+const XREF_SEGMENTS_BY_TYPE = Object.freeze(Object.entries(XREF_TYPE_BY_SEGMENT).reduce((acc, [seg, type]) => {
+  (acc[type] ??= []).push(seg);
+  return acc;
+}, {}));
+// The order resolveNameId tries, so a bare name resolves to the same object.
+const XREF_ALL_SEGMENTS = Object.freeze(['Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Queries',
+  'Reports', 'MenuItemDisplays', 'MenuItemActions', 'MenuItemOutputs']);
+// closestNames() kinds for the types it knows; everything else is `object`.
+const CLOSEST_KIND_BY_TYPE = Object.freeze({
+  table: 'table', class: 'class', enum: 'enum', edt: 'edt', form: 'form', data_entity: 'entity', menu_item: 'menu_item',
+});
+
+/** `/Classes/SalesFormLetter/Methods/run` → { type:'class', name:'SalesFormLetter', method:'run' }. */
+function objectFromPath(path) {
+  const segs = String(path ?? '').split('/').filter(Boolean);
+  const head = segs[0] ?? '';
+  const type = XREF_TYPE_BY_SEGMENT[head] ?? (head ? head.toLowerCase().replace(/s$/, '') : 'other');
+  return { type, name: segs[1] ?? head, method: segs[2] === 'Methods' ? (segs[3] ?? null) : null };
+}
+
 // ── Public registration function ────────────────────────────────────────────
 
-export function registerXrefTools(server, db) {
+/** @param {{ semanticDb?: any }} [opts] test injection of the semantic store (#115) */
+export function registerXrefTools(server, db, opts = {}) {
+  const { semanticDb } = opts;
   // Agent guardrails (loop detection + one-shot staleness note) wrap every
   // tool registered below. Returns a proxy, so the shared McpServer is not
   // mutated and a second register*Tools() call cannot double-wrap it.
   server = installToolGuards(server, { service: 'xref', db });
+
+  // Semantic side channel (#115): opened on first use, never at registration;
+  // tests inject an in-memory handle via `semanticDb`. `hint` records the
+  // resolved object under the caller's vocabulary id after a SUCCESS.
+  const semDb = () => semanticDb ?? semanticStore();
+  const hint = (functional_context, path) => {
+    if (!functional_context || !path) return;
+    const o = objectFromPath(path);
+    recordContextHint(semDb(), { functional_context, object_type: o.type, object_name: o.name });
+  };
+  const missingResult = (type, name, suggestions, kind, functional_context) => notFoundResult(type, name, suggestions, {
+    db, kind, functional_context, semanticDb: functional_context ? semDb() : undefined,
+  });
+
+  // Coverage boundaries (#116). Whether the snapshot was ISV-scanned is build
+  // state, read once; the excluded count is one indexed COUNT(*) per target
+  // (idx_isv_refs_tgt on target_path COLLATE NOCASE) — exact or omitted.
+  const isvScanned = hasIsvData(db);
+  function isvExcludedCount(targetPath) {
+    if (!isvScanned) return 0;
+    try {
+      const r = q(`SELECT COUNT(*) AS c FROM isv_refs
+                   WHERE target_path = ? COLLATE NOCASE OR target_path LIKE ? COLLATE NOCASE`,
+      [targetPath, `${targetPath}/%`]);
+      return Number(r[0]?.c || 0);
+    } catch (err) {
+      console.error('[xref-tools:isvExcludedCount]', err);
+      return 0;
+    }
+  }
+  /** Coverage for the "who references it" tools: ISV excluded (count) or ISV not scanned. */
+  const refsCoverage = (targetPath, isvIncluded) => coverageNotes({
+    isv_not_scanned: !isvScanned,
+    isv_excluded: (isvScanned && !isvIncluded) ? { count: isvExcludedCount(targetPath) } : null,
+  });
 
 
   // Batch cap (issue #83): xref_object_summary is the recommended first call
@@ -184,7 +252,7 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Objects that reference a given D365FO object ("Used By" / "Find All References"). Set `include_isv` to add per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot — do that before changing or deprecating anything a third-party model may touch.',
+      description: 'Objects that reference a given D365FO object ("Used By" / "Find All References"). `include_isv` adds per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot.',
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`.'),
         objects: z.array(z.string().min(1).max(500)).min(1).max(REFS_BATCH_MAX).optional()
@@ -193,13 +261,14 @@ export function registerXrefTools(server, db) {
           .describe('Filter by reference kind. Default: All'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         include_isv: z.boolean().optional().default(false)
-          .describe('Add a per-model count of references from sealed ISV models (`xref_isv_find_usages` for call sites).'),
+          .describe('Add a per-model count of references from sealed ISV models.'),
         cursor: cursorParam,
+        functional_context: functionalContextParam,
         format: formatTextParam,
       },
       outputSchema: xrefFindReferencesOutput.shape,
     },
-    async ({ object_name, objects, kind, limit: rawLimit, include_isv, cursor, format }) => {
+    async ({ object_name, objects, kind, limit: rawLimit, include_isv, cursor, functional_context, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const kindFilterLabel = kind || 'All';
       // Defensive default: the test mock server bypasses Zod (contract item 13).
@@ -275,7 +344,9 @@ export function registerXrefTools(server, db) {
 
       if (!batchMode) {
         const one = findOne(names[0], page.offset);
-        if (!one) return notFoundResult('Object', names[0]);
+        if (!one) return missingResult('Object', names[0], undefined, 'object', functional_context);
+        hint(functional_context, one.target_path);
+        const coverage = refsCoverage(one.target_path, wantIsv);
         // Exactly the pre-batching payload plus the page keys — no batch keys.
         const baseTyped = {
           target_path: one.target_path,
@@ -289,14 +360,17 @@ export function registerXrefTools(server, db) {
         };
         const isvBlock = one.isv;
         if (!one.result_count && !(isvBlock && isvBlock.reference_count)) {
-          return emptyResult(`references to "${one.target_path}"`, baseTyped);
+          // Still a meta-response — but "0 references" with sealed-ISV callers
+          // excluded is exactly the partial view #116 exists to flag, so the
+          // coverage lines ride along as the empty-result note.
+          return emptyResult(`references to "${one.target_path}"`, baseTyped, coverage.text ? `\n\n${coverage.text}` : undefined);
         }
 
         let out = `## References to ${one.target_path}\n${baseTyped.result_count} result(s)\n\n`;
         out += renderRefs(baseTyped);
         if (baseTyped.has_more) out += pageNote(baseTyped.result_count, page.offset, baseTyped.next_cursor);
         if (isvBlock) out += renderIsv(isvBlock, '###') + `\n_${isvBlock.note}_\n`;
-        return structuredResult(baseTyped, out, format);
+        return structuredResult(baseTyped, out, format, { coverage });
       }
 
       // Batch mode: only batch keys. The ISV note is identical for every object,
@@ -309,6 +383,7 @@ export function registerXrefTools(server, db) {
         const one = findOne(n);
         if (!one) { notFound.push(n); continue; }
         found.push(one);
+        hint(functional_context, one.target_path);
       }
       const emitIsv = wantIsv && found.some(o => o.isv);
       const isvNote = emitIsv ? (found.find(o => o.isv)?.isv.note ?? null) : null;
@@ -343,7 +418,14 @@ export function registerXrefTools(server, db) {
       if (isvNote) out += `_${isvNote}_\n\n`;
       if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
       if (requested.length > names.length) out += truncationNote('cap', names.length, REFS_BATCH_MAX);
-      return structuredResult(typed, out, format);
+      // Batch coverage: the excluded ISV count is summed over the resolved objects.
+      return structuredResult(typed, out, format, {
+        coverage: coverageNotes({
+          isv_not_scanned: !isvScanned,
+          isv_excluded: (isvScanned && !wantIsv)
+            ? { count: found.reduce((n, o) => n + isvExcludedCount(o.target_path), 0) } : null,
+        }),
+      });
     },
   );
 
@@ -372,7 +454,7 @@ export function registerXrefTools(server, db) {
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
-      if (!resolved) return notFoundResult('Object', object_name);
+      if (!resolved) return missingResult('Object', object_name, undefined, 'object');
 
       const { id: sourceId, path: sourcePath } = resolved;
       const kindFilterLabel = kind || 'All';
@@ -415,7 +497,10 @@ export function registerXrefTools(server, db) {
         ['Target', 'Kind', 'Line', 'Col', 'Module'],
       );
       if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
-      return structuredResult(typed, out, format);
+      // Coverage (#116): only the scan fact. `isv_refs` rows point FROM sealed
+      // models AT standard objects — they are incoming references, so an
+      // "ISV usages exist" line on an OUTGOING listing would misdescribe them.
+      return structuredResult(typed, out, format, { coverage: coverageNotes({ isv_not_scanned: !isvScanned }) });
     },
   );
 
@@ -449,7 +534,7 @@ export function registerXrefTools(server, db) {
         const rows = q('SELECT id, path FROM names WHERE path = ? LIMIT 1', [path]);
         if (rows.length > 0) { targetId = rows[0].id; targetPath = rows[0].path; break; }
       }
-      if (!targetId) return notFoundResult('Method', `${object_name}.${method_name}`);
+      if (!targetId) return missingResult('Method', `${object_name}.${method_name}`); // no closestNames kind for methods
 
       const result = q(`
         SELECT n.path, r.kind, r.line, r.col, m.module
@@ -505,7 +590,7 @@ export function registerXrefTools(server, db) {
       const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 200;
       const classPath = `/Classes/${class_name}`;
       const classResult = q('SELECT id FROM names WHERE path = ? LIMIT 1', [classPath]);
-      if (classResult.length === 0) return notFoundResult('Class', class_name);
+      if (classResult.length === 0) return missingResult('Class', class_name, undefined, 'class');
       const classId = classResult[0].id;
       const maxDepth = dir === 'subclasses' ? 10 : 20;
 
@@ -591,7 +676,7 @@ export function registerXrefTools(server, db) {
         const rows = q('SELECT id, path FROM names WHERE path = ? LIMIT 1', [prefix + interface_name]);
         if (rows.length > 0) { targetId = rows[0].id; targetPath = rows[0].path; break; }
       }
-      if (!targetId) return notFoundResult('Interface', interface_name);
+      if (!targetId) return missingResult('Interface', interface_name, undefined, 'class'); // interfaces live under /Classes/
 
       const result = q(`
         WITH RECURSIVE impl(id, path, depth) AS (
@@ -643,7 +728,7 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Search objects by name pattern in the cross-reference database when only part of the name is known. Scope with `modules` to specific models (see xref_list_modules).',
+      description: 'Search objects by name pattern in the cross-reference database when only part of the name is known. Scope with `modules` to specific models.',
       inputSchema: {
         pattern: z.string().min(1).max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
@@ -693,7 +778,16 @@ export function registerXrefTools(server, db) {
         truncated: result.length >= limit,
         results: result.map(r => ({ path: r.path, module: r.module ?? null })),
       };
-      if (!result.length) return emptyResult(`objects matching "${pattern}"`, typed, customLayerNote(pattern));
+      if (!result.length) {
+        // #115 item 4: the pattern is matched against the object PATH
+        // (`/Tables/SalesTable`), so `Sales%` finds nothing while `%Sales%`
+        // does. A pattern with no `%` at all is auto-wrapped above, so the note
+        // fires only where a leading `%` would actually change the answer.
+        const pathMiss = pattern.includes('%') && !pattern.startsWith('%');
+        const note = customLayerNote(pattern)
+          + (pathMiss ? '\n\n_Pattern matches the object PATH; retry with a leading % to match the bare name._' : '');
+        return emptyResult(`objects matching "${pattern}"`, typed, note || undefined);
+      }
 
       let out = `## Objects matching "${pattern}"\n${typed.result_count} result(s)\n\n`;
       if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
@@ -738,7 +832,7 @@ export function registerXrefTools(server, db) {
         const rows = q('SELECT id, path FROM names WHERE path = ? LIMIT 1', [path]);
         if (rows.length > 0) { sourceId = rows[0].id; sourcePath = rows[0].path; break; }
       }
-      if (!sourceId) return notFoundResult('Method', `${object_name}.${method_name}`);
+      if (!sourceId) return missingResult('Method', `${object_name}.${method_name}`); // no closestNames kind for methods
 
       let kindFilter = '';
       const params = [sourceId];
@@ -964,7 +1058,7 @@ export function registerXrefTools(server, db) {
     'xref_impact_analysis',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.',
+      description: 'Analyze the impact of changing a D365FO object: all direct dependents grouped by type and module (single-level impact analysis).',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
         limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed. The by_kind / by_module counts always cover the full result set.'),
@@ -976,8 +1070,12 @@ export function registerXrefTools(server, db) {
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
-      if (!resolved) return notFoundResult('Object', object_name);
+      if (!resolved) return missingResult('Object', object_name, undefined, 'object');
       const { id: targetId, path: targetPath } = resolved;
+      // Dependents are incoming references, so sealed-ISV callers (never in
+      // `refs`) are a real gap here; the tool has no include_isv — the count
+      // points the caller at xref_find_references / xref_isv_find_usages.
+      const coverage = refsCoverage(targetPath, false);
 
       const DETAIL_CAP = 500;
       // Defensive default - the test mock server bypasses Zod (contract rule #13).
@@ -1016,7 +1114,7 @@ export function registerXrefTools(server, db) {
           source: r.path, kind: kindName(r.kind), module: r.module ?? null,
         })),
       };
-      if (!result.length) return emptyResult(`dependents of "${targetPath}"`, typed);
+      if (!result.length) return emptyResult(`dependents of "${targetPath}"`, typed, coverage.text ? `\n\n${coverage.text}` : undefined);
 
       let out = `## Impact analysis for ${targetPath}\nTotal references: ${typed.total_refs}\n\n`;
       out += `## By reference kind\n`;
@@ -1029,7 +1127,7 @@ export function registerXrefTools(server, db) {
         ['Source', 'Kind', 'Module'],
       );
       if (typed.sample_truncated) out += truncationNote('cap', SAMPLE_CAP, DETAIL_CAP);
-      return structuredResult(typed, out, format);
+      return structuredResult(typed, out, format, { coverage });
     },
   );
 
@@ -1139,16 +1237,17 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, module. The recommended first call before drilling in; `object_names` takes up to 10 objects.',
+      description: 'Compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, module. `object_names` takes up to 10 objects.',
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name or path. Use this or `object_names`.'),
         object_names: z.array(z.string().min(1).max(500)).min(1).max(SUMMARY_BATCH_MAX).optional()
           .describe(`Summarise several objects in one call (max ${SUMMARY_BATCH_MAX}). Names that cannot be resolved come back in \`not_found\` rather than failing the call.`),
+        functional_context: functionalContextParam,
         format: formatTextParam,
       },
       outputSchema: xrefObjectSummaryOutput.shape,
     },
-    async ({ object_name, object_names, format }) => {
+    async ({ object_name, object_names, functional_context, format }) => {
       // Singular and plural are unioned, deduped, and the caller's order kept.
       const requested = [...new Set([
         ...(Array.isArray(object_names) ? object_names : []),
@@ -1216,7 +1315,8 @@ export function registerXrefTools(server, db) {
 
       if (!batchMode) {
         const p = summarise(names[0]);
-        if (!p) return notFoundResult('Object', names[0]);
+        if (!p) return missingResult('Object', names[0], undefined, 'object', functional_context);
+        hint(functional_context, p.object_path);
         // Exactly the pre-batching payload — no batch keys.
         return structuredResult(p, renderOne(p, '##'), format);
       }
@@ -1225,7 +1325,7 @@ export function registerXrefTools(server, db) {
       const notFound = [];
       for (const n of names) {
         const p = summarise(n);
-        if (p) objects.push(p);
+        if (p) { objects.push(p); hint(functional_context, p.object_path); }
         else notFound.push(n);
       }
 
@@ -1241,6 +1341,125 @@ export function registerXrefTools(server, db) {
       for (const p of objects) out += renderOne(p, '###') + '\n';
       if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
 
+      return structuredResult(typed, out, format);
+    },
+  );
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // xref_check_exists — preflight existence check (#118, Q5)
+  //
+  // Batch is the ONLY shape (one target is a batch of one) and a miss is data
+  // in `not_found` with up to 3 closestNames suggestions — never notFoundResult
+  // (batching rule 2). Path-vs-name aware: `Owner.method` and `/Type/Name`
+  // resolve as well as bare names, so an object that exists only as a method
+  // path is reported as exists:true, type:'method', never as missing. Exact
+  // (indexed) path matches first; the case-insensitive recovery goes through
+  // closestNames, whose first hit is the canonical spelling when only the
+  // case differed.
+  // ─────────────────────────────────────────────────────────────────────────
+  const CHECK_BATCH_MAX = 50;
+  server.registerTool(
+    'xref_check_exists',
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Preflight: do these XRef objects exist? Accepts `Name`, `/Type/Name`, `Owner.method`; misses get suggestions.',
+      inputSchema: {
+        objects: z.array(z.object({
+          name: z.string().min(1).max(500),
+          type: z.enum(Object.keys(XREF_SEGMENTS_BY_TYPE)).optional(),
+        })).min(1).max(CHECK_BATCH_MAX).describe(`1..${CHECK_BATCH_MAX} objects; type narrows the AOT node.`),
+        format: formatTextParam,
+      },
+      outputSchema: xrefCheckExistsOutput.shape,
+    },
+    async ({ objects, format }) => {
+      const requested = (Array.isArray(objects) ? objects : [])
+        .map(o => (o && typeof o === 'object' ? { name: String(o.name ?? '').trim(), type: o.type } : { name: String(o ?? '').trim() }))
+        .filter(o => o.name);
+      if (!requested.length) return errorResult('invalid-input', 'Provide `objects` (1..50 names).');
+      const items = requested.slice(0, CHECK_BATCH_MAX);
+      for (const o of items) {
+        const _v = validateLikePattern(o.name);
+        if (_v) return patternErrorResult(_v);
+      }
+
+      const exact = (path) => q('SELECT id, path FROM names WHERE path = ? LIMIT 1', [path])[0] ?? null;
+      const moduleOf = (id) => q('SELECT m.module FROM names n JOIN modules m ON n.module_id = m.id WHERE n.id = ?', [id])[0]?.module ?? null;
+      const segmentsFor = (type) => (type ? (XREF_SEGMENTS_BY_TYPE[type] ?? []) : XREF_ALL_SEGMENTS);
+      const hitFrom = (name, row, type) => ({ name, exists: true, type, module: moduleOf(row.id), path: row.path });
+      const resolveTop = (name, type) => {
+        for (const seg of segmentsFor(type)) {
+          const row = exact(`/${seg}/${name}`);
+          if (row) return row;
+        }
+        return null;
+      };
+
+      /** @param {{ name: string, type?: string }} item */
+      const checkOne = ({ name, type }) => {
+        // 1. A path: exact, then case-only via closestNames on the object kind.
+        if (name.includes('/')) {
+          const row = exact(name.startsWith('/') ? name : `/${name}`);
+          if (row) { const o = objectFromPath(row.path); return { hit: hitFrom(name, row, o.method ? 'method' : o.type) }; }
+          const o = objectFromPath(name);
+          return { miss: { name, suggestions: closestNames(db, o.name, CLOSEST_KIND_BY_TYPE[o.type] ?? 'object', 3) } };
+        }
+        // 2. Owner.method — reported as kind 'method' on the resolved owner.
+        const dot = name.indexOf('.');
+        if (dot > 0 && dot < name.length - 1) {
+          const owner = name.slice(0, dot);
+          const method = name.slice(dot + 1);
+          const ownerRow = resolveTop(owner, type);
+          if (ownerRow) {
+            const row = exact(`${ownerRow.path}/Methods/${method}`)
+              ?? q('SELECT id, path FROM names WHERE path = ? COLLATE NOCASE LIMIT 1', [`${ownerRow.path}/Methods/${method}`])[0];
+            if (row) return { hit: hitFrom(name, row, 'method') };
+            // Near-miss methods on the resolved owner: same first 3 chars, then
+            // Levenshtein ≤ 2 or containment — the closestNames strategy, scoped
+            // to one owner's Methods node.
+            const stem = method.slice(0, 3).replace(/[\\%_]/g, ch => `\\${ch}`);
+            const near = q("SELECT path FROM names WHERE path LIKE ? ESCAPE '\\' ORDER BY path LIMIT 200", [`${ownerRow.path}/Methods/${stem}%`])
+              .map(r => objectFromPath(r.path).method)
+              .filter(Boolean)
+              .map(m => [levenshtein(m.toLowerCase(), method.toLowerCase(), 2), m])
+              .filter(([d, m]) => d <= 2 || m.toLowerCase().includes(method.toLowerCase()))
+              .sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]))
+              .slice(0, 3)
+              .map(([, m]) => `${owner}.${m}`);
+            return { miss: { name, suggestions: near } };
+          }
+          return { miss: { name, suggestions: closestNames(db, owner, CLOSEST_KIND_BY_TYPE[type] ?? 'object', 3) } };
+        }
+        // 3. Bare name: exact on every node (or the given type), then case-only recovery.
+        const row = resolveTop(name, type);
+        if (row) return { hit: hitFrom(name, row, objectFromPath(row.path).type) };
+        const suggestions = closestNames(db, name, CLOSEST_KIND_BY_TYPE[type] ?? 'object', 3);
+        const caseOnly = suggestions.find(s => s.toLowerCase() === name.toLowerCase());
+        if (caseOnly) {
+          const canon = resolveTop(caseOnly, type);
+          if (canon) return { hit: hitFrom(name, canon, objectFromPath(canon.path).type) };
+        }
+        return { miss: { name, suggestions } };
+      };
+
+      const hits = [];
+      const misses = [];
+      for (const item of items) {
+        const r = checkOne(item);
+        if (r.hit) hits.push(r.hit); else misses.push(r.miss);
+      }
+      const typed = { requested_count: items.length, found_count: hits.length, objects: hits, not_found: misses };
+
+      let out = `## Existence check (${typed.found_count} of ${typed.requested_count} exist)\n\n`;
+      if (hits.length) {
+        out += formatMarkdownTable(hits.map(h => ({ Name: h.name, Type: h.type, Module: h.module ?? '', Path: h.path })),
+          ['Name', 'Type', 'Module', 'Path']);
+      }
+      if (misses.length) {
+        out += `${hits.length ? '\n\n' : ''}**Not found:**\n`;
+        for (const m of misses) out += `- \`${m.name}\`${m.suggestions.length ? ` — did you mean ${m.suggestions.map(s => `\`${s}\``).join(', ')}?` : ''}\n`;
+      }
+      if (requested.length > items.length) out += truncationNote('hard', items.length);
       return structuredResult(typed, out, format);
     },
   );
@@ -1367,7 +1586,7 @@ export function registerXrefTools(server, db) {
       const fieldResult = q('SELECT id FROM names WHERE path = ? LIMIT 1', [fieldPath]);
       if (fieldResult.length === 0) {
         const fuzzy = q('SELECT path FROM names WHERE path LIKE ? AND path LIKE ? LIMIT 10', [`%${table_name}%`, `%${field_name}%`]);
-        return notFoundResult('Field', `${table_name}.${field_name}`, fuzzy.map(r => r.path));
+        return missingResult('Field', `${table_name}.${field_name}`, fuzzy.map(r => r.path)); // no closestNames kind for fields
       }
 
       const fieldId = fieldResult[0].id;

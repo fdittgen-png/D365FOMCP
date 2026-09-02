@@ -24,12 +24,14 @@ import {
   modulesFilterParam,
   sanitizeModulesFilter,
   queryModelVersions,
+  closestNames,
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
-import { installToolGuards } from './tool-guards.js';
+import { installToolGuards, semanticStore, recordContextHint, functionalContextParam } from './tool-guards.js';
 import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 import { z } from 'zod';
 import {
+  secCheckExistsOutput,
   secLookupUserOutput,
   secEffectivePermissionsOutput,
   secLookupRoleOutput,
@@ -88,9 +90,154 @@ function highestTier(tierNames) {
   return { name: best, cost: bestCost > 0 ? bestCost : 0 };
 }
 
+// ── Canonical role/duty/privilege walks (issue #114) ─────────────────────────
+//
+// The snapshot merges two sources that spell the same id differently: the AOT
+// scan (mixed case, `CustGroupView`) and the DMF export (often lower/UPPER,
+// `custgroupview`). Measured on the 2026-08-14 build: 56 duty_privileges rows
+// and 41 role_duties rows match their parent table ONLY under COLLATE NOCASE,
+// and every one of the 41 is a case-variant twin of a row the role already
+// has (32 roles affected). Two answer-correctness defects came out of that:
+//
+//   1. `sec_lookup_privilege` bound the canonical `privileges.privilege_name`
+//      into `WHERE dp.privilege_name = ?` with no COLLATE — 0 parent duties
+//      and 0 granting roles for CustGroupView, while the NOCASE walk in
+//      `sec_find_roles_by_privilege` found 10 roles via CustCustomerReferenceDataInquire.
+//   2. `sec_lookup_role` inner-joined `duties` exactly (dropping the lowercase
+//      twin → 53 for Collections manager) while `sec_compare_roles` counted the
+//      raw role_duties ids case-sensitively (twin counted twice → 54).
+//
+// Every tool that reports a duty/privilege set or count now goes through the
+// functions below, so the tools cannot disagree again. Each one: matches ids
+// COLLATE NOCASE (index-backed — see sec-indexes.js), emits the CANONICAL id
+// from the parent table (`duties.duty_id`, `privileges.privilege_name`) and
+// collapses twins with GROUP BY, applying Deny-wins to the permission when the
+// twins disagree.
+
+/** Deny-wins fold of a permission_type column across grouped rows. */
+const DENY_WINS = (col) =>
+  `CASE WHEN SUM(CASE WHEN ${col} = 'Deny' THEN 1 ELSE 0 END) > 0 THEN 'Deny' ELSE MAX(${col}) END`;
+
+/**
+ * Effective duties of a role: its own role_duties ∪ those of every sub-role
+ * (recursive, cycle-safe via UNION), DISTINCT by canonical duty id.
+ * @returns {{duty_id:string, duty_name:string|null, permission_type:string|null}[]} ordered by duty_id
+ */
+export function roleDuties(db, roleId) {
+  return query(db, `
+    WITH RECURSIVE role_tree(role_id) AS (
+      SELECT role_id FROM roles WHERE role_id = ? COLLATE NOCASE
+      UNION
+      SELECT rs.child_role_id FROM role_subroles rs JOIN role_tree rt ON rs.parent_role_id = rt.role_id COLLATE NOCASE
+    )
+    SELECT d.duty_id, d.duty_name, ${DENY_WINS('rd.permission_type')} AS permission_type
+    FROM role_tree rt
+    JOIN role_duties rd ON rd.role_id = rt.role_id COLLATE NOCASE
+    JOIN duties d ON d.duty_id = rd.duty_id COLLATE NOCASE
+    GROUP BY d.duty_id
+    ORDER BY d.duty_id`, [roleId]);
+}
+
+/** `roleDuties(...).length` — the one number every duty_count key reports. */
+export function roleDutyCount(db, roleId) {
+  return roleDuties(db, roleId).length;
+}
+
+/**
+ * Privileges assigned directly to a role (not via duties, not inherited),
+ * DISTINCT case-insensitively. No join to `privileges`: measured on the
+ * 2026-08-14 build, every role_direct_privileges name matches `privileges`
+ * exactly (0 case-only mismatches, 0 twins), so the names are already
+ * canonical and the table stands alone.
+ * @returns {{privilege_name:string}[]} ordered by privilege_name
+ */
+export function roleDirectPrivileges(db, roleId) {
+  return query(db, `
+    SELECT MIN(privilege_name) AS privilege_name
+    FROM role_direct_privileges
+    WHERE role_id = ? COLLATE NOCASE
+    GROUP BY privilege_name COLLATE NOCASE
+    ORDER BY 1`, [roleId]);
+}
+
+/**
+ * Roles that carry a duty (direct assignment only — the reverse of
+ * `roleDuties` is deliberately not inheritance-aware, matching
+ * `sec_find_roles_by_privilege`). One row per role; `duty_permission` is the
+ * Deny-wins fold over the role's rows for that duty.
+ * @returns {{role_id, role_name, permission_type, license_type, duty_permission}[]} ordered by role_name
+ */
+export function dutyRoles(db, dutyId) {
+  return query(db, `
+    SELECT r.role_id, r.role_name, r.permission_type, r.license_type,
+           ${DENY_WINS('rd.permission_type')} AS duty_permission
+    FROM role_duties rd
+    JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
+    WHERE rd.duty_id = ? COLLATE NOCASE
+    GROUP BY r.role_id
+    ORDER BY r.role_name`, [dutyId]);
+}
+
+/**
+ * Privileges a duty grants, canonical names + labels.
+ * @returns {{privilege_name:string, label:string|null}[]} ordered by privilege_name
+ */
+export function dutyPrivileges(db, dutyId) {
+  return query(db, `
+    SELECT COALESCE(p.privilege_name, dp.privilege_name) AS privilege_name, MAX(p.label) AS label
+    FROM duty_privileges dp
+    LEFT JOIN privileges p ON p.privilege_name = dp.privilege_name COLLATE NOCASE
+    WHERE dp.duty_id = ? COLLATE NOCASE
+    GROUP BY COALESCE(p.privilege_name, dp.privilege_name) COLLATE NOCASE
+    ORDER BY 1`, [dutyId]);
+}
+
+/**
+ * Duties that contain a privilege — the set `sec_find_roles_by_privilege`
+ * walks through, canonical duty ids.
+ * @returns {{duty_id:string, duty_name:string|null}[]} ordered by duty_id
+ */
+export function privilegeDuties(db, privilegeName) {
+  return query(db, `
+    SELECT d.duty_id, d.duty_name
+    FROM duty_privileges dp
+    JOIN duties d ON d.duty_id = dp.duty_id COLLATE NOCASE
+    WHERE dp.privilege_name = ? COLLATE NOCASE
+    GROUP BY d.duty_id
+    ORDER BY d.duty_id`, [privilegeName]);
+}
+
+/**
+ * Roles that grant a privilege, through any of its duties OR by direct
+ * assignment (a direct assignment counts as Grant, as in
+ * `sec_permission_trace`). One row per role, Deny-wins across its paths.
+ * `sec_find_roles_by_privilege` reports the same two populations separately
+ * (`via_chain` / `direct`); this is their union.
+ * @returns {{role_id, role_name, permission_type}[]} ordered by role_name
+ */
+export function privilegeRoles(db, privilegeName) {
+  return query(db, `
+    SELECT r.role_id, r.role_name, ${DENY_WINS('x.permission_type')} AS permission_type
+    FROM (
+      SELECT rd.role_id, rd.permission_type
+      FROM duty_privileges dp
+      JOIN role_duties rd ON rd.duty_id = dp.duty_id COLLATE NOCASE
+      WHERE dp.privilege_name = ? COLLATE NOCASE
+      UNION ALL
+      SELECT rdp.role_id, 'Grant' AS permission_type
+      FROM role_direct_privileges rdp
+      WHERE rdp.privilege_name = ? COLLATE NOCASE
+    ) x
+    JOIN roles r ON r.role_id = x.role_id COLLATE NOCASE
+    GROUP BY r.role_id
+    ORDER BY r.role_name`, [privilegeName, privilegeName]);
+}
+
 // ── Register all 18 Security tools ──────────────────────────────────────────
 
-export function registerSecTools(server, db) {
+/** @param {{ semanticDb?: any }} [opts] test injection of the semantic store (#115) */
+export function registerSecTools(server, db, opts = {}) {
+  const { semanticDb } = opts;
   // Agent guardrails (loop detection + one-shot staleness note) wrap every
   // tool registered below. Returns a proxy, so the shared McpServer is not
   // mutated and a second register*Tools() call cannot double-wrap it.
@@ -98,6 +245,16 @@ export function registerSecTools(server, db) {
 
 
   const q = (sql, params = []) => query(db, sql, params);
+
+  // Semantic side channel (#115): opened on first use, never at registration;
+  // tests inject an in-memory handle via `semanticDb`.
+  const semDb = () => semanticDb ?? semanticStore();
+  const hint = (functional_context, object_type, object_name) => {
+    if (functional_context) recordContextHint(semDb(), { functional_context, object_type, object_name });
+  };
+  const missingResult = (type, name, suggestions, kind, functional_context) => notFoundResult(type, name, suggestions, {
+    db, kind, functional_context, semanticDb: functional_context ? semDb() : undefined,
+  });
 
   // The `resource_type` column on role_direct_entity_permissions was added in a
   // later (v3) build. Older deployed snapshots lack it, so a query referencing
@@ -149,11 +306,10 @@ export function registerSecTools(server, db) {
     const subs = q(`SELECT r.role_name, rs.is_transitive
       FROM role_subroles rs JOIN roles r ON r.role_id = rs.child_role_id
       WHERE rs.parent_role_id = ? ORDER BY r.role_name`, [r.role_id]);
-    const duties = q(`SELECT d.duty_id, d.duty_name, rd.permission_type
-      FROM role_duties rd JOIN duties d ON d.duty_id = rd.duty_id
-      WHERE rd.role_id = ? ORDER BY d.duty_id`, [r.role_id]);
-    const dirPrivs = q(`SELECT privilege_name FROM role_direct_privileges
-      WHERE role_id = ? ORDER BY privilege_name`, [r.role_id]);
+    // Effective duties (own ∪ sub-role, canonical ids, twins collapsed) — the
+    // same set sec_compare_roles / sec_role_hierarchy count (#114).
+    const duties = roleDuties(db, r.role_id);
+    const dirPrivs = roleDirectPrivileges(db, r.role_id);
     const permCount = q(`SELECT COUNT(*) AS n FROM role_direct_entity_permissions WHERE role_id = ?`, [r.role_id])[0]?.n || 0;
     const dirPerms = includeAll
       ? q(`SELECT entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke
@@ -266,11 +422,12 @@ export function registerSecTools(server, db) {
           .describe('true: complete lists (can exceed 400 KB on wide roles)'),
         entity_permission_limit: z.number().int().min(1).max(ROLE_ENTITY_PERMISSION_MAX).optional().default(ROLE_SUMMARY_CAP)
           .describe(`Max entity permissions in the summary view`),
+        functional_context: functionalContextParam,
         format: formatTextParam,
       },
       outputSchema: secLookupRoleOutput.shape,
     },
-    async ({ role_name, role_names, include_entity_permissions, entity_permission_limit, format }) => {
+    async ({ role_name, role_names, include_entity_permissions, entity_permission_limit, functional_context, format }) => {
       const includeAll = include_entity_permissions === true;
       const entityLimit = Number.isInteger(entity_permission_limit) && entity_permission_limit > 0
         ? Math.min(entity_permission_limit, ROLE_ENTITY_PERMISSION_MAX) : ROLE_SUMMARY_CAP;
@@ -291,8 +448,9 @@ export function registerSecTools(server, db) {
         const role = findRole(rn);
         if (!role) {
           const fuzzy = q(`SELECT role_name FROM roles WHERE role_name LIKE ? LIMIT 10`, [`%${rn}%`]);
-          return notFoundResult('Role', rn, fuzzy.map(r => r.role_name));
+          return missingResult('Role', rn, fuzzy.map(r => r.role_name), 'role', functional_context);
         }
+        hint(functional_context, 'security_role', role.role_name);
         // Exactly the pre-batching payload — no batch keys.
         const typed = buildRolePayload(role, { includeAll, entityLimit });
         return structuredResult(typed, renderRole(typed), format);
@@ -304,6 +462,7 @@ export function registerSecTools(server, db) {
       for (const rn of names) {
         const role = findRole(rn);
         if (!role) { notFound.push(rn); continue; }
+        hint(functional_context, 'security_role', role.role_name);
         roles.push(buildRolePayload(role, { includeAll, entityLimit }));
       }
       const typed = {
@@ -343,16 +502,14 @@ export function registerSecTools(server, db) {
       if (!duty.length) {
         const fuzzy = q(`SELECT duty_id, duty_name FROM duties
           WHERE duty_id LIKE ? OR duty_name LIKE ? LIMIT 10`, [`%${dn}%`, `%${dn}%`]);
-        return notFoundResult('Duty', dn, fuzzy.map(r => r.duty_id));
+        return missingResult('Duty', dn, fuzzy.map(r => r.duty_id), 'duty');
       }
 
       const d = duty[0];
-      const roles = q(`SELECT r.role_name, rd.permission_type
-        FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id
-        WHERE rd.duty_id = ? ORDER BY r.role_name`, [d.duty_id]);
-      const privs = q(`SELECT dp.privilege_name, p.label
-        FROM duty_privileges dp LEFT JOIN privileges p ON p.privilege_name = dp.privilege_name
-        WHERE dp.duty_id = ? ORDER BY dp.privilege_name`, [d.duty_id]);
+      // Canonical walks (#114): one row per role even when the DMF export left
+      // a case-variant twin; privilege names in their AOT casing with labels.
+      const roles = dutyRoles(db, d.duty_id).map(r => ({ role_name: r.role_name, permission_type: r.duty_permission }));
+      const privs = dutyPrivileges(db, d.duty_id);
 
       const typed = {
         duty_id: d.duty_id,
@@ -422,21 +579,17 @@ export function registerSecTools(server, db) {
       if (!priv.length) {
         const fuzzy = q(`SELECT privilege_name, label FROM privileges
           WHERE privilege_name LIKE ? LIMIT 10`, [`%${pn}%`]);
-        return notFoundResult('Privilege', pn, fuzzy.map(r => r.privilege_name));
+        return missingResult('Privilege', pn, fuzzy.map(r => r.privilege_name), 'privilege');
       }
 
       const p = priv[0];
       const eps = q(`SELECT * FROM privilege_entry_points
         WHERE privilege_name = ? ORDER BY entry_point_name`, [p.privilege_name]);
-      const duties = q(`SELECT dp.duty_id, d.duty_name
-        FROM duty_privileges dp LEFT JOIN duties d ON d.duty_id = dp.duty_id
-        WHERE dp.privilege_name = ? ORDER BY dp.duty_id`, [p.privilege_name]);
-      const roles = q(`SELECT DISTINCT r.role_name, rd.permission_type
-        FROM duty_privileges dp
-        JOIN role_duties rd ON rd.duty_id = dp.duty_id
-        JOIN roles r ON r.role_id = rd.role_id
-        WHERE dp.privilege_name = ?
-        ORDER BY r.role_name`, [p.privilege_name]);
+      // #114: the canonical name is bound COLLATE NOCASE — duty_privileges may
+      // spell it `custgroupview`. granting_roles is the duty-chain ∪ direct
+      // union, i.e. exactly the two lists sec_find_roles_by_privilege reports.
+      const duties = privilegeDuties(db, p.privilege_name);
+      const roles = privilegeRoles(db, p.privilege_name);
 
       const typed = {
         privilege_name: p.privilege_name,
@@ -524,7 +677,7 @@ export function registerSecTools(server, db) {
         const fuzzy = q(`SELECT user_id, person_name, email FROM users
           WHERE user_id LIKE ? OR person_name LIKE ? OR email LIKE ? LIMIT 10`,
           [`%${uid}%`, `%${uid}%`, `%${uid}%`]);
-        return notFoundResult('User', uid, fuzzy.map(r => r.user_id));
+        return missingResult('User', uid, fuzzy.map(r => r.user_id), 'user');
       }
 
       const u = user[0];
@@ -712,18 +865,18 @@ export function registerSecTools(server, db) {
       const dir = direction || 'children';
       const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 100;
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
-      if (!role.length) return notFoundResult('Role', role_name);
+      if (!role.length) return missingResult('Role', role_name, undefined, 'role');
       const r = role[0];
 
       let rows;
       if (dir === 'children') {
-        rows = q(`SELECT child.role_name, rs.is_transitive
-          FROM role_subroles rs JOIN roles child ON child.role_id = rs.child_role_id
-          WHERE rs.parent_role_id = ? ORDER BY child.role_name`, [r.role_id]);
+        rows = q(`SELECT child.role_id, child.role_name, rs.is_transitive
+          FROM role_subroles rs JOIN roles child ON child.role_id = rs.child_role_id COLLATE NOCASE
+          WHERE rs.parent_role_id = ? COLLATE NOCASE ORDER BY child.role_name`, [r.role_id]);
       } else {
-        rows = q(`SELECT parent.role_name, rs.is_transitive
-          FROM role_subroles rs JOIN roles parent ON parent.role_id = rs.parent_role_id
-          WHERE rs.child_role_id = ? ORDER BY parent.role_name`, [r.role_id]);
+        rows = q(`SELECT parent.role_id, parent.role_name, rs.is_transitive
+          FROM role_subroles rs JOIN roles parent ON parent.role_id = rs.parent_role_id COLLATE NOCASE
+          WHERE rs.child_role_id = ? COLLATE NOCASE ORDER BY parent.role_name`, [r.role_id]);
       }
 
       if (!rows.length) return emptyResult(`${dir} of role "${r.role_name}"`, {
@@ -739,14 +892,17 @@ export function registerSecTools(server, db) {
         direction: dir,
         result_count: rows.length,
         truncated: rows.length > lim,
+        // duty_count is the related role's EFFECTIVE count from roleDuties() —
+        // the same number sec_lookup_role / sec_compare_roles report (#114).
         entries: rows.slice(0, lim).map(row => ({
           role_name: row.role_name,
           is_transitive: row.is_transitive ?? null,
+          duty_count: roleDutyCount(db, row.role_id),
         })),
       };
 
       let out = `## ${typed.role_name} — ${typed.direction}\n`;
-      out += formatMarkdownTable(typed.entries, ['role_name', 'is_transitive']);
+      out += formatMarkdownTable(typed.entries, ['role_name', 'is_transitive', 'duty_count']);
       if (typed.truncated) out += truncationNote('cap', typed.entries.length, 1000);
       return structuredResult(typed, out, format);
     }
@@ -770,7 +926,7 @@ export function registerSecTools(server, db) {
     async ({ role_name, company_id, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const role = q(`SELECT role_id, role_name, permission_type FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
-      if (!role.length) return notFoundResult('Role', role_name);
+      if (!role.length) return missingResult('Role', role_name, undefined, 'role');
       const r = role[0];
 
       // P4-02 / CR-SEC-002: a role whose top-level `permission_type` is 'Deny'
@@ -867,16 +1023,14 @@ export function registerSecTools(server, db) {
       const dn = duty_name.trim();
       const duty = q(`SELECT duty_id FROM duties
         WHERE duty_id = ? COLLATE NOCASE OR duty_name = ? COLLATE NOCASE`, [dn, dn]);
-      if (!duty.length) return notFoundResult('Duty', dn);
+      if (!duty.length) return missingResult('Duty', dn, undefined, 'duty');
 
       // P4-02 / CR-SEC-002: only Grant assignments count — a role that
       // declares this duty as Deny is *removing* it, not granting it. To
       // see the full picture (Grant + Deny rows), use `sec_permission_trace`.
-      const rows = q(`SELECT r.role_name, r.permission_type, r.license_type, rd.permission_type as duty_permission
-        FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
-        WHERE rd.duty_id = ? COLLATE NOCASE
-          AND rd.permission_type = 'Grant'
-        ORDER BY r.role_name`, [duty[0].duty_id]);
+      // dutyRoles() folds a role's case-variant twin rows into one (#114) —
+      // the raw NOCASE match listed such a role twice.
+      const rows = dutyRoles(db, duty[0].duty_id).filter(r => r.duty_permission === 'Grant');
 
       if (!rows.length) return emptyResult(`roles granting duty "${dn}"`, {
         duty_id: duty[0].duty_id,
@@ -943,9 +1097,9 @@ export function registerSecTools(server, db) {
       // privilege through several duties, and OFFSET needs a stable order.
       const viaChain = q(`SELECT DISTINCT r.role_name, rd.permission_type, d.duty_id
         FROM duty_privileges dp
-        JOIN role_duties rd ON rd.duty_id = dp.duty_id
-        JOIN roles r ON r.role_id = rd.role_id
-        JOIN duties d ON d.duty_id = dp.duty_id
+        JOIN role_duties rd ON rd.duty_id = dp.duty_id COLLATE NOCASE
+        JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
+        JOIN duties d ON d.duty_id = dp.duty_id COLLATE NOCASE
         WHERE dp.privilege_name = ? COLLATE NOCASE
         ORDER BY r.role_name, d.duty_id`, [pn]);
 
@@ -1094,7 +1248,7 @@ export function registerSecTools(server, db) {
     async ({ role_name, object_name, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 500;
       const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role_name.trim()]);
-      if (!role.length) return notFoundResult('Role', role_name);
+      if (!role.length) return missingResult('Role', role_name, undefined, 'role');
 
       let objectFilter = '';
       const objParam = object_name ? `%${object_name.trim()}%` : null;
@@ -1236,21 +1390,28 @@ export function registerSecTools(server, db) {
       const listLimit = Number.isInteger(list_limit) && list_limit > 0 ? Math.min(list_limit, 2000) : 50;
       const r1 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role1.trim()]);
       const r2 = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [role2.trim()]);
-      if (!r1.length) return notFoundResult('Role', role1);
-      if (!r2.length) return notFoundResult('Role', role2);
+      if (!r1.length) return missingResult('Role', role1, undefined, 'role');
+      if (!r2.length) return missingResult('Role', role2, undefined, 'role');
 
       // P4-02 / CR-SEC-002: comparison must be against effective grants only.
       // Deny rows would falsely show up as "shared" duties when in fact one
       // role grants and the other denies the same duty id.
-      const duties1 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ? AND permission_type = 'Grant'`, [r1[0].role_id]).map(r => r.duty_id));
-      const duties2 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ? AND permission_type = 'Grant'`, [r2[0].role_id]).map(r => r.duty_id));
+      //
+      // #114: the sets come from the same roleDuties() walk sec_lookup_role
+      // reports (canonical ids, sub-roles included, twins collapsed); the
+      // Grant filter above is the ONLY difference, so for a role without Deny
+      // duties `duties_total_N` equals `sec_lookup_role.duty_count` exactly.
+      const grantDuties = (roleId) => new Set(
+        roleDuties(db, roleId).filter(d => d.permission_type === 'Grant').map(d => d.duty_id));
+      const duties1 = grantDuties(r1[0].role_id);
+      const duties2 = grantDuties(r2[0].role_id);
 
       const dShared = [...duties1].filter(d => duties2.has(d));
       const dOnly1 = [...duties1].filter(d => !duties2.has(d));
       const dOnly2 = [...duties2].filter(d => !duties1.has(d));
 
-      const privs1 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r1[0].role_id]).map(r => r.privilege_name));
-      const privs2 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r2[0].role_id]).map(r => r.privilege_name));
+      const privs1 = new Set(roleDirectPrivileges(db, r1[0].role_id).map(r => r.privilege_name));
+      const privs2 = new Set(roleDirectPrivileges(db, r2[0].role_id).map(r => r.privilege_name));
 
       const pShared = [...privs1].filter(p => privs2.has(p));
       const pOnly1 = [...privs1].filter(p => !privs2.has(p));
@@ -1340,7 +1501,7 @@ export function registerSecTools(server, db) {
       if (user_id) {
         const uid = user_id.trim();
         const user = q(`SELECT user_id, person_name FROM users WHERE user_id = ? COLLATE NOCASE`, [uid]);
-        if (!user.length) return notFoundResult('User', uid);
+        if (!user.length) return missingResult('User', uid, undefined, 'user');
         subjectType = 'user';
         subjectId = user[0].user_id;
         subjectLabel = `User: ${user[0].user_id} (${user[0].person_name || 'N/A'})`;
@@ -1349,7 +1510,7 @@ export function registerSecTools(server, db) {
       } else if (role_name) {
         const rn = role_name.trim();
         const role = q(`SELECT role_id, role_name FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
-        if (!role.length) return notFoundResult('Role', rn);
+        if (!role.length) return missingResult('Role', rn, undefined, 'role');
         subjectType = 'role';
         subjectId = role[0].role_id;
         subjectLabel = `Role: ${role[0].role_name}`;
@@ -1578,7 +1739,7 @@ export function registerSecTools(server, db) {
     'sec_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across roles, duties, privileges and users. Scope with `modules` to specific models (see sec_stats); users carry no module and are excluded when the filter is set.',
+      description: 'Full-text search across roles, duties, privileges and users. Scope with `modules` to specific models; users carry no module and are excluded when the filter is set.',
       inputSchema: {
       query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
@@ -1890,7 +2051,7 @@ export function registerSecTools(server, db) {
         LIMIT ?
       `, [...params, limit]);
 
-      if (single && !users.length) return notFoundResult('User', user_id);
+      if (single && !users.length) return missingResult('User', user_id, undefined, 'user');
       if (!users.length) return emptyResult('enabled users', {
         mode: single ? 'single' : 'all',
         user_count: 0,
@@ -2085,11 +2246,12 @@ export function registerSecTools(server, db) {
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
         limit: z.number().int().min(1).max(500).optional().default(200).describe('Max access paths to return'),
+        functional_context: functionalContextParam,
         format: formatTextParam,
       },
       outputSchema: secObjectAccessOutput.shape,
     },
-    async ({ object_name, limit: rawLimit, format }) => {
+    async ({ object_name, limit: rawLimit, functional_context, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 200;
       const objName = object_name.trim();
 
@@ -2151,6 +2313,19 @@ export function registerSecTools(server, db) {
         users: [],
       });
       const paths = rawPaths;
+
+      // #115: the LIKE match is partial, so the object counts as RESOLVED only
+      // when an entry point carries exactly the requested name (case-insensitive);
+      // its AOT node gives the semantic object type.
+      if (functional_context) {
+        const exactHit = paths.find(p => String(p.entry_point_name ?? '').toLowerCase() === objName.toLowerCase());
+        if (exactHit) {
+          const t = String(exactHit.object_type ?? '');
+          const objectType = /^MenuItem/i.test(t) ? 'menu_item' : /^Table$/i.test(t) ? 'table'
+            : /^DataEntity/i.test(t) ? 'data_entity' : /^Form$/i.test(t) ? 'form' : 'other';
+          hint(functional_context, objectType, exactHit.entry_point_name);
+        }
+      }
 
       // Step 2: find users who hold these roles
       const roleNames = [...new Set(paths.map(p => p.role_name))];
@@ -2245,6 +2420,96 @@ export function registerSecTools(server, db) {
       if (typed.truncated) out += truncationNote('user', limit);
       return structuredResult(typed, out, format);
     }
+  );
+
+  // ── sec_check_exists — preflight existence check (#118, Q5) ──────────────
+  //
+  // Batch is the ONLY shape; a miss is data in `not_found` with up to 3
+  // closestNames suggestions (batching rule 2). Casing-tolerant — the DMF
+  // export spells ids in UPPERCASE where the AOT is mixed case — and every hit
+  // carries `canonical_name`, the stored spelling, so the caller writes the id
+  // the way the other sec tools will match it. Every equality below is
+  // COLLATE NOCASE on an index from sec-indexes.js; the one exception is the
+  // entry-point fallback, which is why the indexed object_name is tried first.
+  const CHECK_BATCH_MAX = 50;
+  const namesParam = (what) => z.array(z.string().min(1).max(500)).max(CHECK_BATCH_MAX).optional().describe(what);
+  server.registerTool(
+    'sec_check_exists',
+    {
+      annotations: READ_ONLY_DB_ANNOTATIONS,
+      description: 'Preflight: do these roles/duties/privileges/entry points exist (case-insensitive, ≤50 total)? Returns the canonical spelling; misses get suggestions.',
+      inputSchema: {
+        roles: namesParam('Role ids or names.'),
+        duties: namesParam('Duty ids or names.'),
+        privileges: namesParam('Privilege names.'),
+        entry_points: namesParam('Entry point names.'),
+        format: formatTextParam,
+      },
+      outputSchema: secCheckExistsOutput.shape,
+    },
+    async ({ roles, duties, privileges, entry_points, format }) => {
+      const clean = (arr) => (Array.isArray(arr) ? arr : []).map(s => String(s ?? '').trim()).filter(Boolean);
+      const requested = [
+        ...clean(roles).map(name => ({ name, kind: 'role' })),
+        ...clean(duties).map(name => ({ name, kind: 'duty' })),
+        ...clean(privileges).map(name => ({ name, kind: 'privilege' })),
+        ...clean(entry_points).map(name => ({ name, kind: 'entry_point' })),
+      ];
+      if (!requested.length) return errorResult('invalid-input', 'Provide `roles`, `duties`, `privileges` and/or `entry_points` (1..50 names).');
+      const items = requested.slice(0, CHECK_BATCH_MAX);
+
+      const one = (sql, params) => q(sql, params)[0] ?? null;
+      const lookups = {
+        role(name) {
+          const r = one(`SELECT role_id, role_name, label FROM roles
+                         WHERE role_id = ? COLLATE NOCASE OR role_name = ? COLLATE NOCASE LIMIT 1`, [name, name]);
+          if (!r) return null;
+          const canonical = String(r.role_id).toLowerCase() === name.toLowerCase() ? r.role_id : r.role_name;
+          return { canonical_name: String(canonical), label: r.label ?? r.role_name ?? null };
+        },
+        duty(name) {
+          const r = one(`SELECT duty_id, duty_name FROM duties
+                         WHERE duty_id = ? COLLATE NOCASE OR duty_name = ? COLLATE NOCASE LIMIT 1`, [name, name]);
+          if (!r) return null;
+          const canonical = String(r.duty_id).toLowerCase() === name.toLowerCase() ? r.duty_id : r.duty_name;
+          return { canonical_name: String(canonical), label: r.duty_name ?? null };
+        },
+        privilege(name) {
+          const r = one(`SELECT privilege_name, label FROM privileges WHERE privilege_name = ? COLLATE NOCASE LIMIT 1`, [name]);
+          return r ? { canonical_name: String(r.privilege_name), label: r.label ?? null } : null;
+        },
+        entry_point(name) {
+          // idx_ep_object_nocase covers object_name; entry_point_name has no
+          // NOCASE index, so that equality is the fallback, not the first try.
+          const r = one(`SELECT entry_point_name, object_type FROM privilege_entry_points
+                         WHERE object_name = ? COLLATE NOCASE AND entry_point_name = ? COLLATE NOCASE LIMIT 1`, [name, name])
+            ?? one(`SELECT entry_point_name, object_type FROM privilege_entry_points
+                    WHERE entry_point_name = ? COLLATE NOCASE LIMIT 1`, [name]);
+          return r ? { canonical_name: String(r.entry_point_name), label: r.object_type ?? null } : null;
+        },
+      };
+
+      const hits = [];
+      const misses = [];
+      for (const { name, kind } of items) {
+        const found = lookups[kind](name);
+        if (found) hits.push({ name, exists: true, kind, label: found.label, canonical_name: found.canonical_name });
+        else misses.push({ name, kind, suggestions: kind === 'entry_point' ? [] : closestNames(db, name, /** @type {any} */ (kind), 3) });
+      }
+      const typed = { requested_count: items.length, found_count: hits.length, artefacts: hits, not_found: misses };
+
+      let out = `## Existence check (${typed.found_count} of ${typed.requested_count} exist)\n\n`;
+      if (hits.length) {
+        out += formatMarkdownTable(hits.map(h => ({ Name: h.name, Kind: h.kind, Canonical: h.canonical_name, Label: h.label ?? '' })),
+          ['Name', 'Kind', 'Canonical', 'Label']);
+      }
+      if (misses.length) {
+        out += `${hits.length ? '\n\n' : ''}**Not found:**\n`;
+        for (const m of misses) out += `- \`${m.name}\` (${m.kind})${m.suggestions.length ? ` — did you mean ${m.suggestions.map(s => `\`${s}\``).join(', ')}?` : ''}\n`;
+      }
+      if (requested.length > items.length) out += truncationNote('hard', items.length);
+      return structuredResult(typed, out, format);
+    },
   );
 
 }

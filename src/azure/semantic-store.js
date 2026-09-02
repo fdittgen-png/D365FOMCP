@@ -482,11 +482,13 @@ export function getVocabularyEntry(db, entityId) {
   return db.prepare('SELECT entity_id, name, process, description, is_custom, version FROM sem_vocabulary WHERE entity_id = ? COLLATE NOCASE').get(entityId) ?? null;
 }
 
-/** Cheap fuzzy suggestions for a missing entity id: substring on id and name. */
+/** Cheap fuzzy suggestions for a missing entity id: substring on id and name.
+ *  LIKE wildcards in the term are ESCAPED, not stripped — vocabulary ids are
+ *  snake_case, so a stripped `_` made `sales_quot` unable to match anything. */
 export function suggestEntities(db, term, limit = 5) {
-  const like = `%${String(term).replace(/[%_]/g, '')}%`;
+  const like = `%${String(term).replace(/[\\%_]/g, ch => `\\${ch}`)}%`;
   return db.prepare(`SELECT entity_id FROM sem_vocabulary
-     WHERE entity_id LIKE ? COLLATE NOCASE OR name LIKE ? COLLATE NOCASE
+     WHERE entity_id LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'
      ORDER BY entity_id LIMIT ?`).all(like, like, limit).map(r => r.entity_id);
 }
 
@@ -540,6 +542,36 @@ export function mappingsForEntity(db, entityId, minConfidence = 0) {
   return db.prepare(`SELECT * FROM sem_mappings
      WHERE installation_id = ? AND entity_id = ? COLLATE NOCASE AND confidence >= ?
      ORDER BY role, confidence DESC, object_name`).all(ctx.installation_id, entityId, minConfidence);
+}
+
+/**
+ * The objects a not-found response can point at (#115 item 2): the top
+ * mappings of `entityId` by confidence, with their role. `[]` on a database
+ * without the semantic tables or on any error — a suggestion must never be
+ * the reason a meta-response fails.
+ * @returns {{ object_name: string, object_type: string, role: string, confidence: number }[]}
+ */
+export function mappedObjectsForEntity(db, entityId, limit = 5) {
+  if (!db || typeof db.prepare !== 'function' || !entityId) return [];
+  const n = Number.isInteger(limit) && limit > 0 ? limit : 5;
+  try {
+    const ctx = installationContext();
+    return db.prepare(`SELECT object_name, object_type, role, confidence FROM sem_mappings
+       WHERE installation_id = ? AND entity_id = ? COLLATE NOCASE
+       ORDER BY confidence DESC, object_name LIMIT ?`).all(ctx.installation_id, entityId, n);
+  } catch {
+    return [];
+  }
+}
+
+/** Display name of a vocabulary entity, or null when unknown / no semantic tables. */
+export function entityDisplayName(db, entityId) {
+  if (!db || typeof db.prepare !== 'function' || !entityId) return null;
+  try {
+    return db.prepare('SELECT name FROM sem_vocabulary WHERE entity_id = ? COLLATE NOCASE').get(entityId)?.name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Reverse map: every entity `objectName` is mapped to. */

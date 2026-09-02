@@ -337,6 +337,76 @@ test('given the summary text channel, when emptyResult/notFoundResult/errorResul
   });
 });
 
+// ── #115 (Q2): notFoundResult 4th argument — optional, meta-response stays meta ──
+
+test('given notFoundResult with three args, when called, then the output is byte-identical to the pre-#115 shape', async () => {
+  const { notFoundResult } = await import('../src/azure/shared.js');
+  assert.deepEqual(notFoundResult('Table', 'Foo'), {
+    content: [{ type: 'text', text: '## Table not found\n\nTable `Foo` was not found.' }],
+    isError: true,
+    _meta: { kind: 'not-found' },
+  });
+  assert.deepEqual(notFoundResult('Table', 'Foo', ['Bar', 'Baz']), {
+    content: [{ type: 'text', text: '## Table not found\n\nTable `Foo` was not found.\n\n**Did you mean:**\n- `Bar`\n- `Baz`' }],
+    isError: true,
+    _meta: { kind: 'not-found' },
+  });
+  // An empty options object changes nothing either.
+  assert.deepEqual(notFoundResult('Table', 'Foo', [], {}), notFoundResult('Table', 'Foo'));
+  assert.deepEqual(notFoundResult('Table', 'Foo', undefined, { functional_context: 'sales_order' }), notFoundResult('Table', 'Foo'),
+    'functional_context without a semantic store is ignored');
+});
+
+test('given notFoundResult with functional_context + semanticDb, when the entity is known and mapped, then one mapped-objects line is appended (max 5, by confidence)', async () => {
+  const { notFoundResult } = await import('../src/azure/shared.js');
+  const { openSemanticDb, loadVocabulary, upsertMapping } = await import('../src/azure/semantic-store.js');
+  const sem = openSemanticDb(':memory:');
+  loadVocabulary(sem, { version: '1.0.0', entities: [
+    { entity_id: 'sales_order', name: 'Sales order', process: 'order_to_cash' },
+    { entity_id: 'sales_quotation', name: 'Sales quotation', process: 'order_to_cash' },
+  ] });
+  for (let i = 0; i < 7; i++) {
+    upsertMapping(sem, { entity_id: 'sales_order', object_type: 'table', object_name: `SalesObj${i}`, role: 'reference', source: 'context_hint' });
+  }
+  upsertMapping(sem, { entity_id: 'sales_order', object_type: 'table', object_name: 'SalesTable', role: 'header', source: 'user_confirmed' });
+  upsertMapping(sem, { entity_id: 'sales_order', object_type: 'table', object_name: 'SalesLine', role: 'line', source: 'assistant_inferred' });
+
+  const r = notFoundResult('Table', 'SalesTabel', ['SalesTable'], { functional_context: 'sales_order', semanticDb: sem });
+  const text = r.content[0].text;
+  assert.equal(r.isError, true);
+  assert.equal(r._meta.kind, 'not-found');
+  assert.ok(!('structuredContent' in r), 'still a meta-response');
+  assert.ok(text.indexOf('Did you mean') < text.indexOf('Objects mapped to'), 'caller suggestions first');
+  const line = text.split('\n').pop();
+  assert.match(line, /^_Objects mapped to Sales order: SalesTable \(header\), SalesLine \(line\), SalesObj\d \(reference\), SalesObj\d \(reference\), SalesObj\d \(reference\)_$/);
+  assert.ok(!text.includes('snapshot:'), 'no freshness banner on a meta-response');
+
+  // Unknown entity → closest vocabulary ids.
+  const u = notFoundResult('Table', 'Foo', [], { functional_context: 'sales_quot', semanticDb: sem });
+  assert.match(u.content[0].text, /_Unknown functional_context "sales_quot"; closest: sales_quotation_$/);
+  const none = notFoundResult('Table', 'Foo', [], { functional_context: 'zzz_nothing', semanticDb: sem });
+  assert.match(none.content[0].text, /_Unknown functional_context "zzz_nothing"_$/);
+
+  // Known entity without mappings → nothing appended.
+  assert.deepEqual(notFoundResult('Table', 'Foo', [], { functional_context: 'sales_quotation', semanticDb: sem }), notFoundResult('Table', 'Foo'));
+
+  // Appended text is capped at 400 chars.
+  for (let i = 0; i < 5; i++) {
+    upsertMapping(sem, { entity_id: 'sales_quotation', object_type: 'table', object_name: `${'VeryLongObjectName'.repeat(6)}${i}`, role: 'reference', source: 'seed' });
+  }
+  const long = notFoundResult('Table', 'Foo', [], { functional_context: 'sales_quotation', semanticDb: sem });
+  const appended = long.content[0].text.split('\n').pop();
+  assert.ok(appended.length <= 400, `appended context is ${appended.length} chars`);
+  assert.ok(appended.startsWith('_Objects mapped to Sales quotation:') && appended.endsWith('…_'));
+  sem.close();
+});
+
+test('given notFoundResult with a closed or foreign semanticDb, when called, then it degrades to the plain shape', async () => {
+  const { notFoundResult } = await import('../src/azure/shared.js');
+  const bad = { prepare() { throw new Error('closed'); } };
+  assert.deepEqual(notFoundResult('Table', 'Foo', [], { functional_context: 'sales_order', semanticDb: bad, db: bad, kind: 'table' }), notFoundResult('Table', 'Foo'));
+});
+
 test('given shared.js helpers, when errorResult/notFoundResult are called, then isError is true', async () => {
   const { errorResult, notFoundResult } = await import('../src/azure/shared.js');
   assert.equal(errorResult('db-error', 'hint').isError, true);
@@ -530,6 +600,33 @@ for (const file of ['kb-tools.js', 'sec-tools.js']) {
       `Every tool declares an outputSchema, so the empty path must call ` +
       `emptyResult(context, typedEmptyPayload) — otherwise the MCP SDK throws -32602 on zero-row results.`,
     );
+  });
+}
+
+// ── #116 (Q3): coverage-boundary texts come from coverageNotes() only ────────
+//
+// Every boundary line (`Fields capped at`, `Sealed-ISV models not scanned`,
+// `sealed-ISV usages exist`, `delta-merged snapshot`) is produced by ONE helper
+// in shared.js so the wording, the typed key and the "only when fired" rule
+// cannot drift per handler. A tool file passes `{ coverage: coverageNotes(...) }`
+// to structuredResult and never writes the sentence itself.
+
+const COVERAGE_LITERALS = [
+  'Fields capped at',
+  'Sealed-ISV models not scanned',
+  'sealed-ISV usages exist',
+  'delta-merged snapshot',
+];
+
+for (const file of [...TOOL_FILES, 'semantic-tools.js']) {
+  test(`given ${file}, when scanned for hand-written coverage-boundary text, then none is present (use coverageNotes)`, () => {
+    const src = readSource(file);
+    for (const literal of COVERAGE_LITERALS) {
+      assert.ok(
+        !src.includes(literal),
+        `${file} hand-writes the coverage signal "${literal}". Build it with coverageNotes(signals) from shared.js and pass { coverage } to structuredResult (#116).`,
+      );
+    }
   });
 }
 

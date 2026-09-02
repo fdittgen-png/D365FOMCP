@@ -13,6 +13,7 @@ const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 import { ensureSecIndexes } from './sec-indexes.js';
 import { getRequestContext } from './request-context.js';
+import { entityDisplayName, mappedObjectsForEntity, suggestEntities } from './semantic-store.js';
 
 // ── Shared tool input params ─────────────────────────────────────────────────
 //
@@ -598,11 +599,30 @@ export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
  *   which bypasses Zod) is treated as 'auto' — a 'toon' default here would
  *   silently pin the encoding for every such call, which is exactly how this
  *   was wrong the first time.
+ * @param {{ coverage?: { text: string, keys: Record<string, number|boolean> } }} [opts]
+ *   Coverage boundaries from `coverageNotes()` (#116).
  */
-export function structuredResult(typed, markdownText, format = 'auto') {
+export function structuredResult(typed, markdownText, format = 'auto', { coverage } = {}) {
+  // Coverage boundaries (#116): the fired keys join the typed payload; the
+  // `_…_` lines go directly under the H2 (and under the freshness banner once
+  // withFreshnessBanner adds it — that wrapper inserts on the line after the
+  // heading, so the order on the wire is heading / banner / coverage / body).
+  //
+  // The text channel renders the PRE-merge payload: the `_…_` line IS the text
+  // rendering of the fired key, so encoding the key into TOON as well would pay
+  // the same signal twice. structuredContent carries the key, text the line.
+  const cov = coverage && typeof coverage === 'object' ? coverage : null;
+  const body = typed;
+  if (cov && cov.keys && typeof cov.keys === 'object' && Object.keys(cov.keys).length
+      && typed && typeof typed === 'object' && !Array.isArray(typed)) {
+    typed = { ...typed, ...cov.keys };
+  }
+  const covText = cov && typeof cov.text === 'string' && cov.text.trim() ? cov.text.trim() : '';
+  const withCoverage = (text) => (covText ? insertAfterHeading(text, covText) : text);
+
   if (getRequestContext().textChannel === 'summary') {
     return {
-      content: [{ type: 'text', text: summaryText(typed, markdownText) }],
+      content: [{ type: 'text', text: withCoverage(summaryText(typed, markdownText)) }],
       structuredContent: typed,
     };
   }
@@ -610,12 +630,13 @@ export function structuredResult(typed, markdownText, format = 'auto') {
   // An explicit `format: "markdown"` is honoured unconditionally: those callers
   // quote the text verbatim into a document, so size is not the criterion.
   if (format === 'markdown' && markdownText) {
-    return { content: [{ type: 'text', text: markdownText }], structuredContent: typed };
+    return { content: [{ type: 'text', text: withCoverage(markdownText) }], structuredContent: typed };
   }
 
   const heading = extractLeadingHeading(markdownText);
-  const toon = encodeToon(typed);
-  const toonText = heading ? `${heading}\n\n${toon}` : toon;
+  const toon = encodeToon(body);
+  const toonText = withCoverage(heading ? `${heading}\n\n${toon}` : toon);
+  markdownText = markdownText ? withCoverage(markdownText) : markdownText;
 
   // An explicit `format: "toon"` pins the encoding too — only the DEFAULT is
   // adaptive, so a caller that has decided still gets what it asked for.
@@ -645,6 +666,107 @@ export function structuredResult(typed, markdownText, format = 'auto') {
     content: [{ type: 'text', text }],
     structuredContent: typed,
   };
+}
+
+/**
+ * Insert `lines` directly after the leading heading of `text` (or prepend them
+ * when there is none). The blank line that followed the heading is kept after
+ * the inserted block, so the body still starts on its own paragraph.
+ */
+function insertAfterHeading(text, lines) {
+  const heading = extractLeadingHeading(text);
+  if (!heading) return `${lines}\n\n${text}`;
+  const rest = text.slice(heading.length); // '' or starts with '\n'
+  return `${heading}\n${lines}${rest}`;
+}
+
+// ── Coverage boundaries (#116, Q3) ───────────────────────────────────────────
+//
+// W3 made `truncated` exact for ROWS. This is the same discipline for
+// COVERAGE: a data response states, one line per signal and only when the
+// condition holds, what it is NOT covering — so the model cannot summarise a
+// partial view as the whole. Every signal text lives HERE and nowhere else
+// (static scan in test/response-format.test.js); a handler computes the
+// signals and passes `{ coverage: coverageNotes(signals) }` to structuredResult.
+//
+// Typed keys follow rule #14: present only when fired, never false/null.
+
+/**
+ * @param {{
+ *   field_limit_hit?: { shown: number, total: number },
+ *   provenance_omitted?: { count: number, total: number, models?: string[] },
+ *   isv_not_scanned?: boolean,
+ *   isv_excluded?: { count: number },
+ *   partial_build?: { since?: string|null },
+ *   custom_layer?: string,
+ * }} [signals]
+ * @returns {{ text: string, keys: Record<string, boolean|number> }}
+ */
+export function coverageNotes(signals = {}) {
+  const s = signals && typeof signals === 'object' ? signals : {};
+  const lines = [];
+  /** @type {Record<string, number|boolean>} */
+  const keys = {};
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+
+  const fl = s.field_limit_hit;
+  if (fl && n(fl.shown) != null && n(fl.total) != null && n(fl.shown) < n(fl.total)) {
+    lines.push(`_Fields capped at ${n(fl.shown)} of ${n(fl.total)} — use fields_like / custom_only / field_limit._`);
+    keys.field_limit_hit = true;
+  }
+
+  const po = s.provenance_omitted;
+  if (po && n(po.count) > 0) {
+    const models = Array.isArray(po.models) ? po.models.filter(m => typeof m === 'string' && m.trim()).map(m => m.trim()) : [];
+    const who = models.length ? ` (models: ${models.slice(0, 5).join(', ')}${models.length > 5 ? ', …' : ''})` : '';
+    const total = n(po.total) != null ? n(po.total) : n(po.count);
+    lines.push(`_${n(po.count)} of ${total} fields come from extensions${who} — pass include_provenance or custom_only to see which._`);
+    keys.provenance_omitted = n(po.count);
+  }
+
+  if (s.isv_not_scanned === true) {
+    lines.push('_Sealed-ISV models not scanned in this snapshot — ISV usages/extensions absent, not zero._');
+    keys.isv_not_scanned = true;
+  }
+
+  const ie = s.isv_excluded;
+  if (ie && n(ie.count) > 0) {
+    lines.push(`_${n(ie.count)} sealed-ISV usages exist — pass include_isv:true._`);
+    keys.isv_excluded = n(ie.count);
+  }
+
+  const pb = s.partial_build;
+  if (pb) {
+    const since = typeof pb === 'object' && pb.since ? String(pb.since).slice(0, 10) : 'the last full build';
+    lines.push(`_KB is a delta-merged snapshot; kb_search may be stale for base tables extended since ${since}._`);
+    keys.partial_build = true;
+  }
+
+  // Existing behaviour reused, not duplicated: customLayerNote already decides
+  // whether the name carries a custom prefix and returns '' otherwise. Text
+  // only — #116 lists no typed key for it.
+  if (typeof s.custom_layer === 'string' && s.custom_layer) {
+    const note = customLayerNote(s.custom_layer).trim();
+    if (note) lines.push(note);
+  }
+
+  return { text: lines.join('\n'), keys };
+}
+
+/**
+ * One `kb_metadata` value by key (`partial_build`, `has_customizations`, …),
+ * or null when the table/key is absent or the read fails. The
+ * `partial_build` flag is set by the delta-merge path (#86) and feeds
+ * coverageNotes({ partial_build }).
+ */
+export function readKbMetadataFlag(db, key) {
+  if (!db || typeof db.prepare !== 'function' || typeof key !== 'string' || !key) return null;
+  try {
+    const row = db.prepare('SELECT value FROM kb_metadata WHERE key = ?').get(key);
+    return row?.value == null ? null : String(row.value);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -716,13 +838,215 @@ export function emptyResult(context, structured, note) {
   return result;
 }
 
-/** The named target object does not exist. Sets isError. */
-export function notFoundResult(type, name, suggestions) {
-  let text = `## ${type} not found\n\n${type} \`${name}\` was not found.`;
-  if (Array.isArray(suggestions) && suggestions.length > 0) {
-    const list = suggestions.slice(0, 5).map(s => `- \`${s}\``).join('\n');
-    text += `\n\n**Did you mean:**\n${list}`;
+// ── Exact-name recovery (#115 item 3) ────────────────────────────────────────
+//
+// A not-found response is the cheapest response in the system and used to
+// carry the least information. `closestNames` gives every not-found a
+// "did you mean" from the service's own name table, so a typo (`SalesTabel`),
+// a case slip (`custtable`) or a half-remembered name (`SalesForm`) costs one
+// call instead of a guess-and-retry loop.
+//
+// The KIND → table/column map below was read off the builders' DDL
+// (build/build-kb.js, build/build-xref-db.js, src/azure/sec-builder.js) and the
+// in-memory fixtures the tool tests build — never guessed. Which service a `db`
+// belongs to is discovered from sqlite_master, so one function serves all three:
+//   KB   — one flat table per kind, `<kind>_name` column
+//   XRef — `names.path`, the object is the last segment of `/<Type>/<Name>`
+//   Sec  — roles.role_name / duties.duty_name / privileges.privilege_name /
+//          users.user_id
+
+const KB_KIND_TABLES = Object.freeze({
+  table: [['tables', 'table_name']],
+  class: [['classes', 'class_name']],
+  enum: [['enums', 'enum_name']],
+  edt: [['edts', 'edt_name']],
+  form: [['forms', 'form_name']],
+  entity: [['data_entities', 'entity_name']],
+  menu_item: [['menu_items', 'menu_item_name']],
+  object: [
+    ['tables', 'table_name'], ['classes', 'class_name'], ['data_entities', 'entity_name'],
+    ['enums', 'enum_name'], ['forms', 'form_name'], ['edts', 'edt_name'], ['menu_items', 'menu_item_name'],
+  ],
+  role: [['roles', 'role_name']],
+  duty: [['duties', 'duty_name']],
+  privilege: [['privileges', 'privilege_name']],
+  user: [['users', 'user_id']],
+});
+
+// XRef: the `/<Type>/` path prefix per kind; `object` = any top-level type.
+const XREF_KIND_PREFIXES = Object.freeze({
+  table: ['/Tables/'], class: ['/Classes/'], enum: ['/Enums/'], edt: ['/Edts/'],
+  form: ['/Forms/'], entity: ['/DataEntityViews/'], menu_item: ['/MenuItemDisplays/', '/MenuItemActions/', '/MenuItemOutputs/'],
+  object: [null],
+});
+
+export const CLOSEST_NAME_KINDS = Object.freeze(Object.keys(KB_KIND_TABLES));
+
+// Per database HANDLE: the set of table names (read once from sqlite_master).
+const tableSetByDb = new WeakMap();
+function tableSet(db) {
+  if (tableSetByDb.has(db)) return tableSetByDb.get(db);
+  let set = new Set();
+  try {
+    set = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view')").all().map(r => String(r.name).toLowerCase()));
+  } catch { set = new Set(); }
+  tableSetByDb.set(db, set);
+  return set;
+}
+
+function escapeLike(s) {
+  return String(s).replace(/[\\%_]/g, ch => `\\${ch}`);
+}
+
+/** Levenshtein distance with an early exit above `max` (returns max + 1). */
+export function levenshtein(a, b, max = Infinity) {
+  a = String(a); b = String(b);
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
   }
+  return prev[b.length];
+}
+
+/**
+ * Candidate-name strategy shared by the KB/Sec (flat column) and XRef (path
+ * segment) shapes. `run(kind, pattern, limit)` executes one LIKE query and
+ * returns bare names; `exact(name)` returns the exact-case spelling or null.
+ */
+function collectClosest(name, limit, { exact, like }) {
+  const out = [];
+  const seen = new Set();
+  const add = (n) => {
+    if (n == null) return;
+    const key = String(n).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(String(n));
+  };
+  // 1. case-only match: the object exists, the caller spelt it in another case.
+  add(exact(name));
+  if (out.length >= limit) return out.slice(0, limit);
+  const esc = escapeLike(name);
+  // 2. prefix
+  for (const n of like(`${esc}%`, limit * 2)) { add(n); if (out.length >= limit) return out.slice(0, limit); }
+  // 3. contains
+  for (const n of like(`%${esc}%`, limit * 2)) { add(n); if (out.length >= limit) return out.slice(0, limit); }
+  // 4. Levenshtein ≤ 2 over the first 200 candidates sharing the first 3 chars.
+  if (name.length >= 3) {
+    const lower = name.toLowerCase();
+    const scored = [];
+    for (const n of like(`${escapeLike(name.slice(0, 3))}%`, 200)) {
+      const d = levenshtein(lower, String(n).toLowerCase(), 2);
+      if (d <= 2) scored.push([d, n]);
+    }
+    scored.sort((x, y) => x[0] - y[0] || String(x[1]).localeCompare(String(y[1])));
+    for (const [, n] of scored) { add(n); if (out.length >= limit) break; }
+  }
+  return out.slice(0, limit);
+}
+
+/**
+ * Closest existing names to `name` of the given `kind` in `db`, at most
+ * `limit`. Strategy, in order: case-only match → prefix → contains →
+ * Levenshtein ≤ 2. Parameterised SQL only; returns `[]` — never throws — on an
+ * unknown kind, a database without the kind's table, or any SQLite error.
+ *
+ * @param {object} db     KB, XRef or Sec database handle
+ * @param {string} name   the name the caller asked for
+ * @param {'table'|'class'|'enum'|'edt'|'form'|'entity'|'menu_item'|'object'|'role'|'duty'|'privilege'|'user'} kind
+ * @param {number} [limit=3]
+ * @returns {string[]}
+ */
+export function closestNames(db, name, kind, limit = 3) {
+  const n = Number.isInteger(limit) && limit > 0 ? limit : 3;
+  const needle = typeof name === 'string' ? name.trim().replace(/^%+|%+$/g, '') : '';
+  if (!needle || !db || typeof db.prepare !== 'function') return [];
+  const kbTargets = KB_KIND_TABLES[kind];
+  if (!kbTargets) return [];
+  try {
+    const tables = tableSet(db);
+    const present = kbTargets.filter(([t]) => tables.has(t));
+    if (present.length > 0) {
+      const out = [];
+      for (const [table, col] of present) {
+        const hits = collectClosest(needle, n - out.length, {
+          exact: (v) => db.prepare(`SELECT ${col} AS n FROM ${table} WHERE ${col} = ? COLLATE NOCASE LIMIT 1`).get(v)?.n ?? null,
+          like: (pattern, lim) => db.prepare(`SELECT DISTINCT ${col} AS n FROM ${table} WHERE ${col} LIKE ? ESCAPE '\\' ORDER BY ${col} LIMIT ?`).all(pattern, lim).map(r => r.n),
+        });
+        for (const h of hits) if (!out.some(o => o.toLowerCase() === h.toLowerCase())) out.push(h);
+        if (out.length >= n) break;
+      }
+      return out.slice(0, n);
+    }
+    // XRef shape: names.path = /<Type>/<Name>; the object is the last segment.
+    if (tables.has('names') && XREF_KIND_PREFIXES[kind]) {
+      const last = (p) => String(p).split('/').filter(Boolean).pop() ?? null;
+      const out = [];
+      for (const prefix of XREF_KIND_PREFIXES[kind]) {
+        const hits = collectClosest(needle, n - out.length, {
+          exact: (v) => {
+            // SQLite LIKE is case-insensitive for ASCII, so the `object` form
+            // (any top-level type) is already a case-only match.
+            const row = prefix
+              ? db.prepare('SELECT path FROM names WHERE path = ? COLLATE NOCASE LIMIT 1').get(`${prefix}${v}`)
+              : db.prepare("SELECT path FROM names WHERE path LIKE ? ESCAPE '\\' AND path NOT LIKE '/%/%/%' LIMIT 1").get(`/%/${escapeLike(v)}`);
+            return row ? last(row.path) : null;
+          },
+          like: (pattern, lim) => db.prepare(
+            "SELECT path FROM names WHERE path LIKE ? ESCAPE '\\' AND path NOT LIKE '/%/%/%' ORDER BY path LIMIT ?",
+          ).all(`${prefix ?? '/%/'}${pattern}`, lim).map(r => last(r.path)),
+        });
+        for (const h of hits) if (!out.some(o => o.toLowerCase() === h.toLowerCase())) out.push(h);
+        if (out.length >= n) break;
+      }
+      return out.slice(0, n);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+const NOT_FOUND_CONTEXT_MAX = 400;
+
+/**
+ * The named target object does not exist. Sets isError.
+ *
+ * Optional 4th argument (#115 items 2–3), fully backward compatible — a 3-arg
+ * call produces byte-identical output:
+ *   - `db` + `kind`: when the caller passes no `suggestions`, the closest
+ *     existing names are looked up via `closestNames(db, name, kind, 3)`, so no
+ *     not-found ships empty-handed;
+ *   - `functional_context` + `semanticDb`: a vocabulary id names the business
+ *     entity the caller was after. Known with mappings → the objects mapped to
+ *     it (max 5, by confidence); unknown → the closest vocabulary ids.
+ * Still a meta-response: no structuredContent, `_meta.kind: 'not-found'`, no
+ * freshness banner. The appended context text is capped at 400 chars.
+ */
+export function notFoundResult(type, name, suggestions, opts = {}) {
+  let list = Array.isArray(suggestions) ? suggestions : [];
+  if (list.length === 0 && opts && opts.db && opts.kind) {
+    list = closestNames(opts.db, name, opts.kind, 3);
+  }
+  let text = `## ${type} not found\n\n${type} \`${name}\` was not found.`;
+  if (list.length > 0) {
+    const items = list.slice(0, 5).map(s => `- \`${s}\``).join('\n');
+    text += `\n\n**Did you mean:**\n${items}`;
+  }
+  const ctxNote = functionalContextNote(opts?.functional_context, opts?.semanticDb);
+  if (ctxNote) text += `\n\n${ctxNote}`;
   // No structuredContent on error responses: the MCP client validates
   // structuredContent against the tool's outputSchema whenever it is present —
   // even on isError results (SDK client/index.js) — so an `{error}`-shaped
@@ -732,6 +1056,30 @@ export function notFoundResult(type, name, suggestions) {
     isError: true,
     _meta: { kind: 'not-found' },
   };
+}
+
+/** One `_…_` line for a `functional_context` vocabulary id, or '' (never throws). */
+function functionalContextNote(functionalContext, semanticDb) {
+  if (typeof functionalContext !== 'string' || !functionalContext.trim() || !semanticDb) return '';
+  const id = functionalContext.trim().slice(0, 64);
+  let line = '';
+  try {
+    const display = entityDisplayName(semanticDb, id);
+    if (display) {
+      const mapped = mappedObjectsForEntity(semanticDb, id, 5);
+      if (mapped.length === 0) return '';
+      line = `_Objects mapped to ${display}: ${mapped.map(m => `${m.object_name} (${m.role})`).join(', ')}_`;
+    } else {
+      const close = suggestEntities(semanticDb, id, 3);
+      line = close.length
+        ? `_Unknown functional_context "${id}"; closest: ${close.join(', ')}_`
+        : `_Unknown functional_context "${id}"_`;
+    }
+  } catch {
+    return '';
+  }
+  if (line.length > NOT_FOUND_CONTEXT_MAX) line = `${line.slice(0, NOT_FOUND_CONTEXT_MAX - 2)}…_`;
+  return line;
 }
 
 const ERROR_CATEGORIES = new Set(['not-found', 'invalid-input', 'db-error', 'parse-error', 'internal']);

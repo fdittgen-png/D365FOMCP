@@ -275,7 +275,7 @@ export function registerIsvKbTools(server, db) {
     'd365_isv_lookup',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Look up an object in the sealed ISV models: exists, in which model, as which AOT type. Use when the normal KB tools report a table, class, form, enum — or an ISV-added FIELD on a Microsoft table — as not found. `search_properties` finds an identifier inside an element, which is how an ISV extension field is located (sealed models publish no resolved field list).',
+      description: 'Look up an object in the sealed ISV models: exists, in which model, as which AOT type — for tables, classes, forms, enums, and ISV-added FIELDS on Microsoft tables. `search_properties` finds an identifier inside an element, which is how an ISV extension field is located (sealed models publish no resolved field list).',
       inputSchema: {
         name: z.string().min(1).max(500).describe('Object name to look for, e.g. "LACReportTable". Matched case-insensitively, exact by default.'),
         element_type: z.string().min(1).max(100).optional().describe('Restrict to one AOT type, e.g. "AxTable", "AxClass", "AxForm", "AxTableExtension".'),
