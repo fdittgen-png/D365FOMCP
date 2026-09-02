@@ -27,7 +27,8 @@
     "test:integration": "node --test test/integration/*.test.js",
     "start:azure": "func start",
     "gen:plugin-refs": "node build/gen-plugin-tool-refs.js",
-    "pack:skills": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-SkillsPackage.ps1"
+    "pack:skills": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-SkillsPackage.ps1",
+    "typecheck": "tsc -p jsconfig.json"
   },
   "engines": {
     "node": ">=20.0.0 <21.0.0"
@@ -49,6 +50,9 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "mssql": "^11.0.0"
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "20.19.43",
+    "mssql": "^11.0.0",
+    "typescript": "5.9.3"
   }
 }
