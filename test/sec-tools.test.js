@@ -216,6 +216,27 @@ before(async () => {
     -- Direct entity permissions
     INSERT INTO role_direct_entity_permissions VALUES ('R1', 'VendInvoiceHeaderEntity', 'DataEntity', 'Allow', 'Allow', 'Allow', 'Allow', NULL, NULL);
 
+    -- Issue #114 fixture: the snapshot merges AOT (mixed-case) and DMF
+    -- (lower/UPPER-case) rows. Collections manager carries one duty TWICE as a
+    -- case-variant twin, its duty links CustGroupView in DMF lower-case, and it
+    -- inherits a duty from a sub-role. ElectronicMessageMaintain is held only by
+    -- direct assignment (in no duty). No user is assigned to these roles.
+    INSERT INTO roles VALUES ('COLLECTIONLETTERCOLLECTIONSMANAGER', 'Collections manager', 'ApplicationSuite', 'Collections manager', 'Manage collections', 'Enterprise', 'Grant', 0, 'aot+dmf');
+    INSERT INTO roles VALUES ('CUSTCOLLECTIONSAGENT', 'Collections agent', 'ApplicationSuite', 'Collections agent', 'Collect', 'Activity', 'Grant', 0, 'aot+dmf');
+    INSERT INTO roles VALUES ('LEDGERACCOUNTANT', 'Accountant', 'ApplicationSuite', 'Accountant', 'GL', 'Enterprise', 'Grant', 0, 'aot+dmf');
+    INSERT INTO role_subroles VALUES ('COLLECTIONLETTERCOLLECTIONSMANAGER', 'CUSTCOLLECTIONSAGENT', 0);
+    INSERT INTO duties VALUES ('CustCustomerReferenceDataInquire', 'Inquire into customer reference data', 'ApplicationSuite', NULL);
+    INSERT INTO duties VALUES ('CollectionLetterCollectionsProcessEnable', 'Enable collections process', 'ApplicationSuite', NULL);
+    INSERT INTO role_duties VALUES ('COLLECTIONLETTERCOLLECTIONSMANAGER', 'CollectionLetterCollectionsProcessEnable', 'Grant');
+    INSERT INTO role_duties VALUES ('COLLECTIONLETTERCOLLECTIONSMANAGER', 'collectionlettercollectionsprocessEnable', 'Grant');
+    INSERT INTO role_duties VALUES ('COLLECTIONLETTERCOLLECTIONSMANAGER', 'CustCustomerReferenceDataInquire', 'Grant');
+    INSERT INTO role_duties VALUES ('CUSTCOLLECTIONSAGENT', 'VendPaymentProcess', 'Grant');
+    INSERT INTO privileges VALUES ('CustGroupView', 'ApplicationSuite', 'View customer groups');
+    INSERT INTO privileges VALUES ('ElectronicMessageMaintain', 'RegulatoryServices', 'Maintain electronic messages');
+    INSERT INTO duty_privileges VALUES ('CustCustomerReferenceDataInquire', 'custgroupview');
+    INSERT INTO role_direct_privileges VALUES ('COLLECTIONLETTERCOLLECTIONSMANAGER', 'CustGroupView');
+    INSERT INTO role_direct_privileges VALUES ('LEDGERACCOUNTANT', 'ElectronicMessageMaintain');
+
     -- Search index
     INSERT INTO sec_search VALUES ('role', 'SystemAdministrator', 'System', 'SystemAdministrator System administrator Full access');
     INSERT INTO sec_search VALUES ('role', 'AccountsPayableClerk', 'ApplicationSuite', 'AccountsPayableClerk AP Clerk AP processing');
@@ -321,6 +342,97 @@ describe('sec_lookup_privilege', () => {
     const result = await callTool('sec_lookup_privilege', { privilege_name: 'VendInvoiceJournalPost' });
     assert.ok(result.includes('VendInvoiceProcess'));
     assert.ok(result.includes('SystemAdministrator'));
+  });
+});
+
+// ── Issue #114 — canonical role/duty/privilege walks (DMF casing twins) ──────
+//
+// Fixture (before() block): Collections manager has role_duties rows
+// CollectionLetterCollectionsProcessEnable + its DMF twin
+// collectionlettercollectionsprocessEnable + CustCustomerReferenceDataInquire,
+// and inherits VendPaymentProcess from sub-role Collections agent → 3 duties.
+// duty_privileges links CustGroupView as `custgroupview`. ElectronicMessageMaintain
+// sits in no duty and is a direct privilege of Accountant only.
+
+describe('#114 sec_lookup_privilege agrees with sec_find_roles_by_privilege', () => {
+  it('finds the parent duty when duty_privileges spells the privilege in DMF lower-case', async () => {
+    const res = await callToolFull('sec_lookup_privilege', { privilege_name: 'CustGroupView' });
+    assertSdkOutputContract('sec_lookup_privilege', res);
+    const sc = res.structuredContent;
+    assert.equal(sc.parent_duty_count, 1);
+    assert.deepEqual(sc.parent_duties, [{ duty_id: 'CustCustomerReferenceDataInquire', duty_name: 'Inquire into customer reference data' }]);
+  });
+
+  it('granting_roles is the union of the via_chain and direct populations sec_find_roles_by_privilege reports', async () => {
+    const lookup = (await callToolFull('sec_lookup_privilege', { privilege_name: 'custgroupview' })).structuredContent;
+    const find = (await callToolFull('sec_find_roles_by_privilege', { privilege_name: 'CustGroupView' })).structuredContent;
+    assert.equal(find.via_chain_count, 1);   // via the duty
+    assert.equal(find.direct_count, 1);      // and directly — the same role
+    const union = new Set([...find.via_chain.map(v => v.role_name), ...find.direct.map(d => d.role_name)]);
+    assert.deepEqual(new Set(lookup.granting_roles.map(r => r.role_name)), union);
+    assert.equal(lookup.granting_role_count, union.size);
+    assert.deepEqual(lookup.granting_roles, [{ role_name: 'Collections manager', permission_type: 'Grant' }]);
+  });
+
+  it('a privilege held only by direct assignment reports 0 parent duties and its direct roles', async () => {
+    const lookup = (await callToolFull('sec_lookup_privilege', { privilege_name: 'ElectronicMessageMaintain' })).structuredContent;
+    const find = (await callToolFull('sec_find_roles_by_privilege', { privilege_name: 'ElectronicMessageMaintain' })).structuredContent;
+    assert.equal(lookup.parent_duty_count, 0);
+    assert.deepEqual(lookup.granting_roles.map(r => r.role_name), ['Accountant']);
+    assert.equal(find.via_chain_count, 0);
+    assert.deepEqual(find.direct.map(d => d.role_name), ['Accountant']);
+  });
+
+  it('sec_lookup_duty emits the canonical privilege name and its label for a DMF lower-case link', async () => {
+    const sc = (await callToolFull('sec_lookup_duty', { duty_name: 'CustCustomerReferenceDataInquire' })).structuredContent;
+    assert.deepEqual(sc.privileges, [{ privilege_name: 'CustGroupView', label: 'View customer groups' }]);
+    assert.equal(sc.privilege_count, 1);
+  });
+});
+
+describe('#114 duty_count is one number across sec_lookup_role / sec_compare_roles / sec_role_hierarchy', () => {
+  it('a DMF case-variant twin counts once and sub-role duties are included (4 rows → 3 duties)', async () => {
+    const res = await callToolFull('sec_lookup_role', { role_name: 'Collections manager' });
+    assertSdkOutputContract('sec_lookup_role', res);
+    const role = res.structuredContent;
+    assert.equal(role.duty_count, 3);
+    assert.deepEqual(role.duties.map(d => d.duty_id),
+      ['CollectionLetterCollectionsProcessEnable', 'CustCustomerReferenceDataInquire', 'VendPaymentProcess']);
+    const cmp = (await callToolFull('sec_compare_roles', { role1: 'Collections manager', role2: 'AccountsPayableClerk' })).structuredContent;
+    assert.equal(cmp.duties_total_1, role.duty_count);
+    assert.equal(cmp.duties_total_2, 1);
+    assert.equal(cmp.duties_shared_count, 0);
+    assert.equal(cmp.direct_privs_total_1, role.direct_privilege_count);
+  });
+
+  it('a role carrying the duty twice is listed once by sec_find_roles_by_duty and counted once by sec_lookup_duty', async () => {
+    const find = (await callToolFull('sec_find_roles_by_duty', { duty_name: 'CollectionLetterCollectionsProcessEnable' })).structuredContent;
+    assert.deepEqual(find.roles.map(r => r.role_name), ['Collections manager']);
+    assert.equal(find.result_count, 1);
+    const duty = (await callToolFull('sec_lookup_duty', { duty_name: 'collectionlettercollectionsprocessenable' })).structuredContent;
+    assert.equal(duty.role_count, 1);
+    assert.deepEqual(duty.roles, [{ role_name: 'Collections manager', permission_type: 'Grant' }]);
+  });
+
+  it('sec_role_hierarchy entries carry the related role\'s duty_count, equal to sec_lookup_role in both directions', async () => {
+    const mgr = (await callToolFull('sec_lookup_role', { role_name: 'Collections manager' })).structuredContent;
+    const agent = (await callToolFull('sec_lookup_role', { role_name: 'Collections agent' })).structuredContent;
+    const down = await callToolFull('sec_role_hierarchy', { role_name: 'Collections manager', direction: 'children' });
+    assertSdkOutputContract('sec_role_hierarchy', down);
+    assert.deepEqual(down.structuredContent.entries, [{ role_name: 'Collections agent', is_transitive: 0, duty_count: agent.duty_count }]);
+    assert.equal(agent.duty_count, 1);
+    const up = (await callToolFull('sec_role_hierarchy', { role_name: 'Collections agent', direction: 'parents' })).structuredContent;
+    assert.deepEqual(up.entries, [{ role_name: 'Collections manager', is_transitive: 0, duty_count: mgr.duty_count }]);
+    assert.equal(mgr.duty_count, 3);
+  });
+
+  it('roleDuties()/roleDutyCount() take the role id in any casing and fold Deny-wins over twin rows', async () => {
+    const { roleDuties, roleDutyCount } = await import('../src/azure/sec-tools.js');
+    assert.equal(roleDutyCount(db, 'collectionlettercollectionsmanager'), 3);
+    assert.equal(roleDutyCount(db, 'COLLECTIONLETTERCOLLECTIONSMANAGER'), 3);
+    assert.deepEqual(roleDuties(db, 'R3'), [{ duty_id: 'VendInvoiceProcess', duty_name: 'Process vendor invoices', permission_type: 'Deny' }]);
+    // AP Manager (R4) = own {VendInvoiceProcess, VendPaymentProcess} ∪ Clerk (R2) {VendInvoiceProcess}
+    assert.equal(roleDutyCount(db, 'R4'), 2);
   });
 });
 
@@ -564,7 +676,8 @@ describe('sec_search modules filter', () => {
 
 describe('sec_raw_sql', () => {
   it('executes SELECT queries', async () => {
-    const result = await callTool('sec_raw_sql', { sql: 'SELECT COUNT(*) as cnt FROM roles' });
+    // The four R1..R4 roles; the #114 fixture roles carry source 'aot+dmf'.
+    const result = await callTool('sec_raw_sql', { sql: "SELECT COUNT(*) as cnt FROM roles WHERE source = 'test'" });
     assert.ok(result.includes('4'));
   });
 

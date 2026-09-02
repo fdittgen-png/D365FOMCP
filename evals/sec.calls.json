@@ -40,12 +40,12 @@
     },
     {
       "id": 5,
-      "title": "Accounting manager: Update on CustGroup menu item?",
+      "title": "CustGroupView: its duty and every role that reaches it (#114 defect 1)",
       "calls": [
-        { "tool": "sec_search", "arguments": { "query": "accounting manager", "object_type": "role", "limit": 5 } },
-        { "tool": "sec_effective_permissions", "arguments": { "role_name": "Accounting manager", "object_name": "CustGroup", "limit": 50 } }
+        { "tool": "sec_lookup_privilege", "arguments": { "privilege_name": "CustGroupView", "limit": 1 } },
+        { "tool": "sec_find_roles_by_privilege", "arguments": { "privilege_name": "CustGroupView", "limit": 50 } }
       ],
-      "expr": "(rows => rows.length > 0 && !r[1].truncated ? (rows.some(x => x.grant_update === 'Allow') ? 'True' : 'False') : 'no rows')(r[1].permissions.filter(x => x.object_name === 'CustGroup' && x.object_type === 'MenuItemDisplay'))"
+      "expr": "(u => r[0].parent_duty_count === 1 && !r[1].truncated && u.size === r[0].granting_role_count ? r[0].parent_duties[0].duty_id + ',' + r[0].granting_role_count : 'tools disagree')(new Set([...r[1].via_chain.map(x => x.role_name), ...r[1].direct.map(x => x.role_name)]))"
     },
     {
       "id": 6,
@@ -58,12 +58,12 @@
     },
     {
       "id": 7,
-      "title": "Collections manager: licence type and stored role_id",
+      "title": "Collections manager: distinct duty count agreed by two tools, and stored role_id (#114 defect 2)",
       "calls": [
-        { "tool": "sec_search", "arguments": { "query": "collections manager", "object_type": "role", "limit": 5 } },
-        { "tool": "sec_lookup_role", "arguments": { "role_name": "Collections manager" } }
+        { "tool": "sec_lookup_role", "arguments": { "role_name": "Collections manager" } },
+        { "tool": "sec_compare_roles", "arguments": { "role1": "Collections manager", "role2": "Accounts receivable manager", "list_limit": 1 } }
       ],
-      "expr": "r[1].license_type + ',' + r[1].role_id"
+      "expr": "r[0].duty_count === r[1].duties_total_1 ? r[0].duty_count + ',' + r[0].role_id : 'tools disagree'"
     },
     {
       "id": 8,

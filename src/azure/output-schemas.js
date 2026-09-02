@@ -1178,6 +1178,9 @@ export const secLookupPrivilegeOutput = z.object({
 export const secRoleHierarchyEntrySchema = z.object({
   role_name: z.string(),
   is_transitive: z.number().nullish(),
+  // Effective duty count of the related role (own ∪ sub-role, #114) — the
+  // same number sec_lookup_role.duty_count reports for it.
+  duty_count: z.number(),
 });
 export const secRoleHierarchyOutput = z.object({
   role_name: z.string(),
