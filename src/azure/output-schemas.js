@@ -24,23 +24,21 @@
 
 import { z } from 'zod';
 
-// ── `$ref` on the wire (W1, #105) ─────────────────────────────────────────────
-// A row shape used TWICE inside one tool's schema (the single branch and the
-// batch branch of the #83 tools, or several same-shaped lists) is registered
-// with `.meta({ id })`. Zod 4's toJSONSchema — which the SDK calls with no
-// options — then emits it once under `definitions` and `$ref`s it, instead of
-// inlining the object per use. Measured: a 5-field row used 3× goes 912 → 578 B.
-// Rules, because a wrong id costs rather than saves:
-//   - only for shapes used ≥ 2× in the SAME tool schema — a single use pays
-//     ~60 B for the `$ref` + wrapper and saves nothing (hence the `…Ref`
-//     variants below, so a schema shared across tools inlines where it is used
-//     once);
-//   - ids must be unique in the process (global registry) — keep them short,
-//     they ship on every request;
-//   - Zod also writes `"id"` INTO each definition, which AJV — the SDK client's
-//     validator — rejects at compile time. `trimToolsListWire` in tool-sets.js
-//     strips it from the wire; do not add a `$ref` schema without that hook.
-const shared = (schema, id) => schema.meta({ id });
+// ── NO `.meta({ id })` in this file (W1, #105 — tried, measured, reverted) ───
+// Zod 4's toJSONSchema (which the SDK calls with no options) extracts a schema
+// registered with `.meta({ id })` into `definitions` and `$ref`s it, so a row
+// shape used in both the single and the batch branch of a tool would ship once
+// instead of twice: measured −3,244 B across the four servers (13 shapes).
+// It is NOT safe: Zod copies the `id` INTO the definition, and AJV — the SDK
+// client's structuredContent validator — throws `NOT SUPPORTED: keyword "id"`
+// at compile time, so every callTool on such a tool fails on an SDK client.
+// tool-sets.js strips it from the wire for the entry points, but a McpServer
+// that registers `registerKbTools()` directly (the integration harness, any
+// library user) is not hooked and would break. A 1.8% saving that turns a bare
+// registration into a client-breaking server is the wrong trade; the budget
+// test compiles the UNHOOKED registration path with the SDK's AJV so a future
+// `.meta({ id })` fails there, not in a client. Re-open only with a hook the
+// register functions themselves install, or an SDK option to pass `reused`.
 
 // ── Shared: model build provenance row ───────────────────────────────────────
 // One scanned model's descriptor data (model_versions table). Shared by
@@ -149,12 +147,11 @@ export const d365LookupTableIndexSchema = z.object({
   fields: z.array(z.string()),
 });
 
-// One join-field pair; `$ref`-shared between the outgoing and incoming relation
-// rows of d365_lookup_table (both lists are in one schema).
-export const joinFieldPairSchema = shared(z.object({
+// One join-field pair, shared by the outgoing and incoming relation rows.
+export const joinFieldPairSchema = z.object({
   field: z.string().nullish(),
   related_field: z.string().nullish(),
-}), 'JoinPair');
+});
 
 export const d365LookupTableRelationSchema = z.object({
   relation_name: z.string().nullish(),
@@ -445,12 +442,12 @@ export const d365GetJoinKeysOutput = z.object({
 });
 
 // d365_search — full-text search results
-export const d365SearchResultSchema = shared(z.object({
+export const d365SearchResultSchema = z.object({
   object_type: z.string().nullish(),
   object_name: z.string(),
   module_id: z.string().nullish(),
   context: z.string().nullish(),
-}), 'SearchHit');
+});
 // Single mode: exactly the pre-batching payload. Batch mode (`queries`, issue
 // #83): the shared scope (object_type / modules / limit) is hoisted into the
 // envelope and each entry carries only what differs. The two are disjoint.
@@ -474,7 +471,7 @@ export const d365SearchOutput = z.object({
 });
 
 // d365_get_enum — enum values
-export const d365EnumValueSchema = shared(z.object({
+export const d365EnumValueSchema = z.object({
   name: z.string(),
   value: z.number().nullish(),
   // DELIBERATELY an explicit null, not an omission — the one place the
@@ -484,7 +481,7 @@ export const d365EnumValueSchema = shared(z.object({
   // (`values[8]{name,value,label}:` + one line each) into a per-row key/value
   // list. Omit a key only when it is absent from EVERY row of an array.
   label: z.string().nullish(),
-}), 'EnumValue');
+});
 // One enum's payload. Shared by the single-target fields and the batch array
 // so both channels are guaranteed to carry the identical shape.
 export const d365EnumPayloadSchema = z.object({
@@ -536,7 +533,7 @@ export const d365CheckFieldResultSchema = z.object({
   // design. Nullish on databases/clients that predate the distinction.
   origin: z.enum(['build-metadata', 'custom-field']).nullish(),
   custom_field: d365UiCustomFieldMatchSchema.nullish(),
-}).meta({ id: 'FieldCheck' });
+});
 // One table's field checks. `found` distinguishes "table does not exist" from
 // "table exists and none of these fields do" — collapsing those two into an
 // empty check list would be actively misleading when generating SQL.
@@ -800,13 +797,10 @@ export const xrefRefRowSchema = z.object({
 // Sealed-ISV callers (issues #77, #82). Opt-in via `include_isv`, and kept in
 // its own block so ISV rows are never interleaved with the main results — the
 // two have different fidelity and must stay distinguishable.
-export const xrefIsvModuleSummarySchema = z.array(shared(z.object({
+export const xrefIsvModuleSummarySchema = z.array(z.object({
   module: z.string(),
   reference_count: z.number(),
-}), 'IsvModuleCount'));
-// The reference row appears twice in xref_find_references (single + batch), so
-// it is `$ref`-shared THERE; xref_find_usages uses it once and inlines it.
-const xrefRefRowRef = shared(xrefRefRowSchema, 'XrefRef');
+}));
 // Batch mode (`objects`, issue #83): kind_filter / limit / isv note are hoisted
 // into the envelope; each object carries only what differs. Single mode is
 // exactly the pre-batching payload. The two are disjoint.
@@ -814,7 +808,7 @@ export const xrefFindReferencesObjectSchema = z.object({
   target_path: z.string(),
   result_count: z.number(),
   truncated: z.boolean(),
-  references: z.array(xrefRefRowRef),
+  references: z.array(xrefRefRowSchema),
   // Present on every object or on none (rule #14), only with include_isv.
   isv: z.object({ reference_count: z.number(), module_summary: xrefIsvModuleSummarySchema }).optional(),
 });
@@ -824,7 +818,7 @@ export const xrefFindReferencesOutput = z.object({
   limit: z.number(),
   result_count: z.number().optional(),
   truncated: z.boolean().optional(),
-  references: z.array(xrefRefRowRef).optional(),
+  references: z.array(xrefRefRowSchema).optional(),
   isv: z.object({
     reference_count: z.number(),
     module_summary: xrefIsvModuleSummarySchema,
@@ -980,10 +974,10 @@ export const xrefListModulesOutput = z.object({
 });
 
 // xref_object_summary
-export const xrefObjectSummaryKindCountSchema = shared(z.object({
+export const xrefObjectSummaryKindCountSchema = z.object({
   kind: z.string(),
   count: z.number(),
-}), 'KindCount');
+});
 export const xrefObjectSummaryPayloadSchema = z.object({
   object_path: z.string(),
   module: z.string().nullish(),
@@ -1013,10 +1007,10 @@ export const xrefObjectSummaryOutput = z.object({
 });
 
 // xref_find_extensions
-export const xrefExtensionRowSchema = shared(z.object({
+export const xrefExtensionRowSchema = z.object({
   path: z.string(),
   module: z.string().nullish(),
-}), 'ExtRow');
+});
 export const xrefFindExtensionsOutput = z.object({
   object_name: z.string(),
   object_type: z.string(),
@@ -1031,13 +1025,13 @@ export const xrefFindExtensionsOutput = z.object({
 });
 
 // xref_find_field_usages
-export const xrefFieldUsageRowSchema = shared(z.object({
+export const xrefFieldUsageRowSchema = z.object({
   source: z.string(),
   kind: z.string(),
   line: z.number().nullish(),
   col: z.number().nullish(),
   module: z.string().nullish(),
-}), 'FieldUsage');
+});
 export const xrefFindFieldUsagesOutput = z.object({
   table_name: z.string(),
   field_name: z.string(),
@@ -1051,10 +1045,10 @@ export const xrefFindFieldUsagesOutput = z.object({
 });
 
 // xref_find_event_handlers
-export const xrefEventHandlerRowSchema = shared(z.object({
+export const xrefEventHandlerRowSchema = z.object({
   path: z.string(),
   module: z.string().nullish(),
-}), 'HandlerRow');
+});
 export const xrefFindEventHandlersOutput = z.object({
   object_name: z.string(),
   method_name: z.string().nullish(),
@@ -1072,22 +1066,19 @@ export const xrefFindEventHandlersOutput = z.object({
 // ── Sec tools (13) ───────────────────────────────────────────────────────────
 
 // sec_lookup_role
-// The three role sub-lists appear in both the single branch and `roles[]`, so
-// they are `$ref`-shared (the wide scalar envelope is still repeated — see the
-// budget test's sec note).
-export const secLookupRoleSubRoleSchema = shared(z.object({
+export const secLookupRoleSubRoleSchema = z.object({
   role_name: z.string(),
   is_transitive: z.number().nullish(),
-}), 'RoleSubRole');
-export const secLookupRoleDutySchema = shared(z.object({
+});
+export const secLookupRoleDutySchema = z.object({
   duty_id: z.string(),
   duty_name: z.string().nullish(),
   permission_type: z.string().nullish(),
-}), 'RoleDuty');
+});
 // A grant column is emitted on every row of a response or on none (rule #14):
 // it is omitted only when it is null on EVERY row of that response. Hence
 // nullish — present-null must be nullable, absent must be optional.
-export const secLookupRoleDirectEntityPermissionSchema = shared(z.object({
+export const secLookupRoleDirectEntityPermissionSchema = z.object({
   entity_name: z.string(),
   grant_read: z.string().nullish(),
   grant_create: z.string().nullish(),
@@ -1095,7 +1086,7 @@ export const secLookupRoleDirectEntityPermissionSchema = shared(z.object({
   grant_delete: z.string().nullish(),
   grant_correct: z.string().nullish(),
   grant_invoke: z.string().nullish(),
-}), 'RoleEntityPerm');
+});
 // Summary by default (W3 #107.1): each list is capped, and `*_count` holds the
 // real total so the array length is never mistaken for it.
 export const secLookupRolePayloadSchema = z.object({

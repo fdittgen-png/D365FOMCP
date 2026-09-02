@@ -213,20 +213,20 @@ const WIRE_TRIMMED = Symbol.for('d365fo.mcp.toolsListWireTrimmed');
  *   1. `"$schema":"http://json-schema.org/draft-07/schema#"` on every
  *      inputSchema and outputSchema — 53 B × 126 schemas ≈ 6.6 KB per request,
  *      pure overhead: the MCP `Tool` type already fixes the dialect.
- *   2. `"id":"<name>"` inside every `definitions` entry. Zod emits it for a
- *      schema registered with `.meta({ id })`, which is how output-schemas.js
- *      shares a row shape between the single and batch branch of a tool as a
- *      `$ref` instead of inlining it twice. The SDK client validates
- *      `structuredContent` with AJV, and AJV REJECTS the draft-04 `id` keyword
- *      (`NOT SUPPORTED: keyword "id", use "$id"`) — so without this strip every
- *      `callTool` on a `$ref` tool would fail on an SDK client. The budget test
- *      round-trips a real `Client.callTool` to prove the trim holds.
+ *   2. `"id":"<name>"` inside a `definitions` entry — Zod writes it for a
+ *      schema registered with `.meta({ id })`, and AJV (the SDK client's
+ *      structuredContent validator) REJECTS that keyword at compile time.
+ *      output-schemas.js registers none today for exactly that reason (its
+ *      header says why); this strip is defensive, so that a future `$ref`
+ *      schema cannot reach a client through the entry points. It does NOT
+ *      cover a McpServer that calls a `register*Tools()` directly — which is
+ *      why `$ref` stays off until the register functions hook themselves.
  *
  * Mechanism: DECORATE the handler McpServer installed, do not replace it — the
  * SDK's listing logic (enabled flag, pipe strategy, `execution`) stays its own.
  * `Protocol` keeps handlers in `_requestHandlers` (a Map keyed by method); if a
- * future SDK moves it, this is a no-op and the budget test's wire-facts
- * assertion (`$schema` 0, `id` 0) is what fails, loudly.
+ * future SDK moves it, this is a no-op — `$schema` reappears, nothing breaks —
+ * and the budget test's wire-facts assertion is what fails, loudly.
  */
 export function trimToolsListWire(server) {
   const proto = server?.server;

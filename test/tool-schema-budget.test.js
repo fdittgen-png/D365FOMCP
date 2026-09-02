@@ -237,53 +237,70 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
   console.log(`  composition: ${[...FIELDS, 'other'].map(f => `${f} ${grand[f]} B ${pct(grand[f])}`).join(' · ')}`);
   console.log(`  wire facts:  $schema on ${schemaKeys}/${schemaCount} schemas · $ref ${refs} · $defs/definitions ${defs} · definition ids ${defIds}\n`);
 
-  // W1 (#105) wire trim — `trimToolsListWire` in tool-sets.js. Both facts are
-  // load-bearing: `$schema` is ~6.6 KB of pure overhead per request, and a
-  // leftover `id` inside a definition makes the SDK client's AJV throw at
-  // compile time, failing every callTool on a `$ref` tool. If the SDK moves
-  // `_requestHandlers`, THIS is what fails — not a client in production.
+  // W1 (#105) wire trim — `trimToolsListWire` in tool-sets.js. `$schema` is
+  // ~6.6 KB of pure overhead per request; if the SDK moves `_requestHandlers`
+  // the hook is a no-op and THIS is what notices, not a bill.
   assert.equal(schemaKeys, 0, `"$schema" reached the wire on ${schemaKeys} schemas — trimToolsListWire did not attach`);
-  assert.equal(defIds, 0, `${defIds} definitions still carry Zod's "id" — AJV (the SDK client) rejects that keyword`);
-  assert.ok(refs > 0 && defs > 0, 'output-schemas.js registers shared row shapes with .meta({ id }); expected $ref/definitions on the wire');
+  assert.equal(defIds, 0, `${defIds} definitions carry Zod's "id" — AJV (the SDK client) rejects that keyword`);
 
   assert.ok(total <= TOTAL_MAX_BYTES,
     `combined tools/list is ${total} B, over the ${TOTAL_MAX_BYTES} B ceiling`);
 });
 
-test('tool-schema budget: every wire outputSchema compiles in the SDK client\'s AJV and still separates valid from invalid payloads', async () => {
+test('tool-schema budget: every outputSchema compiles in the SDK client\'s AJV — hooked AND unhooked registration paths', async () => {
   // What a real client does with the list: compile each outputSchema with AJV
-  // (strict: false, as the SDK ships it) and validate structuredContent against
-  // it. Compiling is where the `id` keyword blows up; validating a `$ref` tool
-  // with a good and a bad payload proves the reference resolves to the row
-  // shape rather than to nothing.
+  // (strict: false, as the SDK ships it) before validating structuredContent.
+  // Compiling is where a Zod `.meta({ id })` blows up (`NOT SUPPORTED: keyword
+  // "id"`): W1 measured −3.2 KB from `$ref`-sharing row shapes that way and
+  // reverted it, because the entry-point hook that strips the `id` does not
+  // cover a McpServer that calls `registerKbTools()` directly (the integration
+  // harness does). So this compiles BOTH paths: the servers as shipped, and each
+  // register function on a bare McpServer with no policy. A future `.meta({ id })`
+  // fails here, not in a client.
   const validator = new AjvJsonSchemaValidator();
-  const byName = new Map();
-  for (const svc of Object.keys(BUDGET)) {
-    const m = await measureService(svc);
-    for (const t of m.raw) {
+  const compiled = new Map();
+  const compileAll = (tools, label) => {
+    for (const t of tools) {
       if (!t.outputSchema) continue;
       let v;
       assert.doesNotThrow(() => { v = validator.getValidator(t.outputSchema); },
-        `${t.name}: the SDK client cannot compile this outputSchema`);
-      byName.set(t.name, v);
+        `${t.name} (${label}): the SDK client cannot compile this outputSchema`);
+      compiled.set(t.name, v);
     }
+  };
+
+  for (const svc of Object.keys(BUDGET)) {
+    compileAll((await measureService(svc)).raw, `${svc}, via tool-sets`);
+
+    // Unhooked: the raw register functions straight onto a McpServer, as a
+    // library user or the integration harness would.
+    const db = emptyDb();
+    const server = new McpServer(serverInfo(svc), serverOptions(svc));
+    for (const register of TOOL_SETS[svc]) register(server, db);
+    const client = new Client({ name: 'budget-test-unhooked', version: '0.0.0' }, { capabilities: {} });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    const { tools } = await client.listTools();
+    try { await client.close(); } catch { /* noop */ }
+    try { await server.close(); } catch { /* noop */ }
+    db.close();
+    compileAll(tools, `${svc}, direct registration`);
   }
 
-  // d365_get_enum: `values[]` and `enums[].values[]` share the EnumValue $ref.
-  const enumV = byName.get('d365_get_enum');
+  // And the compiled validators still separate a valid payload from an invalid
+  // one on the two single/batch tools with the widest envelopes.
+  const enumV = compiled.get('d365_get_enum');
   assert.ok(enumV, 'd365_get_enum has an outputSchema');
   assert.equal(enumV({ enum_name: 'SalesStatus', module_id: null, label: null, value_count: 1,
     values: [{ name: 'None', value: 0, label: null }] }).valid, true, 'a single-target enum payload validates');
   assert.equal(enumV({ requested_count: 1, resolved_count: 1, not_found: [],
     enums: [{ enum_name: 'X', module_id: null, label: 'L', value_count: 1, values: [{ name: 'A', value: 1, label: 'a' }] }] }).valid, true,
-  'a batch enum payload validates through the $ref');
+  'a batch enum payload validates');
   const bad = enumV({ enum_name: 'X', value_count: 1, values: [{ name: 7, value: 'not-a-number' }] });
-  assert.equal(bad.valid, false, 'a row violating the referenced shape is rejected');
-  assert.match(bad.errorMessage ?? '', /values\/0/, 'the error points into the $ref-resolved row');
+  assert.equal(bad.valid, false, 'a row violating the value shape is rejected');
+  assert.match(bad.errorMessage ?? '', /values\/0/, 'the error points into the row');
 
-  // sec_lookup_role: the three sub-lists are $ref-shared between the single
-  // branch and roles[].
-  const roleV = byName.get('sec_lookup_role');
+  const roleV = compiled.get('sec_lookup_role');
   assert.equal(roleV({ requested_count: 1, resolved_count: 0, not_found: ['x'], roles: [] }).valid, true);
   assert.equal(roleV({ roles: [{ role_id: 'r' }] }).valid, false, 'an incomplete role row inside roles[] is rejected');
 });
