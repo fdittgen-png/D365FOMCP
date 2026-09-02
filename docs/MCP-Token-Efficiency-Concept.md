@@ -120,7 +120,7 @@ No tool accepts `offset`, `cursor` or `page`; none returns `has_more` / `next_of
 | `title` / `_meta` on tools | Unused; supported by SDK 1.27 | `mcp.d.ts:150-157` |
 | Server `instructions` | 339/255/252/224 chars — compact; KB's repeats the format rule already on `formatTextParam` | `server-metadata.js:83-125` |
 | `format` contract | **All three `*_raw_sql` tools bypass `formatTextParam`** with `z.enum(['markdown','toon']).default('toon')` — pins TOON, defeats the adaptive default, violates rule #5 | `kb-tools.js:1811`, `xref-tools.js:825`, `sec-tools.js:1592` |
-| Freshness | `freshnessBanner(db, service)` does not exist (issue #86); `server-metadata.js:82` still claims "every response states its snapshot date". KB/XRef expose `build_date` only via raw SQL. | issue #86 |
+| Freshness | **Shipped 2026-09-02 (#86 base).** `freshnessBanner(db, service)` + `withFreshnessBanner()` in `shared.js`, wired centrally in `tool-sets.js`: `_KB snapshot: YYYY-MM-DD_` on the line after the H2 of every data response; never on `emptyResult`/`notFoundResult`/`errorResult` (they carry `_meta.kind`), live tools or db-less servers. `server-metadata.js` now says "every data response carries its snapshot date", which is true. Per-model age / `partial_build` remain on #86. | `test/freshness.test.js` |
 | Naming | Prefixes `d365_`/`xref_`/`sec_` consistent; verbs mixed (`lookup`/`get`/`find`/`check`) — acceptable, not worth a rename | — |
 | Evals | One `evals.json` with 3 prompts for the tooling skill; no per-tool correctness or token-budget evals | `skills/…/evals.json` |
 | Type safety | Plain JS, 45/62 files JSDoc-annotated, nothing checks them → issue #103 (checkJs, not a TS migration) | #103 |

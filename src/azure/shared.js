@@ -451,6 +451,93 @@ export function summaryText(typed, markdownText) {
   return `${heading}\n\n_Payload in structuredContent (${keys} keys, ${bytes} bytes)._`;
 }
 
+// ── Snapshot freshness (rule #4, issue #86 base) ─────────────────────────────
+
+/**
+ * Read the snapshot build date from whichever metadata table this service has.
+ * Returns null when the DB predates build-date capture, or on any error — a
+ * freshness signal must never be the reason a tool call fails.
+ */
+export function readBuildDate(db) {
+  if (!db || typeof db.prepare !== 'function') return null;
+  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata']) {
+    try {
+      const row = db.prepare(`SELECT value FROM ${table} WHERE key = 'build_date'`).get();
+      if (row?.value) {
+        const d = new Date(row.value);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+    } catch { /* table absent on this service — try the next */ }
+  }
+  return null;
+}
+
+// Cached per database HANDLE: a snapshot's build date cannot change while the
+// handle is open (read-only), and a reloaded handle (reloadKbDb / reloadSecDb)
+// is a new key. Never read twice per handle, never stale across a reload.
+const buildDateByDb = new WeakMap();
+
+/** ISO date (YYYY-MM-DD) of the snapshot behind `db`, or null when undatable. */
+export function snapshotDate(db) {
+  if (!db || typeof db !== 'object') return null;
+  if (buildDateByDb.has(db)) return buildDateByDb.get(db);
+  let iso = null;
+  try { iso = readBuildDate(db)?.toISOString().slice(0, 10) ?? null; } catch { iso = null; }
+  buildDateByDb.set(db, iso);
+  return iso;
+}
+
+const SERVICE_LABELS = Object.freeze({ kb: 'KB', xref: 'XRef', sec: 'Sec' });
+
+/**
+ * The freshness banner of rule #4: `_KB snapshot: 2026-08-14_`. Empty string
+ * when the snapshot cannot be dated — never throws. `service` is the service
+ * key ('kb' | 'xref' | 'sec') or any label to print verbatim.
+ */
+export function freshnessBanner(db, service) {
+  const iso = snapshotDate(db);
+  if (!iso) return '';
+  const label = SERVICE_LABELS[String(service ?? '').toLowerCase()] ?? String(service ?? 'snapshot');
+  return `_${label} snapshot: ${iso}_`;
+}
+
+/**
+ * Attach the freshness banner to a DATA response, centrally (tool-sets.js wraps
+ * every handler with this), so no handler has to remember rule #4.
+ *
+ * Placement: the line directly AFTER the H2 heading, so rule #3 (response opens
+ * with H2) still holds. A response with no heading gets it prepended.
+ *
+ * Skipped — returned as-is — for anything that is not a data response:
+ *   - `isError` results and anything carrying `_meta.kind` (emptyResult /
+ *     notFoundResult / errorResult / loop notes stamp themselves),
+ *   - results with no `structuredContent` (text-only tools, documents),
+ *   - results whose first content block is not text,
+ *   - an undatable snapshot (banner ''), and a text that already carries it.
+ */
+export function withFreshnessBanner(result, db, service) {
+  if (!result || typeof result !== 'object' || result.isError || result._meta?.kind) return result;
+  if (!('structuredContent' in result)) return result;
+  const first = Array.isArray(result.content) ? result.content[0] : undefined;
+  if (!first || first.type !== 'text' || typeof first.text !== 'string') return result;
+
+  const banner = freshnessBanner(db, service);
+  if (!banner) return result;
+
+  const text = first.text;
+  const heading = extractLeadingHeading(text);
+  let next;
+  if (heading) {
+    const rest = text.slice(heading.length); // '' or starts with '\n'
+    if (rest.startsWith(`\n${banner}`)) return result;
+    next = `${heading}\n${banner}${rest}`;
+  } else {
+    if (text.startsWith(banner)) return result;
+    next = `${banner}\n\n${text}`;
+  }
+  return { ...result, content: [{ ...first, text: next }, ...result.content.slice(1)] };
+}
+
 // ── Read-only DB tool annotations ────────────────────────────────────────────
 // Frozen so a tool file can't accidentally flip a hint at registration time.
 export const READ_ONLY_DB_ANNOTATIONS = Object.freeze({
@@ -618,8 +705,12 @@ export function customLayerNote(name) {
 export function emptyResult(context, structured, note) {
   let text = `## No results\n\nNo ${context} found.`;
   if (note) text += note;
+  // `_meta.kind` marks the three meta-responses so the central freshness
+  // wrapper (withFreshnessBanner) can skip them by construction rather than by
+  // pattern-matching their text. `_meta` is part of the MCP Result type.
   const result = {
     content: [{ type: 'text', text }],
+    _meta: { kind: 'empty' },
   };
   if (structured !== undefined) result.structuredContent = structured;
   return result;
@@ -639,6 +730,7 @@ export function notFoundResult(type, name, suggestions) {
   return {
     content: [{ type: 'text', text }],
     isError: true,
+    _meta: { kind: 'not-found' },
   };
 }
 
@@ -655,6 +747,7 @@ export function errorResult(category, hint, details) {
   return {
     content: [{ type: 'text', text: `## Error\n\n${hint}` }],
     isError: true,
+    _meta: { kind: 'error' },
   };
 }
 

@@ -34,6 +34,7 @@ import { registerSecTools } from './sec-tools.js';
 import { registerTaskRecorderTools } from './taskrecorder-tools.js';
 import { toolInProfile } from './tool-guards.js';
 import { getRequestContext } from './request-context.js';
+import { withFreshnessBanner } from './shared.js';
 
 /** @type {Readonly<Record<'kb'|'xref'|'sec'|'taskrecorder', ReadonlyArray<(server: any, db?: any) => void>>>} */
 export const TOOL_SETS = Object.freeze({
@@ -58,6 +59,8 @@ const POLICY_APPLIED = Symbol.for('d365fo.mcp.toolSetPolicyApplied');
  *   - PROFILE: a tool outside `CORE_TOOLS` is not registered when the request's
  *     profile is `core` (`toolInProfile`). Applies to EVERY set — that is why it
  *     lives here and not in the guards.
+ *   - FRESHNESS: every data response of a snapshot-backed tool gets the rule #4
+ *     banner (`withFreshness` below).
  *
  * `stats.registered` counts what actually reached the underlying server, so a
  * caller can report the effective tool count (the snapshot resource does).
@@ -75,9 +78,25 @@ export function withRegistrationPolicy(server, { service = 'snapshot', db = null
   view.registerTool = (name, config, handler) => {
     if (!toolInProfile(name, profile)) { stats.skipped.push(name); return undefined; }
     stats.registered += 1;
-    return server.registerTool(name, config, handler);
+    return server.registerTool(name, config, withFreshness(handler, config, db, service));
   };
   return view;
+}
+
+/**
+ * FRESHNESS (rule #4, #86 base). Every DATA response of a snapshot-backed tool
+ * carries `_<Service> snapshot: <date>_` on the line after its H2 heading —
+ * attached HERE, once, rather than remembered in 50 handlers. `withFreshnessBanner`
+ * skips meta-responses (`_meta.kind`, `isError`, no `structuredContent`) itself.
+ * Two more exclusions belong to the registration, not the response:
+ *   - no database (Task Recorder): nothing to date;
+ *   - a LIVE tool (`openWorldHint: true`, i.e. `d365_custom_fields`): its rows
+ *     come from an environment right now, and stamping them with the KB build
+ *     date would claim a provenance they do not have.
+ */
+function withFreshness(handler, config, db, service) {
+  if (!db || typeof handler !== 'function' || config?.annotations?.openWorldHint === true) return handler;
+  return async (...args) => withFreshnessBanner(await handler(...args), db, service);
 }
 
 /**

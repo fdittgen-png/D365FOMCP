@@ -30,6 +30,7 @@
  */
 
 import { getRequestContext } from './request-context.js';
+import { readBuildDate } from './shared.js';
 
 /* ── Loop detection ───────────────────────────────────────────────────────── */
 
@@ -105,6 +106,7 @@ export function loopResult(toolName, repeats) {
     // No structuredContent: this is a meta-response, like errorResult. A client
     // validating structuredContent against the tool's outputSchema must not be
     // handed a payload that is not one (see feedback_error_responses_no_structuredcontent).
+    _meta: { kind: 'loop' },
   };
 }
 
@@ -117,24 +119,9 @@ function staleDays() {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_STALE_DAYS;
 }
 
-/**
- * Read the snapshot build date from whichever metadata table this service has.
- * Returns null when the DB predates build-date capture, or on any error — a
- * staleness check must never be the reason a tool call fails.
- */
-export function readBuildDate(db) {
-  if (!db || typeof db.prepare !== 'function') return null;
-  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata']) {
-    try {
-      const row = db.prepare(`SELECT value FROM ${table} WHERE key = 'build_date'`).get();
-      if (row?.value) {
-        const d = new Date(row.value);
-        if (!Number.isNaN(d.getTime())) return d;
-      }
-    } catch { /* table absent on this service — try the next */ }
-  }
-  return null;
-}
+// The build-date reader lives in shared.js since the freshness banner (rule #4)
+// needs it too; re-exported so existing importers keep working.
+export { readBuildDate };
 
 /**
  * One-shot staleness note, or '' when the snapshot is fresh / undatable.
