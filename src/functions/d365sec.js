@@ -9,7 +9,7 @@ import { app } from '@azure/functions';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getSecDb, query } from '../azure/shared.js';
-import { registerSecTools } from '../azure/sec-tools.js';
+import { registerAllSecTools } from '../azure/tool-sets.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
@@ -23,7 +23,7 @@ process.env.MCP_TOOL_GUARDS ??= 'on';
 
 function createSecServer(baseUrl) {
   const server = new McpServer(serverInfo('sec', { baseUrl }), serverOptions('sec'));
-  registerSecTools(server, getSecDb());
+  registerAllSecTools(server, getSecDb());
   return server;
 }
 

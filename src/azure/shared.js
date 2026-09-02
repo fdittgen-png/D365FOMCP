@@ -26,15 +26,16 @@ export const formatTextParam = z
   .enum(['markdown', 'toon', 'auto'])
   .optional()
   .default('auto')
-  // KEEP THIS SHORT. It is duplicated into the wire schema of all 48 tools that
-  // take it, so every character costs 48x on `tools/list` — which ships on
+  // KEEP THIS SHORT. It is duplicated into the wire schema of all 56 tools that
+  // take it, so every character costs 56x on `tools/list` — which ships on
   // EVERY request. The long-form explanation (why "auto", the per-tool
   // measurements) lives in CLAUDE.md rule #5 and the tooling skill, where it is
   // paid for once. Measured: the previous 342-character version was 16,074 B
   // (~4,019 tk) of pure duplication, roughly a quarter of the whole tool list.
   // Carries ONLY what the enum itself cannot: which value is the default, and
   // when to override it. Everything else the model reads off the value list.
-  .describe('Default "auto" (smallest). Use "markdown" only when quoting the text verbatim.');
+  // test/tool-schema-budget.test.js fails above 4,000 B of duplication.
+  .describe('Default "auto" (smallest). "markdown" only when quoting text verbatim.');
 
 // Standard per-model scope filter. Add `modules: modulesFilterParam` to a
 // search tool's inputSchema to let callers limit the investigation to specific

@@ -12,12 +12,12 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
+import { registerAllTaskRecorderTools } from '../azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 const server = new McpServer(serverInfo('taskrecorder'), serverOptions('taskrecorder'));
 
-registerTaskRecorderTools(server);
+registerAllTaskRecorderTools(server);
 
 // Graceful shutdown
 process.on('SIGINT', () => { process.exit(0); });

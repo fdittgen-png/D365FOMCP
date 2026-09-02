@@ -154,44 +154,69 @@ and `test/tool-guards.test.js`.
 
 **The tool list is the one cost you cannot filter away.** Every tool's name,
 description, annotations and **both** schemas are re-sent on *every* request; no
-`limit`, filter or format touches it. Verified against the **live** endpoint
-2026-09-01: **114,932 B (~28,733 tk)** across the three services, ~$0.575 over a
-40-turn session before a single tool runs.
+`limit`, filter or format touches it. Measured 2026-09-02 (W0, #104) as the
+**actual `tools/list` message captured off the transport** of a real `McpServer`
+that registers exactly what each entry point registers (`src/azure/tool-sets.js`):
+**58 tools · 155,789 B (~38,947 tk)** across the four servers, ~$0.78 over a
+40-turn session before a single tool runs — KB 21 tools 69,113 B · XRef 17 tools
+36,596 B · Sec 18 tools 36,837 B · Task Recorder 2 tools 13,243 B. Cross-checked
+against all four local stdio servers through the SDK `Client`: identical to the byte.
+(The earlier "114,932 B, verified live" figure was the test's own three-set sum;
+the KB server also ships `isv-kb-tools` + `custom-fields-tools`, XRef ships
+`isv-xref-tools`, and Task Recorder was never counted.)
 
-Composition, measured on the wire (KB service):
+Composition, four servers, on the wire:
 
 | Field | Bytes | Share |
 |---|---:|---:|
-| `outputSchema` | 40,118 | **59.8%** |
-| `inputSchema` | 17,798 | 26.5% |
-| `description` | 7,396 | 11.0% |
-| `annotations` | 1,364 | 2.0% |
-| `name` | 445 | 0.7% |
+| `outputSchema` | 86,020 | **55.2%** |
+| `inputSchema` | 43,005 | 27.6% |
+| `description` | 17,826 | 11.4% |
+| `annotations` | 4,581 | 2.9% |
+| `execution` (SDK 1.27 adds `{"taskSupport":"forbidden"}` to every tool, unasked) | 2,262 | 1.5% |
+| `name` | 1,627 | 1.0% |
 
-> **`outputSchema` is the dominant term and is currently untouched.** The first
-> version of the budget test counted only name + description + inputSchema and
-> reported a third of the real cost — a budget that measures the wrong thing is
-> worse than none. The typed-first contract (rule #5) is what makes those schemas
-> large, and they are genuinely useful to a validating client, so trimming them
-> is a real trade rather than free. Untried levers: shortening `.describe()` text
-> inside `output-schemas.js` (it all ships), and whether Zod's `.nullish()`
-> emits a more verbose JSON Schema than `.nullable()`.
+> **`outputSchema` is the dominant term, and it is structure, not prose.** Output
+> `.describe()` text is ~1.8% of outputSchema bytes for KB/XRef/Sec (~210 tk in
+> total) — **not a lever**; the only place output prose matters is
+> `taskrecorder_to_document` (3.4 KB). What the bytes are: `type` keys, `required`
+> arrays, `anyOf:[{type},{type:"null"}]` nullable wrappers, `additionalProperties`,
+> and a `"$schema":"http://json-schema.org/draft-07/schema#"` on **every** input
+> and output schema (116 of 116 — the SDK converts via `z4mini.toJSONSchema(…,
+> {target:'draft-7'})`, ≈6 KB in total). Repeated nested shapes are **inlined**:
+> 0 `$ref`, 0 `$defs` on the wire, so the single/batch row duplication in
+> `d365_lookup_table` / `d365_check_field_exists` / `d365_get_enum` /
+> `xref_object_summary` is paid twice. Those structural levers belong to W1
+> (#105); the typed-first contract (rule #5) is what makes the schemas large, and
+> they are genuinely useful to a validating client, so each trim is a trade.
 
 - **Keep shared-parameter descriptions SHORT.** `formatTextParam` now carries only
   what the enum cannot (which value is default, when to override). The long-form
   explanation lives in rule #5 above, where it is paid once. Same for the
   `Returns both a typed JSON payload…` tail that was on 43 tools: it is identical
   everywhere, so it distinguishes nothing and was removed.
-- **`test/tool-schema-budget.test.js`** prints the per-service breakdown on every
-  run and fails on a ceiling breach or on any shared parameter wasting >4,000 B.
-  Raising a ceiling is a normal, deliberate act; doing it unnoticed is what this
-  prevents. Current: kb 43,975 B · xref 33,545 B · sec 37,412 B.
-- **`MCP_TOOL_PROFILE=core`** registers 23 of 51 tools — 114,932 → 65,052 B
-  (~28,733 → ~16,263 tk, **−43%**, ~$0.25 over a 40-turn session). Off by
-  default. The list in `CORE_TOOLS` is hand-picked, not measured — tune it from
-  real usage. A test asserts every name in it still exists, because renaming a
-  tool would otherwise shrink the profile silently (it caught two wrong names on
-  the first run).
+- **`test/tool-schema-budget.test.js`** captures the real `tools/list` message
+  of all four servers, prints the per-server breakdown and the four-server total
+  on every run, and fails on a ceiling breach, a tool-count change, any shared
+  parameter wasting >4,000 B, or an entry point that registers a tool set
+  outside `src/azure/tool-sets.js` (the one list both the servers and the test
+  use). Raising a ceiling is a normal, deliberate act; doing it unnoticed is what
+  this prevents. Current (≤2% headroom): kb 69,113 → 70,400 B · xref 36,596 →
+  37,300 B · sec 36,837 → 37,500 B · taskrecorder 13,243 → 13,500 B.
+- **`test/response-size-golden.test.js`** is the variable-cost gate: the ten
+  concept-§3.1 calls with default args against a wide synthetic fixture, both
+  channels within ±10% of `test/fixtures/response-size-baseline.json`.
+  `GOLDEN_UPDATE=1` re-baselines — deliberately, in the diff.
+- **`MCP_TOOL_PROFILE=core`** registers 30 of 58 tools — 155,789 → 107,113 B
+  (~38,947 → ~26,778 tk, **−31%**, ~$0.24 over a 40-turn session). Off by
+  default. It filters only what passes through `installToolGuards`
+  (`registerKbTools` / `registerXrefTools` / `registerSecTools`): the ISV,
+  custom-fields and Task Recorder sets are untouched, which is why the two
+  largest KB tools (`d365_isv_lookup` 10.7 KB, `d365_isv_extension_points`
+  7.9 KB) survive the profile — a W2 (#106) item. The list in `CORE_TOOLS` is
+  hand-picked, not measured — tune it from real usage. A test asserts every name
+  in it still exists, because renaming a tool would otherwise shrink the profile
+  silently (it caught two wrong names on the first run).
 
 **Guardrails are opt-in and armed at the MCP entry points** (`src/local/*.js`,
 `src/functions/*.js` set `MCP_TOOL_GUARDS=on`), not defaulted on in the library —

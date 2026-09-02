@@ -11,9 +11,7 @@ import { createRequire } from 'module';
 import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { registerKbTools } from '../azure/kb-tools.js';
-import { registerIsvKbTools } from '../azure/isv-kb-tools.js';
-import { registerCustomFieldTools } from '../azure/custom-fields-tools.js';
+import { registerAllKbTools } from '../azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
@@ -40,9 +38,9 @@ db.pragma('mmap_size = 1100000000');
 
 const server = new McpServer(serverInfo('kb'), serverOptions('kb'));
 
-registerKbTools(server, db);
-registerIsvKbTools(server, db);
-registerCustomFieldTools(server, db);
+// kb + isv-kb + custom-fields — the set is defined ONCE in tool-sets.js so the
+// tools/list budget test measures exactly what this server registers.
+registerAllKbTools(server, db);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });

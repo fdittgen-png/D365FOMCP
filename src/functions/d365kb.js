@@ -9,9 +9,7 @@ import { app } from '@azure/functions';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getKbDb } from '../azure/shared.js';
-import { registerKbTools } from '../azure/kb-tools.js';
-import { registerIsvKbTools } from '../azure/isv-kb-tools.js';
-import { registerCustomFieldTools } from '../azure/custom-fields-tools.js';
+import { registerAllKbTools } from '../azure/tool-sets.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
@@ -25,9 +23,8 @@ process.env.MCP_TOOL_GUARDS ??= 'on';
 
 function createKbServer(baseUrl) {
   const server = new McpServer(serverInfo('kb', { baseUrl }), serverOptions('kb'));
-  registerKbTools(server, getKbDb());
-  registerIsvKbTools(server, getKbDb());
-  registerCustomFieldTools(server, getKbDb());
+  // kb + isv-kb + custom-fields, defined once in tool-sets.js (budget test).
+  registerAllKbTools(server, getKbDb());
   return server;
 }
 

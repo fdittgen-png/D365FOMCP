@@ -36,7 +36,7 @@ Find all objects that reference a given D365FO object (who calls/reads/extends i
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind. Default: All |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
 | `include_isv` | boolean | default `false` | Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_usages`
 
@@ -47,7 +47,7 @@ Find all objects that a given D365FO object references (what it calls/reads/exte
 | `object_name` | string (min 1, max 500) | yes | Object name or full path |
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_method_callers`
 
@@ -58,7 +58,7 @@ Find all callers of a specific method on a class or table. Returns source locati
 | `object_name` | string (min 1, max 500) | yes | Class or table name (e.g. "SalesFormLetter") |
 | `method_name` | string (min 1, max 500) | yes | Method name (e.g. "construct", "run") |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_class_hierarchy`
 
@@ -69,7 +69,7 @@ Find the full class inheritance hierarchy — all subclasses (recursive) or the 
 | `class_name` | string (min 1, max 500) | yes | Class name (e.g. "SalesFormLetter", "FormLetterServiceController") |
 | `direction` | `subclasses` \| `parents` | default `"subclasses"` | "subclasses" = who extends this (default), "parents" = what does this extend |
 | `limit` | integer (≥1, ≤1000) | default `200` | Max entries to return (default 200, max 1000). Framework base classes have thousands of subclasses. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_interface_implementors`
 
@@ -79,7 +79,7 @@ Find all classes that implement a given interface, including indirect implemento
 |---|---|---|---|
 | `interface_name` | string (min 1, max 500) | yes | Interface name (e.g. "SysRunnable", "SysPackable") |
 | `limit` | integer (≥1, ≤1000) | default `200` | Max implementors to return (default 200, max 1000). Framework interfaces have thousands. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_search_names`
 
@@ -91,7 +91,7 @@ Search for D365FO objects by name pattern in the cross-reference database. Use t
 | `object_type` | `All` \| `Classes` \| `Tables` \| `Forms` \| `Enums` \| `DataEntityViews` \| `Edts` \| `Views` \| `Maps` \| `Labels` | default `"All"` | Filter by object type |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `50` | Max results (default 50, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_method_references`
 
@@ -103,7 +103,7 @@ Find all outgoing references from a specific method — what objects/methods/typ
 | `method_name` | string (min 1, max 500) | yes | Method name |
 | `kind` | `All` \| `Call` \| `Read` | default `"All"` | Filter: All, Call (method invocations only), Read (type/field reads only) |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_module_objects`
 
@@ -114,7 +114,7 @@ List all top-level objects (classes, tables, forms, etc.) in a given D365FO modu
 | `module_name` | string (min 1, max 500) | yes | Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement") |
 | `object_type` | `All` \| `Classes` \| `Tables` \| `Forms` \| `Enums` \| `DataEntityViews` \| `Edts` \| `Views` | default `"All"` | Filter by object type |
 | `limit` | integer (≥1, ≤500) | default `200` | Max results (default 200, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_cross_module_deps`
 
@@ -125,7 +125,7 @@ Analyze cross-module dependencies: which modules does a given module depend on (
 | `module_name` | string (min 1, max 500) | yes | Module name |
 | `direction` | `depends_on` \| `depended_by` | default `"depends_on"` | "depends_on" = modules this module references, "depended_by" = modules that reference this one |
 | `limit` | integer (≥1, ≤500) | default `50` | Max results (default 50, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_raw_sql`
 
@@ -135,7 +135,7 @@ Execute a read-only SQL query against the XRef SQLite database. Schema: names(id
 |---|---|---|---|
 | `sql` | string (min 1, max 50000) | yes | SQL SELECT query (no schema prefix needed — use table names directly) |
 | `limit` | integer (≥1, ≤500) | default `100` | Max rows (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_impact_analysis`
 
@@ -145,7 +145,7 @@ Analyze the impact of changing a D365FO object: find all direct dependents group
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name or path |
 | `limit` | integer (≥1, ≤500) | default `100` | Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_list_modules`
 
@@ -157,7 +157,7 @@ List D365FO modules in the XRef database with object counts and the build versio
 | `layer` | string (min 1, max 20) | no | Only models on this layer (SYS, SLN, ISV, VAR, USR) |
 | `publisher` | string (min 1, max 200) | no | Only models whose publisher contains this text (case-insensitive) |
 | `limit` | integer (≥1, ≤500) | default `200` | Max modules to return (default 200, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_object_summary`
 
@@ -167,7 +167,7 @@ Get a compact summary of an object: incoming vs outgoing reference counts by kin
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | no | Object name or path. Use this or `object_names`. |
 | `object_names` | array<string (min 1, max 500)> | no | Summarise several objects in one call (max 10). Names that cannot be resolved come back in `not_found` rather than failing the call. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_extensions`
 
@@ -178,7 +178,7 @@ Find all Chain of Command (CoC) extension classes and table/form extensions for 
 | `object_name` | string (min 1, max 500) | yes | Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter") |
 | `object_type` | `All` \| `Classes` \| `Tables` \| `Forms` \| `DataEntityViews` | default `"All"` | Object type to search for extensions. Default: All |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_field_usages`
 
@@ -190,7 +190,7 @@ Find all code locations that read or write a specific field on a D365FO table. R
 | `field_name` | string (min 1, max 500) | yes | Field name (e.g. "AccountNum", "InvoiceId") |
 | `kind` | `All` \| `Read` \| `Write` | default `"All"` | Filter: All, Read (field value reads), Write (field assignments). Default: All |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_event_handlers`
 
@@ -201,7 +201,7 @@ Find all event handlers and delegates for a D365FO object or method. Discovers [
 | `object_name` | string (min 1, max 500) | yes | Class or table name (e.g. "SalesFormLetter", "CustTable") |
 | `method_name` | string (min 1, max 500) | no | Optional: specific method/delegate name to find handlers for |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_isv_find_usages`
 
@@ -214,5 +214,5 @@ Find where sealed (binary-only) ISV models reference a standard D365FO object �
 | `modules` | array<string (min 1, max 100)> | no | Restrict to specific sealed ISV models. |
 | `kind` | string (min 1, max 50) | no | Reference kind: TypeReference, MethodCall, Attribute, ClassExtended, MethodOverride, Property. |
 | `limit` | integer (≥1, ≤1000) | default `100` | Max usage rows returned (default 100, hard max 1000). The module summary always covers every match. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 

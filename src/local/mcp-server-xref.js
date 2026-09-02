@@ -11,8 +11,7 @@ import { createRequire } from 'module';
 import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { registerXrefTools } from '../azure/xref-tools.js';
-import { registerIsvXrefTools } from '../azure/isv-xref-tools.js';
+import { registerAllXrefTools } from '../azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
@@ -39,8 +38,9 @@ db.pragma('mmap_size = 3221225472');
 
 const server = new McpServer(serverInfo('xref'), serverOptions('xref'));
 
-registerXrefTools(server, db);
-registerIsvXrefTools(server, db);
+// xref + isv-xref — the set is defined ONCE in tool-sets.js so the tools/list
+// budget test measures exactly what this server registers.
+registerAllXrefTools(server, db);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });

@@ -15,7 +15,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
+import { registerAllTaskRecorderTools } from '../azure/tool-sets.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
@@ -72,7 +72,7 @@ try {
 
 function createTaskRecorderServer(baseUrl) {
   const server = new McpServer(serverInfo('taskrecorder', { baseUrl }), serverOptions('taskrecorder'));
-  registerTaskRecorderTools(server);
+  registerAllTaskRecorderTools(server);
   return server;
 }
 

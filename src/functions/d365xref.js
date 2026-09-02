@@ -12,8 +12,7 @@ import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getXrefDb } from '../azure/shared.js';
-import { registerXrefTools } from '../azure/xref-tools.js';
-import { registerIsvXrefTools } from '../azure/isv-xref-tools.js';
+import { registerAllXrefTools } from '../azure/tool-sets.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
 // MCP entry point — rather than defaulting on inside the tool library, where a
@@ -24,8 +23,8 @@ process.env.MCP_TOOL_GUARDS ??= 'on';
 
 function createXrefServer(baseUrl) {
   const server = new McpServer(serverInfo('xref', { baseUrl }), serverOptions('xref'));
-  registerXrefTools(server, getXrefDb());
-  registerIsvXrefTools(server, getXrefDb());
+  // xref + isv-xref, defined once in tool-sets.js (budget test).
+  registerAllXrefTools(server, getXrefDb());
   return server;
 }
 
