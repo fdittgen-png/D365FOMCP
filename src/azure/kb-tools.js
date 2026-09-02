@@ -83,6 +83,7 @@ export function registerKbTools(server, db) {
   // (d365_lookup_table) would trade round-trips for a token bomb, so it is not
   // batched at all.
   const ENUM_BATCH_MAX = 10;
+  const SEARCH_BATCH_MAX = 5;
   // Tier 2 of the code path. 10 bodies at the measured ~13-17 line median is a
   // few thousand tokens — a sane ceiling for one turn, and well under the point
   // where pulling the whole class would have been cheaper.
@@ -509,7 +510,9 @@ export function registerKbTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release". Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see d365_list_modules for the scanned build versions).',
       inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query (keywords)'),
+      query: z.string().min(1).max(1000).optional().describe('Search query (keywords). Use this or `queries`.'),
+      queries: z.array(z.string().min(1).max(1000)).min(1).max(SEARCH_BATCH_MAX).optional()
+        .describe(`Run several searches in one call (max ${SEARCH_BATCH_MAX}); object_type / modules / limit apply to each.`),
       object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
       modules: modulesFilterParam,
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20)'),
@@ -517,14 +520,30 @@ export function registerKbTools(server, db) {
     },
       outputSchema: d365SearchOutput.shape,
     },
-    async ({ query: searchQuery, object_type, modules, limit, format }) => {
+    async ({ query: singleQuery, queries, object_type, modules, limit, format }) => {
       const lim = Number.isInteger(limit) && limit > 0 ? limit : 20;
       const moduleFilter = sanitizeModulesFilter(modules);
+
+      // Batching (issue #83): singular and plural are unioned and deduped, the
+      // caller's order is preserved, and the shared filters are hoisted into
+      // the envelope — they are what the batch is scoped by.
+      const requested = [...new Set([
+        ...(Array.isArray(queries) ? queries : []),
+        ...(singleQuery ? [singleQuery] : []),
+      ].map(s => String(s).trim()).filter(Boolean))];
+      if (!requested.length) return errorResult('invalid-input', 'Provide `query` or `queries`.');
+      const batchMode = Array.isArray(queries) && queries.length > 0;
+      // Defensive cap: Zod's .max() is bypassed by the test mock server (rule #13).
+      const searches = requested.slice(0, SEARCH_BATCH_MAX);
+
+      /** One search -> { typed, error }. `typed` is exactly the pre-batching
+       *  single payload; `error` is an errorResult to return as-is. */
+      const runSearch = (searchQuery) => {
       // issue #42: gate the wildcard LIKE scan on pattern length before the DB.
       const pv = validateLikePattern(searchQuery);
-      if (pv) return patternErrorResult(pv);
+      if (pv) return { error: patternErrorResult(pv) };
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
-      if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
+      if (!terms.length) return { error: errorResult('invalid-input', 'Provide at least one search term.') };
 
       // Issue #17: FTS5 MATCH first (10-50x faster on the ~1 GB KB), same
       // pattern as sec_search. Falls back to LIKE when the DB predates
@@ -579,49 +598,82 @@ export function registerKbTools(server, db) {
         try {
           rows = q(sql, likeParams);
         } catch (err) {
-          return errorResult('db-error', 'Try a shorter or more specific search term.', err);
+          return { error: errorResult('db-error', 'Try a shorter or more specific search term.', err) };
         }
       }
 
-      if (!rows || rows.length === 0) {
-        return emptyResult(`matches for "${searchQuery}"`, {
+      return {
+        typed: {
           query: searchQuery,
           object_type: object_type ?? null,
           modules: moduleFilter.length ? moduleFilter : null,
           limit: lim,
-          result_count: 0,
-          truncated: false,
-          results: [],
-        });
-      }
-
-      const typed = {
-        query: searchQuery,
-        object_type: object_type ?? null,
-        modules: moduleFilter.length ? moduleFilter : null,
-        limit: lim,
-        result_count: rows.length,
-        truncated: rows.length >= lim,
-        results: rows.map(r => ({
-          object_type: r.object_type ?? null,
-          object_name: r.object_name,
-          module_id: r.module_id ?? null,
-          // Rule #12: center the snippet on the first matching term instead
-          // of blindly taking the first 120 chars (matches beyond position
-          // 120 used to be invisible in the context column).
-          context: r.content != null ? contextAround(r.content, terms[0], 60) : null,
-        })),
+          result_count: rows.length,
+          truncated: rows.length >= lim,
+          results: rows.map(r => ({
+            object_type: r.object_type ?? null,
+            object_name: r.object_name,
+            module_id: r.module_id ?? null,
+            // Rule #12: center the snippet on the first matching term instead
+            // of blindly taking the first 120 chars (matches beyond position
+            // 120 used to be invisible in the context column).
+            context: r.content != null ? contextAround(r.content, terms[0], 60) : null,
+          })),
+        },
+      };
       };
 
-      let out = `## Search Results: "${typed.query}"\n\n`;
-      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
-      out += formatMarkdownTable(typed.results.map(r => ({
+      const renderRows = (results) => formatMarkdownTable(results.map(r => ({
         object_type: r.object_type ?? '',
         object_name: r.object_name,
         module_id: r.module_id ?? '',
         context: r.context ?? '',
       })));
-      if (typed.truncated) out += truncationNote('user', lim);
+
+      if (!batchMode) {
+        const { typed, error } = runSearch(searches[0]);
+        if (error) return error;
+        if (typed.result_count === 0) {
+          return emptyResult(`matches for "${typed.query}"`, typed);
+        }
+        // Exactly the pre-batching payload: no batch keys at all.
+        let out = `## Search Results: "${typed.query}"\n\n`;
+        if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
+        out += renderRows(typed.results);
+        if (typed.truncated) out += truncationNote('user', lim);
+        return structuredResult(typed, out, format);
+      }
+
+      // Batch mode: the shared scope is carried once in the envelope, each
+      // query carries only what differs. A query with zero hits is data
+      // (result_count 0), not a failure — there is no "not found" for a search.
+      const perQuery = [];
+      for (const sq of searches) {
+        const { typed, error } = runSearch(sq);
+        if (error) return error;
+        perQuery.push({
+          query: typed.query,
+          result_count: typed.result_count,
+          truncated: typed.truncated,
+          results: typed.results,
+        });
+      }
+      const typed = {
+        object_type: object_type ?? null,
+        modules: moduleFilter.length ? moduleFilter : null,
+        limit: lim,
+        requested_count: searches.length,
+        queries: perQuery,
+      };
+
+      let out = `## Search Results (${typed.requested_count} queries)\n\n`;
+      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
+      for (const p of perQuery) {
+        out += `### "${p.query}" (${p.result_count})\n`;
+        out += p.result_count ? renderRows(p.results) : '_No matches._';
+        out += p.truncated ? truncationNote('user', lim) + '\n' : '\n\n';
+      }
+      if (requested.length > searches.length) out += truncationNote('cap', searches.length, SEARCH_BATCH_MAX);
       return structuredResult(typed, out, format);
     }
   );

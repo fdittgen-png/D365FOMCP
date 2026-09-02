@@ -89,17 +89,22 @@ const emptyDb = () => new Database(':memory:');
  * removed or filtered, which is as much a "come and look" event as a breach.
  */
 const BUDGET = {
-  kb: { maxBytes: 70_400, tools: 21 },
-  xref: { maxBytes: 37_300, tools: 17 },
+  // kb raised 70,400 -> 71,000 on 2026-09-02 (#83): d365_search `queries[]` (+84 B measured).
+  kb: { maxBytes: 71_000, tools: 21 },
+  // xref raised 37,300 -> 38,600 on 2026-09-02 (#83): xref_find_references `objects[]` (+864 B).
+  xref: { maxBytes: 38_600, tools: 17 },
   // sec raised 37,500 -> 38,700 on 2026-09-02 (W3 #107.1): sec_lookup_role /
   // sec_role_hierarchy / sec_compare_roles gained the summary-view inputs and
   // the exact-count keys that make a capped list honest (+824 B measured).
   // sec raised 38,700 -> 39,800 on 2026-09-02 (W3 #107.6): `limit` + exact-count
   // keys on sec_lookup_duty/privilege/user and sec_find_roles_by_* (+1,015 B).
-  sec: { maxBytes: 39_800, tools: 18 },
+  // sec raised 39,800 -> 42,600 on 2026-09-02 (#83): sec_lookup_role `role_names[]`. +2,363 B,
+  // mostly the top-level payload keys repeated as optional beside `roles[]` — the
+  // price of the disjoint single/batch contract on a wide payload.
+  sec: { maxBytes: 42_600, tools: 18 },
   taskrecorder: { maxBytes: 13_500, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 161_000;
+const TOTAL_MAX_BYTES = 165_500;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {

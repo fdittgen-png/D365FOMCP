@@ -61,7 +61,8 @@ Full-text search across all D365FO objects (tables, classes, enums, entities). U
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `query` | string (min 1, max 1000) | yes | Search query (keywords) |
+| `query` | string (min 1, max 1000) | no | Search query (keywords). Use this or `queries`. |
+| `queries` | array<string (min 1, max 1000)> | no | Run several searches in one call (max 5); object_type / modules / limit apply to each. |
 | `object_type` | string (min 1, max 500) | no | Optional filter: table, class, enum, entity |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results (default 20) |

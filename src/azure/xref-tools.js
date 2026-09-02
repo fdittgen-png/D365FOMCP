@@ -136,6 +136,7 @@ export function registerXrefTools(server, db) {
   // batched body measured +1.6% against eight separate calls; see the note in
   // kb-tools.js. Each summary runs its own aggregate queries, hence a modest cap.
   const SUMMARY_BATCH_MAX = 10;
+  const REFS_BATCH_MAX = 10;
 
   const q = (sql, params = []) => query(db, sql, params);
 
@@ -184,7 +185,9 @@ export function registerXrefTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch.',
       inputSchema: {
-        object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
+        object_name: z.string().min(1).max(500).optional().describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`.'),
+        objects: z.array(z.string().min(1).max(500)).min(1).max(REFS_BATCH_MAX).optional()
+          .describe(`Several objects in one call (max ${REFS_BATCH_MAX}); kind / limit / include_isv apply to each. Unresolvable names come back in \`not_found\`.`),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind. Default: All'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
@@ -194,69 +197,142 @@ export function registerXrefTools(server, db) {
       },
       outputSchema: xrefFindReferencesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit, include_isv, format }) => {
+    async ({ object_name, objects, kind, limit: rawLimit, include_isv, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
-      const _v = validateLikePattern(object_name);
-      if (_v) return patternErrorResult(_v);
-      const resolved = resolveNameId(q, object_name);
-      if (!resolved) return notFoundResult('Object', object_name);
-
-      const { id: targetId, path: targetPath } = resolved;
       const kindFilterLabel = kind || 'All';
-      let kindFilter = '';
-      const params = [targetId];
-
-      if (kindFilterLabel !== 'All') {
-        const kindId = Object.entries(KIND_NAMES).find(([, v]) => v === kindFilterLabel)?.[0];
-        if (kindId) { kindFilter = ' AND r.kind = ?'; params.push(Number(kindId)); }
-      }
-      params.push(limit);
-
-      const result = q(`
-        SELECT n.path AS source, r.kind, r.line, r.col, m.module
-        FROM refs r
-        JOIN names n ON r.source_id = n.id
-        JOIN modules m ON n.module_id = m.id
-        WHERE r.target_id = ? ${kindFilter}
-        ORDER BY m.module, n.path
-        LIMIT ?
-      `, params);
-
       // Defensive default: the test mock server bypasses Zod (contract item 13).
       const wantIsv = include_isv === true;
-      const isvBlock = wantIsv ? isvReferenceSummary(targetPath) : null;
 
-      const baseTyped = {
-        target_path: targetPath,
-        kind_filter: kindFilterLabel,
-        limit,
-        result_count: result.length,
-        truncated: result.length >= limit,
-        references: result.map(r => ({
-          path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
-        })),
-        isv: isvBlock,
-      };
-      if (!result.length && !(isvBlock && isvBlock.reference_count)) {
-        return emptyResult(`references to "${targetPath}"`, baseTyped);
+      // Batching (issue #83): singular and plural are unioned and deduped in
+      // caller order; kind / limit / include_isv are hoisted into the envelope.
+      const requested = [...new Set([
+        ...(Array.isArray(objects) ? objects : []),
+        ...(object_name ? [object_name] : []),
+      ].map(s => String(s).trim()).filter(Boolean))];
+      if (!requested.length) return errorResult('invalid-input', 'Provide `object_name` or `objects`.');
+      const batchMode = Array.isArray(objects) && objects.length > 0;
+      const names = requested.slice(0, REFS_BATCH_MAX);
+      for (const n of names) {
+        const _v = validateLikePattern(n);
+        if (_v) return patternErrorResult(_v);
       }
 
-      let out = `## References to ${targetPath}\n${baseTyped.result_count} result(s)\n\n`;
-      out += formatMarkdownTable(
-        baseTyped.references.map(r => ({ Source: r.path, Kind: r.kind, Line: r.line ?? '', Col: r.col ?? '', Module: r.module ?? '' })),
+      let kindFilter = '';
+      const kindParams = [];
+      if (kindFilterLabel !== 'All') {
+        const kindId = Object.entries(KIND_NAMES).find(([, v]) => v === kindFilterLabel)?.[0];
+        if (kindId) { kindFilter = ' AND r.kind = ?'; kindParams.push(Number(kindId)); }
+      }
+
+      /** References to one resolved object; null when the name does not resolve. */
+      const findOne = (name) => {
+        const resolved = resolveNameId(q, name);
+        if (!resolved) return null;
+        const { id: targetId, path: targetPath } = resolved;
+        const result = q(`
+          SELECT n.path AS source, r.kind, r.line, r.col, m.module
+          FROM refs r
+          JOIN names n ON r.source_id = n.id
+          JOIN modules m ON n.module_id = m.id
+          WHERE r.target_id = ? ${kindFilter}
+          ORDER BY m.module, n.path
+          LIMIT ?
+        `, [targetId, ...kindParams, limit]);
+        return {
+          target_path: targetPath,
+          result_count: result.length,
+          truncated: result.length >= limit,
+          references: result.map(r => ({
+            path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
+          })),
+          isv: wantIsv ? isvReferenceSummary(targetPath) : null,
+        };
+      };
+
+      const renderRefs = (p) => formatMarkdownTable(
+        p.references.map(r => ({ Source: r.path, Kind: r.kind, Line: r.line ?? '', Col: r.col ?? '', Module: r.module ?? '' })),
         ['Source', 'Kind', 'Line', 'Col', 'Module'],
       );
-      if (baseTyped.truncated) out += truncationNote('user', limit);
-      if (isvBlock) {
-        out += `\n### Sealed ISV models (${isvBlock.reference_count})\n\n`;
-        out += isvBlock.reference_count
+      const renderIsv = (isvBlock, heading) => {
+        let s = `\n${heading} Sealed ISV models (${isvBlock.reference_count})\n\n`;
+        s += isvBlock.reference_count
           ? formatMarkdownTable(
             isvBlock.module_summary.map(m => ({ Model: m.module, References: m.reference_count })),
             ['Model', 'References'])
           : '_No sealed ISV model references this object._\n';
-        out += `\n_${isvBlock.note}_\n`;
+        return s;
+      };
+
+      if (!batchMode) {
+        const one = findOne(names[0]);
+        if (!one) return notFoundResult('Object', names[0]);
+        // Exactly the pre-batching payload — no batch keys.
+        const baseTyped = {
+          target_path: one.target_path,
+          kind_filter: kindFilterLabel,
+          limit,
+          result_count: one.result_count,
+          truncated: one.truncated,
+          references: one.references,
+          isv: one.isv,
+        };
+        const isvBlock = one.isv;
+        if (!one.result_count && !(isvBlock && isvBlock.reference_count)) {
+          return emptyResult(`references to "${one.target_path}"`, baseTyped);
+        }
+
+        let out = `## References to ${one.target_path}\n${baseTyped.result_count} result(s)\n\n`;
+        out += renderRefs(baseTyped);
+        if (baseTyped.truncated) out += truncationNote('user', limit);
+        if (isvBlock) out += renderIsv(isvBlock, '###') + `\n_${isvBlock.note}_\n`;
+        return structuredResult(baseTyped, out, format);
       }
-      return structuredResult(baseTyped, out, format);
+
+      // Batch mode: only batch keys. The ISV note is identical for every object,
+      // so it is hoisted once into `isv_note`; each object's `isv` block keeps
+      // just its counts. Rule #14: the `isv` key is present on every object or
+      // on none (decided by include_isv + whether the DB was ISV-scanned).
+      const found = [];
+      const notFound = [];
+      for (const n of names) {
+        const one = findOne(n);
+        if (!one) { notFound.push(n); continue; }
+        found.push(one);
+      }
+      const emitIsv = wantIsv && found.some(o => o.isv);
+      const isvNote = emitIsv ? (found.find(o => o.isv)?.isv.note ?? null) : null;
+      const typed = {
+        kind_filter: kindFilterLabel,
+        limit,
+        requested_count: names.length,
+        resolved_count: found.length,
+        not_found: notFound,
+        ...(isvNote ? { isv_note: isvNote } : {}),
+        objects: found.map(o => ({
+          target_path: o.target_path,
+          result_count: o.result_count,
+          truncated: o.truncated,
+          references: o.references,
+          ...(emitIsv ? {
+            isv: o.isv
+              ? { reference_count: o.isv.reference_count, module_summary: o.isv.module_summary }
+              : { reference_count: 0, module_summary: [] },
+          } : {}),
+        })),
+      };
+
+      let out = `## References (${typed.resolved_count} of ${typed.requested_count} objects)\n\n`;
+      for (const o of typed.objects) {
+        out += `### ${o.target_path} (${o.result_count})\n`;
+        out += o.result_count ? renderRefs(o) : '_No references._\n';
+        if (o.truncated) out += truncationNote('user', limit);
+        if (o.isv) out += renderIsv(o.isv, '####');
+        out += '\n';
+      }
+      if (isvNote) out += `_${isvNote}_\n\n`;
+      if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
+      if (requested.length > names.length) out += truncationNote('cap', names.length, REFS_BATCH_MAX);
+      return structuredResult(typed, out, format);
     },
   );
 

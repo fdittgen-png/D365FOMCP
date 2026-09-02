@@ -368,3 +368,45 @@ test('response-size golden: the ten §3.1 calls stay within ±10% of the recorde
     `Response size moved by more than ${100 * TOLERANCE}% against the golden baseline. If the change is intended, `
     + `re-baseline deliberately: GOLDEN_UPDATE=1 node --test test/response-size-golden.test.js`);
 });
+
+// ── Batch vs N singles (issue #83) ───────────────────────────────────────────
+// The batching rule in CLAUDE.md says a batch must not cost more than the single
+// calls it replaces, on the channel that is billed. Measured here on the same
+// fixture, printed on every run, and gated on the JSON channel.
+const BATCHES = [
+  ['kb', 'd365_search', 'query', 'queries',
+    ['payment', 'journal', 'settlement', 'posting', 'scenario']],
+  ['xref', 'xref_find_references', 'object_name', 'objects',
+    ['GoldenTable', 'GoldenCaller001', 'GoldenCaller002', 'GoldenCaller003', 'GoldenCaller004']],
+  ['sec', 'sec_lookup_role', 'role_name', 'role_names',
+    ['Golden role', 'Golden sub-role 1', 'Golden sub-role 2', 'Golden sub-role 3', 'Golden sub-role 4']],
+];
+
+test('batching (#83): a batch call is never larger than the N single calls it replaces (JSON channel)', async () => {
+  const dbs = { kb: buildKb(), xref: buildXref(), sec: buildSec() };
+  const handlers = {
+    kb: captureTools(registerKbTools, dbs.kb),
+    xref: captureTools(registerXrefTools, dbs.xref),
+    sec: captureTools(registerSecTools, dbs.sec),
+  };
+  const rows = [];
+  for (const [svc, name, singleKey, batchKey, targets] of BATCHES) {
+    let singles = { json: 0, text: 0 };
+    for (const t of targets) {
+      const m = await callDefault(handlers[svc], name, { [singleKey]: t });
+      singles = { json: singles.json + m.json, text: singles.text + m.text };
+    }
+    const batch = await callDefault(handlers[svc], name, { [batchKey]: targets });
+    const pct = (a, b) => `${(100 * (a - b) / b).toFixed(1)}%`;
+    rows.push(`  ${name.padEnd(22)} x${targets.length}  json ${String(singles.json).padStart(6)} -> ${String(batch.json).padStart(6)} (${pct(batch.json, singles.json)})`
+      + `   text ${String(singles.text).padStart(6)} -> ${String(batch.text).padStart(6)} (${pct(batch.text, singles.text)})`);
+    // A tool with a hoistable envelope (search: scope; references: kind/limit/
+    // ISV note) must win outright. sec_lookup_role has nothing to hoist — its
+    // batch is the N payloads plus a ~70 B wrapper, so it wins on turns, not
+    // bytes; the tolerance is that wrapper, not a licence to grow.
+    assert.ok(batch.json <= singles.json * 1.01,
+      `${name}: batch structuredContent (${batch.json}) is larger than ${targets.length} singles (${singles.json})`);
+  }
+  for (const db of Object.values(dbs)) db.close();
+  console.log(`\nbatch vs N singles (synthetic fixture, default args):\n${rows.join('\n')}\n`);
+});

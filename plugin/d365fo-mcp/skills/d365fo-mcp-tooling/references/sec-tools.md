@@ -33,7 +33,8 @@ Get security role details: description, license type, Grant/Deny, sub-roles, dut
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `role_name` | string (min 1, max 500) | yes | Role name (case-insensitive) |
+| `role_name` | string (min 1, max 500) | no | Role name (case-insensitive). Use this or `role_names`. |
+| `role_names` | array<string (min 1, max 500)> | no | Several roles in one call (max 10); the summary options apply to each. Unknown names come back in `not_found`. |
 | `include_entity_permissions` | boolean | default `false` | true: complete lists (can exceed 400 KB on wide roles) |
 | `entity_permission_limit` | integer (≥1, ≤5000) | default `50` | Max entity permissions in the summary view (default 50) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |

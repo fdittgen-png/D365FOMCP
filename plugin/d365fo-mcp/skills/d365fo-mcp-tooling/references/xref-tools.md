@@ -32,7 +32,8 @@ Find all objects that reference a given D365FO object (who calls/reads/extends i
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `object_name` | string (min 1, max 500) | yes | Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter") |
+| `object_name` | string (min 1, max 500) | no | Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`. |
+| `objects` | array<string (min 1, max 500)> | no | Several objects in one call (max 10); kind / limit / include_isv apply to each. Unresolvable names come back in `not_found`. |
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind. Default: All |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
 | `include_isv` | boolean | default `false` | Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites. |

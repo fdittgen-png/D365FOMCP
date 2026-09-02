@@ -140,6 +140,7 @@ export function registerSecTools(server, db) {
   // exact; `include_entity_permissions:true` returns the complete lists.
   const ROLE_SUMMARY_CAP = 50;
   const ROLE_ENTITY_PERMISSION_MAX = 5000;
+  const ROLE_BATCH_MAX = 10;
   const GRANT_COLUMNS = ['grant_read', 'grant_create', 'grant_update', 'grant_delete', 'grant_correct', 'grant_invoke'];
 
   /** Full typed payload for one role row (`r` from `roles`). */
@@ -257,7 +258,9 @@ export function registerSecTools(server, db) {
       annotations: READ_ONLY_DB_ANNOTATIONS,
       description: 'Get security role details: description, license type, Grant/Deny, sub-roles, duties, direct privileges and entity permissions. Summary by default: first 50 per list + exact counts.',
       inputSchema: {
-        role_name: z.string().min(1).max(500).describe('Role name (case-insensitive)'),
+        role_name: z.string().min(1).max(500).optional().describe('Role name (case-insensitive). Use this or `role_names`.'),
+        role_names: z.array(z.string().min(1).max(500)).min(1).max(ROLE_BATCH_MAX).optional()
+          .describe(`Several roles in one call (max ${ROLE_BATCH_MAX}); the summary options apply to each. Unknown names come back in \`not_found\`.`),
         include_entity_permissions: z.boolean().optional().default(false)
           .describe('true: complete lists (can exceed 400 KB on wide roles)'),
         entity_permission_limit: z.number().int().min(1).max(ROLE_ENTITY_PERMISSION_MAX).optional().default(ROLE_SUMMARY_CAP)
@@ -266,21 +269,53 @@ export function registerSecTools(server, db) {
       },
       outputSchema: secLookupRoleOutput.shape,
     },
-    async ({ role_name, include_entity_permissions, entity_permission_limit, format }) => {
+    async ({ role_name, role_names, include_entity_permissions, entity_permission_limit, format }) => {
       const includeAll = include_entity_permissions === true;
       const entityLimit = Number.isInteger(entity_permission_limit) && entity_permission_limit > 0
         ? Math.min(entity_permission_limit, ROLE_ENTITY_PERMISSION_MAX) : ROLE_SUMMARY_CAP;
-      const rn = String(role_name ?? '').trim();
-      if (!rn) return errorResult('invalid-input', 'Provide `role_name`.');
-      const role = q(`SELECT * FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn]);
 
-      if (!role.length) {
-        const fuzzy = q(`SELECT role_name FROM roles WHERE role_name LIKE ? LIMIT 10`, [`%${rn}%`]);
-        return notFoundResult('Role', rn, fuzzy.map(r => r.role_name));
+      // Batching (issue #83): singular and plural are unioned and deduped in
+      // caller order; the summary options are hoisted (they apply to each).
+      const requested = [...new Set([
+        ...(Array.isArray(role_names) ? role_names : []),
+        ...(role_name ? [role_name] : []),
+      ].map(s => String(s).trim()).filter(Boolean))];
+      if (!requested.length) return errorResult('invalid-input', 'Provide `role_name` or `role_names`.');
+      const batchMode = Array.isArray(role_names) && role_names.length > 0;
+      const names = requested.slice(0, ROLE_BATCH_MAX);
+      const findRole = (rn) => q(`SELECT * FROM roles WHERE role_name = ? COLLATE NOCASE`, [rn])[0] ?? null;
+
+      if (!batchMode) {
+        const rn = names[0];
+        const role = findRole(rn);
+        if (!role) {
+          const fuzzy = q(`SELECT role_name FROM roles WHERE role_name LIKE ? LIMIT 10`, [`%${rn}%`]);
+          return notFoundResult('Role', rn, fuzzy.map(r => r.role_name));
+        }
+        // Exactly the pre-batching payload — no batch keys.
+        const typed = buildRolePayload(role, { includeAll, entityLimit });
+        return structuredResult(typed, renderRole(typed), format);
       }
 
-      const typed = buildRolePayload(role[0], { includeAll, entityLimit });
-      return structuredResult(typed, renderRole(typed), format);
+      // Batch mode: only batch keys; a miss is data, not a failure.
+      const roles = [];
+      const notFound = [];
+      for (const rn of names) {
+        const role = findRole(rn);
+        if (!role) { notFound.push(rn); continue; }
+        roles.push(buildRolePayload(role, { includeAll, entityLimit }));
+      }
+      const typed = {
+        requested_count: names.length,
+        resolved_count: roles.length,
+        not_found: notFound,
+        roles,
+      };
+      let out = `## Roles (${typed.resolved_count} of ${typed.requested_count})\n\n`;
+      for (const r of roles) out += renderRole(r, '###') + '\n';
+      if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
+      if (requested.length > names.length) out += truncationNote('cap', names.length, ROLE_BATCH_MAX);
+      return structuredResult(typed, out, format);
     }
   );
 

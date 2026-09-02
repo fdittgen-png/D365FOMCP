@@ -381,14 +381,25 @@ export const d365SearchResultSchema = z.object({
   module_id: z.string().nullable(),
   context: z.string().nullable(),
 });
-export const d365SearchOutput = z.object({
+// Single mode: exactly the pre-batching payload. Batch mode (`queries`, issue
+// #83): the shared scope (object_type / modules / limit) is hoisted into the
+// envelope and each entry carries only what differs. The two are disjoint.
+export const d365SearchQueryPayloadSchema = z.object({
   query: z.string(),
-  object_type: z.string().nullable(),
-  modules: z.array(z.string()).nullable(),
-  limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
   results: z.array(d365SearchResultSchema),
+});
+export const d365SearchOutput = z.object({
+  query: z.string().optional(),
+  object_type: z.string().nullable(),
+  modules: z.array(z.string()).nullable(),
+  limit: z.number(),
+  result_count: z.number().optional(),
+  truncated: z.boolean().optional(),
+  results: z.array(d365SearchResultSchema).optional(),
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  queries: z.array(d365SearchQueryPayloadSchema).optional().describe('Batch mode only: one entry per query, caller order.'),
 });
 
 // d365_get_enum — enum values
@@ -708,24 +719,41 @@ export const xrefRefRowSchema = z.object({
 });
 
 // xref_find_references
-export const xrefFindReferencesOutput = z.object({
+// Sealed-ISV callers (issues #77, #82). Opt-in via `include_isv`, and kept in
+// its own block so ISV rows are never interleaved with the main results — the
+// two have different fidelity and must stay distinguishable.
+export const xrefIsvModuleSummarySchema = z.array(z.object({
+  module: z.string(),
+  reference_count: z.number(),
+}));
+// Batch mode (`objects`, issue #83): kind_filter / limit / isv note are hoisted
+// into the envelope; each object carries only what differs. Single mode is
+// exactly the pre-batching payload. The two are disjoint.
+export const xrefFindReferencesObjectSchema = z.object({
   target_path: z.string(),
-  kind_filter: z.string(),
-  limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
   references: z.array(xrefRefRowSchema),
-  // Sealed-ISV callers (issues #77, #82). Opt-in via `include_isv`, and kept in
-  // its own block so ISV rows are never interleaved with the main results — the
-  // two have different fidelity and must stay distinguishable.
+  // Present on every object or on none (rule #14), only with include_isv.
+  isv: z.object({ reference_count: z.number(), module_summary: xrefIsvModuleSummarySchema }).optional(),
+});
+export const xrefFindReferencesOutput = z.object({
+  target_path: z.string().optional(),
+  kind_filter: z.string(),
+  limit: z.number(),
+  result_count: z.number().optional(),
+  truncated: z.boolean().optional(),
+  references: z.array(xrefRefRowSchema).optional(),
   isv: z.object({
     reference_count: z.number(),
-    module_summary: z.array(z.object({
-      module: z.string(),
-      reference_count: z.number(),
-    })),
+    module_summary: xrefIsvModuleSummarySchema,
     note: z.string(),
   }).nullish(),
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  resolved_count: z.number().optional(),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: names that did not resolve.'),
+  isv_note: z.string().optional().describe('Batch mode only: the ISV provenance note, carried once.'),
+  objects: z.array(xrefFindReferencesObjectSchema).optional().describe('Batch mode only, caller order.'),
 });
 
 // xref_find_usages
@@ -1005,7 +1033,14 @@ export const secLookupRolePayloadSchema = z.object({
   direct_entity_permissions_truncated: z.boolean(),
   assigned_user_count: z.number(),
 });
-export const secLookupRoleOutput = secLookupRolePayloadSchema;
+// Single-target: exactly the payload above. Batch (`role_names`, issue #83):
+// only the batch keys — the two shapes are disjoint.
+export const secLookupRoleOutput = secLookupRolePayloadSchema.partial().extend({
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  resolved_count: z.number().optional(),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: unknown role names.'),
+  roles: z.array(secLookupRolePayloadSchema).optional().describe('Batch mode only, caller order.'),
+});
 
 // sec_lookup_duty
 export const secLookupDutyRoleSchema = z.object({
