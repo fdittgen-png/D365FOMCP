@@ -818,17 +818,18 @@ export function registerXrefTools(server, db) {
     'xref_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Text channel: see the shared `format` parameter.',
+      description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max rows (default 100, max 500)'),
-        format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),
+        // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
+        // .default('toon') here pinned TOON and defeated the adaptive default.
+        format: formatTextParam,
       },
       outputSchema: rawSqlOutput.shape,
     },
     async ({ sql: userSql, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
-      const fmt = format === 'markdown' ? 'markdown' : 'toon';
       const trimmed = userSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
         return errorResult('invalid-input', 'Only SELECT, WITH, and PRAGMA queries are allowed.');
@@ -852,11 +853,11 @@ export function registerXrefTools(server, db) {
         const columns = Object.keys(result[0]);
         const truncated = result.length >= limit;
         const typed = { row_count: result.length, truncated, columns, rows: result };
-        // Markdown is the opt-out; structuredResult renders TOON from `typed`
-        // by default (fmt === 'toon').
+        // structuredResult picks the smaller channel unless the caller pinned
+        // one; `format` goes through untouched — rule #5.
         let md = formatMarkdownTable(result);
         if (truncated) md += truncationNote('user', limit);
-        return structuredResult(typed, md, fmt);
+        return structuredResult(typed, md, format);
       } catch (err) {
         if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return errorResult('db-error', 'Check your SQL syntax and table/column names. Only read-only SELECT queries are supported.', err);

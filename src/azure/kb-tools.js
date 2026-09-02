@@ -1805,20 +1805,17 @@ export function registerKbTools(server, db) {
     'd365_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema (real table names - there is no kb_ prefix except kb_search/kb_metadata): tables(table_name, module_id, table_group, field_count, is_customized, ...), fields(table_name, field_name, field_type, edt, enum_type, mandatory, label, source_module, is_extension), enums(enum_name, ...) + enum_values(enum_name, value_name, value), classes(class_name, module_id, ...), methods(owner_type, owner_name, method_name, signature, source_code, is_static), relations(source_table, related_table, relation_name, constraints_json, relationship_type), data_entities(entity_name, public_name, public_collection, primary_table, ...), entity_fields(entity_name, field_name, data_field, data_source), modules(module_id, table_count, ...), model_versions(model_name, module_id, publisher, layer, origin, version), labels(label_id, text), kb_search(object_type, object_name, content). Query sqlite_master for the authoritative list if in doubt. Text channel: see the shared `format` parameter.',
+      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Schema (real table names - there is no kb_ prefix except kb_search/kb_metadata): tables(table_name, module_id, table_group, field_count, is_customized, ...), fields(table_name, field_name, field_type, edt, enum_type, mandatory, label, source_module, is_extension), enums(enum_name, ...) + enum_values(enum_name, value_name, value), classes(class_name, module_id, ...), methods(owner_type, owner_name, method_name, signature, source_code, is_static), relations(source_table, related_table, relation_name, constraints_json, relationship_type), data_entities(entity_name, public_name, public_collection, primary_table, ...), entity_fields(entity_name, field_name, data_field, data_source), modules(module_id, table_count, ...), model_versions(model_name, module_id, publisher, layer, origin, version), labels(label_id, text), kb_search(object_type, object_name, content). Query sqlite_master for the authoritative list if in doubt.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query to execute'),
-        format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),
+        // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
+        // .default('toon') here pinned TOON and defeated the adaptive default.
+        format: formatTextParam,
       },
       outputSchema: rawSqlOutput.shape,
     },
     async ({ sql: rawSql, format }) => {
       const SAFETY_CAP = 500;
-      // Pass the caller's choice through verbatim. Collapsing everything
-      // non-markdown to 'toon' here used to be harmless (structuredResult read
-      // any non-markdown value as TOON) but now PINS the encoding and defeats
-      // the adaptive default. structuredResult is the choke point — rule #5.
-      const fmt = format;
       const trimmed = rawSql.trim();
 
       // Strip SQL comments (block and line) BEFORE any keyword scanning, so a
@@ -1852,10 +1849,10 @@ export function registerKbTools(server, db) {
           rows,
         };
         // Both renderings are built; structuredResult picks the smaller unless
-        // the caller pinned one.
+        // the caller pinned one. `format` goes through untouched — rule #5.
         let md = formatMarkdownTable(rows);
         if (truncated) md += truncationNote('hard', SAFETY_CAP);
-        return structuredResult(typed, md, fmt);
+        return structuredResult(typed, md, format);
       }
 
       // PRAGMA queries are passed through verbatim — wrapping a PRAGMA in an

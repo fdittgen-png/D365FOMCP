@@ -129,13 +129,13 @@ Analyze cross-module dependencies: which modules does a given module depend on (
 
 ## `xref_raw_sql`
 
-Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Text channel: see the shared `format` parameter.
+Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `sql` | string (min 1, max 50000) | yes | SQL SELECT query (no schema prefix needed — use table names directly) |
 | `limit` | integer (≥1, ≤500) | default `100` | Max rows (default 100, max 500) |
-| `format` | `markdown` \| `toon` | default `"toon"` | Text rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
 
 ## `xref_impact_analysis`
 

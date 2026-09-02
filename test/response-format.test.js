@@ -121,6 +121,36 @@ for (const file of TOOL_FILES) {
   });
 }
 
+// ── Rule #5: `format` is ALWAYS the shared formatTextParam ───────────────────
+//
+// The three `*_raw_sql` tools each declared a private
+// `format: z.enum(['markdown','toon']).default('toon')` (issue #110, W6.1).
+// That pinned TOON on every default call and defeated the adaptive 'auto'
+// channel that structuredResult implements — the exact bug rule #5 warns
+// about, shipped a second time through a different door. A tool file may not
+// define its own `format` enum; it takes `format: formatTextParam` (or, for a
+// document tool, pins `'markdown'` in the handler).
+
+for (const file of TOOL_FILES) {
+  test(`given ${file}, when scanned for a private format enum, then none exists (format is formatTextParam)`, () => {
+    // Comments are stripped first: the fix sites explain the old bug in prose,
+    // and prose is not a declaration.
+    const src = readSource(file).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.doesNotMatch(
+      src,
+      /\bformat:\s*z\.enum\(/,
+      `${file} declares a private \`format: z.enum([...])\`. Use the shared \`format: formatTextParam\` from shared.js and pass \`format\` straight through to structuredResult (rule #5).`,
+    );
+    // Belt and braces: no enum anywhere in a tool file may list 'toon' as a
+    // value — the only legitimate home for that literal is formatTextParam.
+    assert.doesNotMatch(
+      src,
+      /z\.enum\(\[[^\]]*['"]toon['"][^\]]*\]\)/,
+      `${file} defines a z.enum containing 'toon'. The text-channel enum lives once, in shared.js (formatTextParam).`,
+    );
+  });
+}
+
 // ── PM-03: every registerTool call must declare annotations ──────────────────
 
 for (const file of TOOL_FILES) {
