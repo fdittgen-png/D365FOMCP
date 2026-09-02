@@ -24,16 +24,16 @@
       <answer>9,2</answer>
    </qa_pair>
    <qa_pair>
-      <question>Does the Accounting manager role hold Update access on the CustGroup display menu item (customer groups form)? Answer True or False.</question>
-      <answer>False</answer>
+      <question>The read-only privilege CustGroupView: which single duty contains it, and how many roles obtain the privilege in total, through that duty or as a directly assigned privilege? Answer as duty,count with no spaces.</question>
+      <answer>CustCustomerReferenceDataInquire,10</answer>
    </qa_pair>
    <qa_pair>
       <question>How many roles include the duty CustCustomerProcessEnable but do NOT reach the read-only privilege CustGroupView through any duty? Answer with the number.</question>
       <answer>2</answer>
    </qa_pair>
    <qa_pair>
-      <question>What licence type does the security snapshot record for the Collections manager role, and what is the role's stored AOT identifier (role_id, exactly as stored)? Answer as licence,role_id with no spaces.</question>
-      <answer>Enterprise,COLLECTIONLETTERCOLLECTIONSMANAGER</answer>
+      <question>How many distinct duties does the Collections manager role hold (sub-roles included), and what is the role's stored identifier (role_id, exactly as stored)? Answer as count,role_id with no spaces.</question>
+      <answer>53,COLLECTIONLETTERCOLLECTIONSMANAGER</answer>
    </qa_pair>
    <qa_pair>
       <question>Which model declares the second-most security objects in the snapshot (after ApplicationSuite), and how many role names declared in that model contain the word "manager"? Answer as model,count with no spaces.</question>

@@ -88,6 +88,149 @@ function highestTier(tierNames) {
   return { name: best, cost: bestCost > 0 ? bestCost : 0 };
 }
 
+// ── Canonical role/duty/privilege walks (issue #114) ─────────────────────────
+//
+// The snapshot merges two sources that spell the same id differently: the AOT
+// scan (mixed case, `CustGroupView`) and the DMF export (often lower/UPPER,
+// `custgroupview`). Measured on the 2026-08-14 build: 56 duty_privileges rows
+// and 41 role_duties rows match their parent table ONLY under COLLATE NOCASE,
+// and every one of the 41 is a case-variant twin of a row the role already
+// has (32 roles affected). Two answer-correctness defects came out of that:
+//
+//   1. `sec_lookup_privilege` bound the canonical `privileges.privilege_name`
+//      into `WHERE dp.privilege_name = ?` with no COLLATE — 0 parent duties
+//      and 0 granting roles for CustGroupView, while the NOCASE walk in
+//      `sec_find_roles_by_privilege` found 10 roles via CustCustomerReferenceDataInquire.
+//   2. `sec_lookup_role` inner-joined `duties` exactly (dropping the lowercase
+//      twin → 53 for Collections manager) while `sec_compare_roles` counted the
+//      raw role_duties ids case-sensitively (twin counted twice → 54).
+//
+// Every tool that reports a duty/privilege set or count now goes through the
+// functions below, so the tools cannot disagree again. Each one: matches ids
+// COLLATE NOCASE (index-backed — see sec-indexes.js), emits the CANONICAL id
+// from the parent table (`duties.duty_id`, `privileges.privilege_name`) and
+// collapses twins with GROUP BY, applying Deny-wins to the permission when the
+// twins disagree.
+
+/** Deny-wins fold of a permission_type column across grouped rows. */
+const DENY_WINS = (col) =>
+  `CASE WHEN SUM(CASE WHEN ${col} = 'Deny' THEN 1 ELSE 0 END) > 0 THEN 'Deny' ELSE MAX(${col}) END`;
+
+/**
+ * Effective duties of a role: its own role_duties ∪ those of every sub-role
+ * (recursive, cycle-safe via UNION), DISTINCT by canonical duty id.
+ * @returns {{duty_id:string, duty_name:string|null, permission_type:string|null}[]} ordered by duty_id
+ */
+export function roleDuties(db, roleId) {
+  return query(db, `
+    WITH RECURSIVE role_tree(role_id) AS (
+      SELECT role_id FROM roles WHERE role_id = ? COLLATE NOCASE
+      UNION
+      SELECT rs.child_role_id FROM role_subroles rs JOIN role_tree rt ON rs.parent_role_id = rt.role_id COLLATE NOCASE
+    )
+    SELECT d.duty_id, d.duty_name, ${DENY_WINS('rd.permission_type')} AS permission_type
+    FROM role_tree rt
+    JOIN role_duties rd ON rd.role_id = rt.role_id COLLATE NOCASE
+    JOIN duties d ON d.duty_id = rd.duty_id COLLATE NOCASE
+    GROUP BY d.duty_id
+    ORDER BY d.duty_id`, [roleId]);
+}
+
+/** `roleDuties(...).length` — the one number every duty_count key reports. */
+export function roleDutyCount(db, roleId) {
+  return roleDuties(db, roleId).length;
+}
+
+/**
+ * Privileges assigned directly to a role (not via duties, not inherited),
+ * DISTINCT case-insensitively. No join to `privileges`: measured on the
+ * 2026-08-14 build, every role_direct_privileges name matches `privileges`
+ * exactly (0 case-only mismatches, 0 twins), so the names are already
+ * canonical and the table stands alone.
+ * @returns {{privilege_name:string}[]} ordered by privilege_name
+ */
+export function roleDirectPrivileges(db, roleId) {
+  return query(db, `
+    SELECT MIN(privilege_name) AS privilege_name
+    FROM role_direct_privileges
+    WHERE role_id = ? COLLATE NOCASE
+    GROUP BY privilege_name COLLATE NOCASE
+    ORDER BY 1`, [roleId]);
+}
+
+/**
+ * Roles that carry a duty (direct assignment only — the reverse of
+ * `roleDuties` is deliberately not inheritance-aware, matching
+ * `sec_find_roles_by_privilege`). One row per role; `duty_permission` is the
+ * Deny-wins fold over the role's rows for that duty.
+ * @returns {{role_id, role_name, permission_type, license_type, duty_permission}[]} ordered by role_name
+ */
+export function dutyRoles(db, dutyId) {
+  return query(db, `
+    SELECT r.role_id, r.role_name, r.permission_type, r.license_type,
+           ${DENY_WINS('rd.permission_type')} AS duty_permission
+    FROM role_duties rd
+    JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
+    WHERE rd.duty_id = ? COLLATE NOCASE
+    GROUP BY r.role_id
+    ORDER BY r.role_name`, [dutyId]);
+}
+
+/**
+ * Privileges a duty grants, canonical names + labels.
+ * @returns {{privilege_name:string, label:string|null}[]} ordered by privilege_name
+ */
+export function dutyPrivileges(db, dutyId) {
+  return query(db, `
+    SELECT COALESCE(p.privilege_name, dp.privilege_name) AS privilege_name, MAX(p.label) AS label
+    FROM duty_privileges dp
+    LEFT JOIN privileges p ON p.privilege_name = dp.privilege_name COLLATE NOCASE
+    WHERE dp.duty_id = ? COLLATE NOCASE
+    GROUP BY COALESCE(p.privilege_name, dp.privilege_name) COLLATE NOCASE
+    ORDER BY 1`, [dutyId]);
+}
+
+/**
+ * Duties that contain a privilege — the set `sec_find_roles_by_privilege`
+ * walks through, canonical duty ids.
+ * @returns {{duty_id:string, duty_name:string|null}[]} ordered by duty_id
+ */
+export function privilegeDuties(db, privilegeName) {
+  return query(db, `
+    SELECT d.duty_id, d.duty_name
+    FROM duty_privileges dp
+    JOIN duties d ON d.duty_id = dp.duty_id COLLATE NOCASE
+    WHERE dp.privilege_name = ? COLLATE NOCASE
+    GROUP BY d.duty_id
+    ORDER BY d.duty_id`, [privilegeName]);
+}
+
+/**
+ * Roles that grant a privilege, through any of its duties OR by direct
+ * assignment (a direct assignment counts as Grant, as in
+ * `sec_permission_trace`). One row per role, Deny-wins across its paths.
+ * `sec_find_roles_by_privilege` reports the same two populations separately
+ * (`via_chain` / `direct`); this is their union.
+ * @returns {{role_id, role_name, permission_type}[]} ordered by role_name
+ */
+export function privilegeRoles(db, privilegeName) {
+  return query(db, `
+    SELECT r.role_id, r.role_name, ${DENY_WINS('x.permission_type')} AS permission_type
+    FROM (
+      SELECT rd.role_id, rd.permission_type
+      FROM duty_privileges dp
+      JOIN role_duties rd ON rd.duty_id = dp.duty_id COLLATE NOCASE
+      WHERE dp.privilege_name = ? COLLATE NOCASE
+      UNION ALL
+      SELECT rdp.role_id, 'Grant' AS permission_type
+      FROM role_direct_privileges rdp
+      WHERE rdp.privilege_name = ? COLLATE NOCASE
+    ) x
+    JOIN roles r ON r.role_id = x.role_id COLLATE NOCASE
+    GROUP BY r.role_id
+    ORDER BY r.role_name`, [privilegeName, privilegeName]);
+}
+
 // ── Register all 18 Security tools ──────────────────────────────────────────
 
 export function registerSecTools(server, db) {
@@ -149,11 +292,10 @@ export function registerSecTools(server, db) {
     const subs = q(`SELECT r.role_name, rs.is_transitive
       FROM role_subroles rs JOIN roles r ON r.role_id = rs.child_role_id
       WHERE rs.parent_role_id = ? ORDER BY r.role_name`, [r.role_id]);
-    const duties = q(`SELECT d.duty_id, d.duty_name, rd.permission_type
-      FROM role_duties rd JOIN duties d ON d.duty_id = rd.duty_id
-      WHERE rd.role_id = ? ORDER BY d.duty_id`, [r.role_id]);
-    const dirPrivs = q(`SELECT privilege_name FROM role_direct_privileges
-      WHERE role_id = ? ORDER BY privilege_name`, [r.role_id]);
+    // Effective duties (own ∪ sub-role, canonical ids, twins collapsed) — the
+    // same set sec_compare_roles / sec_role_hierarchy count (#114).
+    const duties = roleDuties(db, r.role_id);
+    const dirPrivs = roleDirectPrivileges(db, r.role_id);
     const permCount = q(`SELECT COUNT(*) AS n FROM role_direct_entity_permissions WHERE role_id = ?`, [r.role_id])[0]?.n || 0;
     const dirPerms = includeAll
       ? q(`SELECT entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke
@@ -347,12 +489,10 @@ export function registerSecTools(server, db) {
       }
 
       const d = duty[0];
-      const roles = q(`SELECT r.role_name, rd.permission_type
-        FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id
-        WHERE rd.duty_id = ? ORDER BY r.role_name`, [d.duty_id]);
-      const privs = q(`SELECT dp.privilege_name, p.label
-        FROM duty_privileges dp LEFT JOIN privileges p ON p.privilege_name = dp.privilege_name
-        WHERE dp.duty_id = ? ORDER BY dp.privilege_name`, [d.duty_id]);
+      // Canonical walks (#114): one row per role even when the DMF export left
+      // a case-variant twin; privilege names in their AOT casing with labels.
+      const roles = dutyRoles(db, d.duty_id).map(r => ({ role_name: r.role_name, permission_type: r.duty_permission }));
+      const privs = dutyPrivileges(db, d.duty_id);
 
       const typed = {
         duty_id: d.duty_id,
@@ -428,15 +568,11 @@ export function registerSecTools(server, db) {
       const p = priv[0];
       const eps = q(`SELECT * FROM privilege_entry_points
         WHERE privilege_name = ? ORDER BY entry_point_name`, [p.privilege_name]);
-      const duties = q(`SELECT dp.duty_id, d.duty_name
-        FROM duty_privileges dp LEFT JOIN duties d ON d.duty_id = dp.duty_id
-        WHERE dp.privilege_name = ? ORDER BY dp.duty_id`, [p.privilege_name]);
-      const roles = q(`SELECT DISTINCT r.role_name, rd.permission_type
-        FROM duty_privileges dp
-        JOIN role_duties rd ON rd.duty_id = dp.duty_id
-        JOIN roles r ON r.role_id = rd.role_id
-        WHERE dp.privilege_name = ?
-        ORDER BY r.role_name`, [p.privilege_name]);
+      // #114: the canonical name is bound COLLATE NOCASE — duty_privileges may
+      // spell it `custgroupview`. granting_roles is the duty-chain ∪ direct
+      // union, i.e. exactly the two lists sec_find_roles_by_privilege reports.
+      const duties = privilegeDuties(db, p.privilege_name);
+      const roles = privilegeRoles(db, p.privilege_name);
 
       const typed = {
         privilege_name: p.privilege_name,
@@ -717,13 +853,13 @@ export function registerSecTools(server, db) {
 
       let rows;
       if (dir === 'children') {
-        rows = q(`SELECT child.role_name, rs.is_transitive
-          FROM role_subroles rs JOIN roles child ON child.role_id = rs.child_role_id
-          WHERE rs.parent_role_id = ? ORDER BY child.role_name`, [r.role_id]);
+        rows = q(`SELECT child.role_id, child.role_name, rs.is_transitive
+          FROM role_subroles rs JOIN roles child ON child.role_id = rs.child_role_id COLLATE NOCASE
+          WHERE rs.parent_role_id = ? COLLATE NOCASE ORDER BY child.role_name`, [r.role_id]);
       } else {
-        rows = q(`SELECT parent.role_name, rs.is_transitive
-          FROM role_subroles rs JOIN roles parent ON parent.role_id = rs.parent_role_id
-          WHERE rs.child_role_id = ? ORDER BY parent.role_name`, [r.role_id]);
+        rows = q(`SELECT parent.role_id, parent.role_name, rs.is_transitive
+          FROM role_subroles rs JOIN roles parent ON parent.role_id = rs.parent_role_id COLLATE NOCASE
+          WHERE rs.child_role_id = ? COLLATE NOCASE ORDER BY parent.role_name`, [r.role_id]);
       }
 
       if (!rows.length) return emptyResult(`${dir} of role "${r.role_name}"`, {
@@ -739,14 +875,17 @@ export function registerSecTools(server, db) {
         direction: dir,
         result_count: rows.length,
         truncated: rows.length > lim,
+        // duty_count is the related role's EFFECTIVE count from roleDuties() —
+        // the same number sec_lookup_role / sec_compare_roles report (#114).
         entries: rows.slice(0, lim).map(row => ({
           role_name: row.role_name,
           is_transitive: row.is_transitive ?? null,
+          duty_count: roleDutyCount(db, row.role_id),
         })),
       };
 
       let out = `## ${typed.role_name} — ${typed.direction}\n`;
-      out += formatMarkdownTable(typed.entries, ['role_name', 'is_transitive']);
+      out += formatMarkdownTable(typed.entries, ['role_name', 'is_transitive', 'duty_count']);
       if (typed.truncated) out += truncationNote('cap', typed.entries.length, 1000);
       return structuredResult(typed, out, format);
     }
@@ -872,11 +1011,9 @@ export function registerSecTools(server, db) {
       // P4-02 / CR-SEC-002: only Grant assignments count — a role that
       // declares this duty as Deny is *removing* it, not granting it. To
       // see the full picture (Grant + Deny rows), use `sec_permission_trace`.
-      const rows = q(`SELECT r.role_name, r.permission_type, r.license_type, rd.permission_type as duty_permission
-        FROM role_duties rd JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
-        WHERE rd.duty_id = ? COLLATE NOCASE
-          AND rd.permission_type = 'Grant'
-        ORDER BY r.role_name`, [duty[0].duty_id]);
+      // dutyRoles() folds a role's case-variant twin rows into one (#114) —
+      // the raw NOCASE match listed such a role twice.
+      const rows = dutyRoles(db, duty[0].duty_id).filter(r => r.duty_permission === 'Grant');
 
       if (!rows.length) return emptyResult(`roles granting duty "${dn}"`, {
         duty_id: duty[0].duty_id,
@@ -943,9 +1080,9 @@ export function registerSecTools(server, db) {
       // privilege through several duties, and OFFSET needs a stable order.
       const viaChain = q(`SELECT DISTINCT r.role_name, rd.permission_type, d.duty_id
         FROM duty_privileges dp
-        JOIN role_duties rd ON rd.duty_id = dp.duty_id
-        JOIN roles r ON r.role_id = rd.role_id
-        JOIN duties d ON d.duty_id = dp.duty_id
+        JOIN role_duties rd ON rd.duty_id = dp.duty_id COLLATE NOCASE
+        JOIN roles r ON r.role_id = rd.role_id COLLATE NOCASE
+        JOIN duties d ON d.duty_id = dp.duty_id COLLATE NOCASE
         WHERE dp.privilege_name = ? COLLATE NOCASE
         ORDER BY r.role_name, d.duty_id`, [pn]);
 
@@ -1242,15 +1379,22 @@ export function registerSecTools(server, db) {
       // P4-02 / CR-SEC-002: comparison must be against effective grants only.
       // Deny rows would falsely show up as "shared" duties when in fact one
       // role grants and the other denies the same duty id.
-      const duties1 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ? AND permission_type = 'Grant'`, [r1[0].role_id]).map(r => r.duty_id));
-      const duties2 = new Set(q(`SELECT duty_id FROM role_duties WHERE role_id = ? AND permission_type = 'Grant'`, [r2[0].role_id]).map(r => r.duty_id));
+      //
+      // #114: the sets come from the same roleDuties() walk sec_lookup_role
+      // reports (canonical ids, sub-roles included, twins collapsed); the
+      // Grant filter above is the ONLY difference, so for a role without Deny
+      // duties `duties_total_N` equals `sec_lookup_role.duty_count` exactly.
+      const grantDuties = (roleId) => new Set(
+        roleDuties(db, roleId).filter(d => d.permission_type === 'Grant').map(d => d.duty_id));
+      const duties1 = grantDuties(r1[0].role_id);
+      const duties2 = grantDuties(r2[0].role_id);
 
       const dShared = [...duties1].filter(d => duties2.has(d));
       const dOnly1 = [...duties1].filter(d => !duties2.has(d));
       const dOnly2 = [...duties2].filter(d => !duties1.has(d));
 
-      const privs1 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r1[0].role_id]).map(r => r.privilege_name));
-      const privs2 = new Set(q(`SELECT privilege_name FROM role_direct_privileges WHERE role_id = ?`, [r2[0].role_id]).map(r => r.privilege_name));
+      const privs1 = new Set(roleDirectPrivileges(db, r1[0].role_id).map(r => r.privilege_name));
+      const privs2 = new Set(roleDirectPrivileges(db, r2[0].role_id).map(r => r.privilege_name));
 
       const pShared = [...privs1].filter(p => privs2.has(p));
       const pOnly1 = [...privs1].filter(p => !privs2.has(p));
