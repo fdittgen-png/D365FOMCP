@@ -208,6 +208,8 @@ This assigns the **Key Vault Secrets User** role to the Function App's system-as
 
 ---
 
+> **Current procedure: [`Deployment-Runbook.md`](Deployment-Runbook.md).** Sections 4–6 below describe the legacy `scripts/Deploy-*.ps1` flow; `local-deploy/Deploy.ps1` replaced it and is what the runbook documents.
+
 ## 4. Deploying the Function App
 
 ### 4.1 Full Deployment
