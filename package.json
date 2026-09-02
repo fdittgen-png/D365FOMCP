@@ -32,7 +32,8 @@
     "start:azure": "func start",
     "gen:plugin-refs": "node build/gen-plugin-tool-refs.js",
     "pack:skills": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-SkillsPackage.ps1",
-    "typecheck": "tsc -p jsconfig.json"
+    "typecheck": "tsc -p jsconfig.json",
+    "evals": "node scripts/run-evals.mjs"
   },
   "engines": {
     "node": ">=20.0.0 <21.0.0"
