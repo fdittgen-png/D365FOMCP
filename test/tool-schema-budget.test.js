@@ -86,17 +86,22 @@ const emptyDb = () => new Database(':memory:');
 
 /**
  * Per-server ceilings, ≤2% above the 2026-09-02 measurement (kb 69,113 ·
- * xref 36,596 · sec 36,837 · taskrecorder 13,243 B; total 155,789 B ≈ 38,947 tk).
+ * xref 36,596 · sec 36,837 · taskrecorder 13,243 B; total 155,789 B ≈ 38,947 tk)
+ * PLUS exactly the measured cost of `title` on every tool (W5.B, #109):
+ * kb +529 · xref +443 · sec +439 · taskrecorder +44 = **+1,455 B** (~364 tk),
+ * measured 2026-09-02 → kb 69,642 · xref 37,039 · sec 37,276 · taskrecorder
+ * 13,287; total 157,244 B ≈ 39,311 tk. A deliberate cost: a display name on
+ * every tool for ~0.9% of the list.
  * `tools` is the count the server registers today — a drop means a set was
  * removed or filtered, which is as much a "come and look" event as a breach.
  */
 const BUDGET = {
-  kb: { maxBytes: 70_400, tools: 21 },
-  xref: { maxBytes: 37_300, tools: 17 },
-  sec: { maxBytes: 37_500, tools: 18 },
-  taskrecorder: { maxBytes: 13_500, tools: 2 },
+  kb: { maxBytes: 70_929, tools: 21 },
+  xref: { maxBytes: 37_743, tools: 17 },
+  sec: { maxBytes: 37_939, tools: 18 },
+  taskrecorder: { maxBytes: 13_544, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 158_700;
+const TOTAL_MAX_BYTES = 160_155;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {
@@ -106,7 +111,10 @@ const ENTRY_POINTS = {
   taskrecorder: { files: ['local/mcp-server-taskrecorder.js', 'functions/d365taskrecorder.js'], via: 'registerAllTaskRecorderTools' },
 };
 
-const FIELDS = ['name', 'description', 'inputSchema', 'outputSchema', 'annotations'];
+// `title` (W5.B, #109): derived on the registration path for every tool that
+// does not set one. A deliberate cost — a few bytes per tool — so it is
+// measured as its own column rather than hidden in `other`.
+const FIELDS = ['name', 'title', 'description', 'inputSchema', 'outputSchema', 'annotations'];
 
 /**
  * Bytes a service contributes to `tools/list` — ALL of what the protocol ships,
@@ -191,6 +199,8 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
     assert.equal(m.tools.length, expectedTools,
       `${svc}: registers ${m.tools.length} tools, expected ${expectedTools}. A tool set was added, removed or `
       + 'filtered — update BUDGET.tools deliberately once the budget line below has been read.');
+    const untitled = m.raw.filter(t => !t.title).map(t => t.name);
+    assert.deepEqual(untitled, [], `${svc}: every tool carries a title (W5.B); missing on ${untitled.join(', ')}`);
     assert.ok(m.bytes <= maxBytes,
       `${svc}: tools/list is ${m.bytes} B, over the ${maxBytes} B ceiling by ${m.bytes - maxBytes} B `
       + `(~${Math.round((m.bytes - maxBytes) / 4)} tk on EVERY request). Shorten a description, narrow a schema, `

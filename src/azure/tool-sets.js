@@ -35,6 +35,7 @@ import { registerTaskRecorderTools } from './taskrecorder-tools.js';
 import { toolInProfile } from './tool-guards.js';
 import { getRequestContext } from './request-context.js';
 import { withFreshnessBanner } from './shared.js';
+import { registerResources } from './resources.js';
 
 /** @type {Readonly<Record<'kb'|'xref'|'sec'|'taskrecorder', ReadonlyArray<(server: any, db?: any) => void>>>} */
 export const TOOL_SETS = Object.freeze({
@@ -61,6 +62,9 @@ const POLICY_APPLIED = Symbol.for('d365fo.mcp.toolSetPolicyApplied');
  *     lives here and not in the guards.
  *   - FRESHNESS: every data response of a snapshot-backed tool gets the rule #4
  *     banner (`withFreshness` below).
+ *   - TITLE: a tool without `title` gets one derived from its name
+ *     (`deriveToolTitle`). Measured cost on tools/list: see the budget test's
+ *     `title` column — a deliberate ~1 KB across the four servers.
  *
  * `stats.registered` counts what actually reached the underlying server, so a
  * caller can report the effective tool count (the snapshot resource does).
@@ -78,9 +82,35 @@ export function withRegistrationPolicy(server, { service = 'snapshot', db = null
   view.registerTool = (name, config, handler) => {
     if (!toolInProfile(name, profile)) { stats.skipped.push(name); return undefined; }
     stats.registered += 1;
-    return server.registerTool(name, config, withFreshness(handler, config, db, service));
+    return server.registerTool(name, withTitle(name, config), withFreshness(handler, config, db, service));
   };
   return view;
+}
+
+/* ── Tool titles (W5.B, #109) ─────────────────────────────────────────────── */
+
+// Words that are acronyms in this domain and read wrong in sentence case.
+const TITLE_ACRONYMS = Object.freeze({ isv: 'ISV', sql: 'SQL', id: 'ID', xref: 'XRef', kb: 'KB', il: 'IL' });
+const TITLE_PREFIXES = new Set(['d365', 'xref', 'sec', 'taskrecorder', 'wiki']);
+
+/**
+ * Human display name from a tool name: `d365_lookup_table` → "Lookup table",
+ * `xref_find_references` → "Find references", `d365_raw_sql` → "Raw SQL".
+ * A tool file that sets its own `title` wins; this is the fallback so that
+ * every tool has one without editing 58 registrations.
+ */
+export function deriveToolTitle(name) {
+  const words = String(name ?? '').split('_').filter(Boolean);
+  if (words.length > 1 && TITLE_PREFIXES.has(words[0].toLowerCase())) words.shift();
+  return words
+    .map((w, i) => TITLE_ACRONYMS[w.toLowerCase()] ?? (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(' ');
+}
+
+function withTitle(name, config) {
+  if (!config || typeof config !== 'object') return config;
+  if (typeof config.title === 'string' && config.title.trim()) return config;
+  return { ...config, title: deriveToolTitle(name) };
 }
 
 /**
@@ -138,6 +168,10 @@ export function registerServiceTools(service, server, db) {
   if (!sets) throw new Error(`Unknown MCP service "${service}" — expected one of ${Object.keys(TOOL_SETS).join(', ')}`);
   const view = withRegistrationPolicy(server, { service, db, profile: effectiveProfile(service, db) });
   for (const register of sets) register(view, db);
+  // Snapshot-scoped catalogues as MCP resources (W5.B). No-op on a server
+  // without registerResource (the test mocks). `tool_count` is read lazily so
+  // the snapshot resource reports what this request actually registered.
+  view.resources = registerResources(view, { db, service, toolCount: () => view.toolSetStats.registered });
   return view.toolSetStats;
 }
 

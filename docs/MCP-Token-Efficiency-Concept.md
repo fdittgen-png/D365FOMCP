@@ -191,6 +191,8 @@ Options:
 2. **Resources for stable, snapshot-scoped catalogues** — candidates: module list (`d365_list_modules` 37 KB), SQL templates, hallucination traps, the raw_sql schema listing, snapshot metadata (`build_date`, `schema_version`, `model_count`) — the natural home for the freshness signal of #86. **Unmeasured, and gated on a spike:** confirm the claude.ai connector and Claude Code actually surface MCP resources before moving anything out of tool responses. If they do not, the same content becomes a `d365_snapshot_info` tool with a tiny schema.
 3. `title` on every tool (human display name; a few bytes each) and a `snapshot` resource make the server self-describing without paying for it per call.
 
+> **Part B shipped 2026-09-02 (#109).** `src/azure/resources.js` registers `d365://snapshot` (all four servers) and `d365://modules` (KB/XRef/Sec) on the registration path; `d365://sql-templates` is NOT exposed — the query is inline in `kb-tools.js` and would have to be duplicated. Every tool now carries a `title` derived from its name in `tool-sets.js` (`deriveToolTitle`), measured at **+1,455 B** on the four-server `tools/list` (KB +529 · XRef +443 · Sec +439 · TR +44; 0.9%) — the ceilings moved by exactly that. The spike (do the connector and Claude Code surface resources?) remains the gate for moving any catalogue OUT of a tool response; part A (cursor pagination) is untouched.
+
 ### W6 — Contract hygiene and quality gates (tuning, S–M)
 
 - Fix the three `*_raw_sql` tools to use `formatTextParam` and pass `format` straight through (rule #5).

@@ -163,9 +163,14 @@ that registers exactly what each entry point registers (`src/azure/tool-sets.js`
 against all four local stdio servers through the SDK `Client`: identical to the byte.
 (The earlier "114,932 B, verified live" figure was the test's own three-set sum;
 the KB server also ships `isv-kb-tools` + `custom-fields-tools`, XRef ships
-`isv-xref-tools`, and Task Recorder was never counted.)
+`isv-xref-tools`, and Task Recorder was never counted.) **Since W5.B (#109) every
+tool also carries a `title`**, derived on the registration path
+(`deriveToolTitle` in `tool-sets.js`: `d365_lookup_table` → "Lookup table") — a
+deliberate **+1,455 B (~364 tk, 0.9%)** measured off the transport, so the
+current full list is **157,244 B (~39,311 tk)**: KB 69,642 · XRef 37,039 · Sec
+37,276 · Task Recorder 13,287.
 
-Composition, four servers, on the wire:
+Composition, four servers, on the wire (before titles; `title` adds 1,397 B, 0.9%):
 
 | Field | Bytes | Share |
 |---|---:|---:|
@@ -200,9 +205,24 @@ Composition, four servers, on the wire:
   on every run, and fails on a ceiling breach, a tool-count change, any shared
   parameter wasting >4,000 B, or an entry point that registers a tool set
   outside `src/azure/tool-sets.js` (the one list both the servers and the test
-  use). Raising a ceiling is a normal, deliberate act; doing it unnoticed is what
-  this prevents. Current (≤2% headroom): kb 69,113 → 70,400 B · xref 36,596 →
-  37,300 B · sec 36,837 → 37,500 B · taskrecorder 13,243 → 13,500 B.
+  use). It also prints the `core` figure for all four servers and asserts every
+  tool carries a `title`. Raising a ceiling is a normal, deliberate act; doing it
+  unnoticed is what this prevents. Current (≤2% headroom, moved by exactly the
+  measured title delta): kb 69,642 → 70,929 B · xref 37,039 → 37,743 B · sec
+  37,276 → 37,939 B · taskrecorder 13,287 → 13,544 B.
+- **MCP resources (W5.B, #109 part B)** — `src/azure/resources.js`, registered
+  on the registration path for every server: `d365://snapshot` (service,
+  `build_date`, `schema_version`, `model_count`, `tool_count` after the profile,
+  `isv_scanned`) and, on the three snapshot-backed servers, `d365://modules` (the
+  `model_versions` list that `d365_list_modules` ships per call — 37 KB by
+  default). JSON, small, never a protocol error (a failed read returns an
+  `{error}` document). **`d365://sql-templates` is deliberately not exposed**:
+  the query behind `d365_sql_template` is inline in `kb-tools.js`, and
+  duplicating it would be the drift the single-source rules exist to prevent —
+  lift it into a shared function first. **Still gated on #109's spike:** whether
+  the claude.ai connector and Claude Code surface resources to the model at all;
+  the resources cost nothing on `tools/list`, so shipping the mechanism ahead of
+  the spike is free.
 - **`test/response-size-golden.test.js`** is the variable-cost gate: the ten
   concept-§3.1 calls with default args against a wide synthetic fixture, both
   channels within ±10% of `test/fixtures/response-size-baseline.json`.
