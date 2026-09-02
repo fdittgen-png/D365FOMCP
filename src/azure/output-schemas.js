@@ -1521,19 +1521,22 @@ export const taskrecorderMarkdownOutput = z.object({
 // when return_inline=true). Use these fields to confirm coverage and to decide
 // whether to open the file.
 
+// Output prose here was 2.7 KB on every tools/list (W1, #105) — the one place
+// output `.describe()` measured as significant. Kept only where a key name
+// does not carry the meaning; the response's `notes` explain the rest.
 export const taskrecorderDocStepSchema = z.object({
-  step: z.number().describe('1-based step number in recording order.'),
-  source: z.string().describe('Origin of the step: "client" (browser repro XML), "word" (.docx), or "recording" (.axtr only).'),
-  docx_text: z.string().nullish().describe('Step text from the Word document, if a .docx was supplied.'),
-  description: z.string().nullish().describe('Effective step description (client action / custom > localized > recorded).'),
-  action_type: z.string().nullish().describe('Action type: client kind (navigate/click/edit/error/...) or .axtr node type.'),
-  target: z.string().nullish().describe('Human-readable target, e.g. "Command: RequestClose (form SysAADClientTable)".'),
-  global_id: z.string().nullish().describe('Stable GlobalId (.axtr) or step id (client recording).'),
-  object_name: z.string().nullish().describe('AOT object the step touched (form or menu item) — the join key to BPM security.'),
-  screenshot_count: z.number().describe('Number of screenshots embedded for this step in the MHTML.'),
-  has_security: z.boolean().describe('True when the BPM package had a security block for this step\'s object.'),
-  matched_action_count: z.number().describe('For client steps: how many server (.axtr) actions correlate to this step.'),
-  texts_agree: z.boolean().describe('True when the Word step text matches the recorded description (false flags a mismatch).'),
+  step: z.number(),
+  source: z.string().describe('client | word | recording'),
+  docx_text: z.string().nullish(),
+  description: z.string().nullish(),
+  action_type: z.string().nullish().describe('Client kind (navigate/click/edit/error) or .axtr node type.'),
+  target: z.string().nullish(),
+  global_id: z.string().nullish(),
+  object_name: z.string().nullish().describe('AOT object touched — join key to BPM security.'),
+  screenshot_count: z.number(),
+  has_security: z.boolean(),
+  matched_action_count: z.number().describe('Server (.axtr) actions correlated to this client step.'),
+  texts_agree: z.boolean().describe('False flags a Word/recording text mismatch.'),
 });
 
 export const taskrecorderClientRecordingSchema = z.object({
@@ -1547,24 +1550,24 @@ export const taskrecorderClientRecordingSchema = z.object({
   step_count: z.number(),
   screenshot_count: z.number(),
   matched_step_count: z.number(),
-}).describe('Metadata of the browser-side client repro recording, when one was supplied.');
+});
 
 export const taskrecorderDocFormSchema = z.object({
-  form_name: z.string().describe('AOT form name that was enriched from the KB.'),
-  kb_available: z.boolean().describe('False when the KB database was not configured/present.'),
-  kb_found: z.boolean().describe('True when the form exists in the KB snapshot.'),
-  class_count: z.number().describe('Number of related classes documented for the form.'),
-  endpoint_count: z.number().describe('Number of OData/data-entity endpoints documented for the form.'),
+  form_name: z.string(),
+  kb_available: z.boolean(),
+  kb_found: z.boolean(),
+  class_count: z.number(),
+  endpoint_count: z.number(),
 });
 
 export const taskrecorderDocRoleSchema = z.object({
-  queried: z.string().describe('The BPM role identifier looked up (AOT name or DMF GUID).'),
-  role_name: z.string().nullish().describe('Resolved role display name, or null when not found.'),
-  found: z.boolean().describe('True when the role exists in the Security snapshot.'),
-  sub_role_count: z.number().describe('Direct sub-roles of this role.'),
-  duty_count: z.number().describe('Duties granted across the role and its sub-roles (capped).'),
-  privilege_count: z.number().describe('Distinct privileges granted (capped).'),
-  user_count: z.number().describe('Total users assigned to this role (full count, not the truncated list).'),
+  queried: z.string().describe('BPM role id (AOT name or DMF GUID).'),
+  role_name: z.string().nullish(),
+  found: z.boolean(),
+  sub_role_count: z.number(),
+  duty_count: z.number(),
+  privilege_count: z.number(),
+  user_count: z.number().describe('Full count, not the truncated list.'),
 });
 
 export const taskrecorderDocumentOutput = z.object({
@@ -1575,23 +1578,23 @@ export const taskrecorderDocumentOutput = z.object({
     version: z.string().nullish(),
     language: z.string().nullish(),
     action_count: z.number(),
-  }).describe('Functional metadata about the recording.'),
-  step_count: z.number().describe('Number of documented steps (client repro steps, or .axtr actions/Word steps).'),
-  screenshot_count: z.number().describe('Total screenshots embedded in the document.'),
-  screenshots_present: z.boolean().describe('True when at least one screenshot was embedded.'),
-  client_recording: taskrecorderClientRecordingSchema.nullish().describe('Client repro recording metadata, or null when none was supplied.'),
-  steps: z.array(taskrecorderDocStepSchema).describe('Per-step mapping summary (client step ↔ server .axtr action ↔ BPM security).'),
-  forms_enriched: z.array(taskrecorderDocFormSchema).describe('KB enrichment summary, one entry per distinct form/object.'),
-  roles_enriched: z.array(taskrecorderDocRoleSchema).describe('Security enrichment summary, one entry per distinct BPM role.'),
-  bpm_role_count: z.number().describe('Distinct role/duty/privilege grants found in the BPM package.'),
-  kb_available: z.boolean().describe('True when KB enrichment ran (KB_DB_PATH present).'),
-  sec_available: z.boolean().describe('True when Security enrichment ran (SEC_DB_PATH present).'),
-  output_path: z.string().nullish().describe('Absolute path the .mhtml was written to — open this file to view the document.'),
-  byte_size: z.number().describe('Size of the generated MHTML document in bytes.'),
-  document_mhtml: z.string().nullish().describe('The full MHTML text, present only when return_inline=true; otherwise null.'),
-  xml_output_path: z.string().nullish().describe('Absolute path the contract XML was written to (when include_xml=true), else null. Validates against schemas/task-recording-document.xsd.'),
-  document_xml: z.string().nullish().describe('The full contract XML text, present only when include_xml=true AND return_inline=true; otherwise null.'),
-  notes: z.array(z.string()).describe('Warnings/observations, e.g. "no screenshots embedded" or "KB database not available".'),
+  }),
+  step_count: z.number(),
+  screenshot_count: z.number(),
+  screenshots_present: z.boolean(),
+  client_recording: taskrecorderClientRecordingSchema.nullish().describe('Client repro recording metadata, when supplied.'),
+  steps: z.array(taskrecorderDocStepSchema).describe('Per-step client ↔ server ↔ BPM mapping.'),
+  forms_enriched: z.array(taskrecorderDocFormSchema),
+  roles_enriched: z.array(taskrecorderDocRoleSchema),
+  bpm_role_count: z.number().describe('Distinct grants in the BPM package.'),
+  kb_available: z.boolean(),
+  sec_available: z.boolean(),
+  output_path: z.string().nullish().describe('Path of the .mhtml — open this to view the document.'),
+  byte_size: z.number(),
+  document_mhtml: z.string().nullish().describe('Full MHTML, only with return_inline=true.'),
+  xml_output_path: z.string().nullish().describe('Contract XML path (include_xml=true); validates against schemas/task-recording-document.xsd.'),
+  document_xml: z.string().nullish().describe('Full XML, only with include_xml AND return_inline.'),
+  notes: z.array(z.string()).describe('Warnings, e.g. no screenshots, KB not available.'),
 });
 
 // ── Sealed-ISV tools (issues #75–#82) ────────────────────────────────────────
@@ -1602,10 +1605,10 @@ export const taskrecorderDocumentOutput = z.object({
 
 /** Provenance every sealed-ISV response repeats, so it is never implicit. */
 export const isvProvenanceSchema = z.object({
-  fidelity: z.string().describe("'metadata' = read from the artefacts the ISV shipped (.md/.xref/.runtime/.xml); 'il' = derived from assembly signatures."),
-  source_kind: z.string().describe("Always 'sealed' for these models: binary-only, no X++ source available."),
-  scanned_at: z.string().nullish().describe('ISO timestamp of the scan that produced these rows — may differ from the service snapshot date.'),
-  caveat: z.string().describe('One-line statement of what this data cannot tell you.'),
+  fidelity: z.string().describe("'metadata' (shipped artefacts) or 'il' (assembly signatures)."),
+  source_kind: z.string().describe("Always 'sealed': binary-only, no X++ source."),
+  scanned_at: z.string().nullish().describe('ISV scan timestamp; may differ from the snapshot date.'),
+  caveat: z.string().describe('What this data cannot tell you.'),
 });
 
 /**
@@ -1620,24 +1623,24 @@ export const isvProvenanceSchema = z.object({
  */
 export const isvIlProvenanceSchema = z.object({
   fidelity: z.literal('il'),
-  source_kind: z.string().describe("Always 'assembly-metadata': ECMA-335 metadata tables, not X++ source."),
+  source_kind: z.string().describe("Always 'assembly-metadata' (ECMA-335 tables, not X++)."),
   scanned_at: z.string().nullish(),
-  caveat: z.string().describe('States that signatures are exact and behaviour is unknown — no body was decompiled or stored.'),
+  caveat: z.string().describe('Signatures are exact; behaviour is unknown — no body was decompiled or stored.'),
 });
 
 export const d365IsvListModelsOutput = z.object({
-  isv_data_available: z.boolean().describe('False when this database was built before the ISV scan existed, or with no ISV root configured.'),
+  isv_data_available: z.boolean().describe('False when the database predates the ISV scan or no ISV root was configured.'),
   model_count: z.number(),
   models: z.array(z.object({
     model: z.string(),
-    publisher: z.string().nullish().describe("Publisher from the assembly version resource, or 'unknown' — sealed models ship no Descriptor, and CompanyName is commonly empty."),
+    publisher: z.string().nullish().describe("From the assembly version resource, or 'unknown'."),
     version: z.string().nullish(),
-    layer: z.string().nullish().describe('Always null for a sealed model: no Descriptor ships a layer.'),
+    layer: z.string().nullish().describe('Always null: sealed models ship no Descriptor.'),
     source_kind: z.string(),
     fidelity: z.string(),
-    depends_on: z.array(z.string()).describe('Declared module dependencies, from the ModuleReferences entry of the .xref package.'),
+    depends_on: z.array(z.string()).describe('Declared module dependencies (.xref ModuleReferences).'),
     scanned_at: z.string().nullish(),
-    counts: z.record(z.string(), z.number()).describe('What was recovered per artefact class: elements, labels, refs, coc, events.'),
+    counts: z.record(z.string(), z.number()).describe('Recovered per artefact class: elements, labels, refs, coc, events.'),
   })),
   provenance: isvProvenanceSchema,
 });
@@ -1650,26 +1653,29 @@ export const d365IsvListModelsOutput = z.object({
  * unknown and is not represented here because nothing in the pipeline can know
  * it — no body is decompiled, disassembled or stored.
  */
+// Output prose on the ISV schemas was 6.7 KB on every tools/list (W1, #105):
+// the caveats it carried are repeated in every RESPONSE by isvProvenance() /
+// isvIlProvenance(), which is where a caller reads them. Kept short here.
 export const isvIlSignatureSchema = z.object({
   module: z.string(),
-  assembly: z.string().nullish().describe('Image the signature was read from, e.g. Dynamics.AX.Lasernet.0.netmodule.'),
-  namespace: z.string().nullish().describe('CLR namespace. Load-bearing: a sealed model commonly declares one name as both a table (Dynamics.AX.Application) and the form of that name (Dynamics.AX.Application.Forms), which are different objects with different methods.'),
+  assembly: z.string().nullish().describe('Image the signature was read from.'),
+  namespace: z.string().nullish().describe('CLR namespace — a table and its form share a name in different namespaces.'),
   type_name: z.string(),
   method_name: z.string(),
-  kind: z.string().nullish().describe("method | constructor | accessor. Accessors (CLR get_/set_ property pairs for table fields and form data sources) are excluded from tool responses; they are a field-list question, not a signature question."),
-  return_type: z.string().nullish().describe('X++/CLR type name as encoded in the signature blob.'),
+  kind: z.string().nullish().describe('method | constructor | accessor (accessors are excluded from responses).'),
+  return_type: z.string().nullish(),
   parameters: z.array(z.object({
-    name: z.string().describe('Declared parameter name from the Param table; `argN` when the compiler emitted none.'),
+    name: z.string().describe('Declared name, or `argN` when the compiler emitted none.'),
     type: z.string(),
-    optional: z.boolean().optional().describe('True when X++ declared a default — recovered from the compiler-generated optional-parameter overload.'),
+    optional: z.boolean().optional().describe('True when X++ declared a default.'),
   })),
   visibility: z.string().nullish().describe('public | protected | private | internal | …'),
   is_static: z.boolean(),
   is_abstract: z.boolean(),
   is_virtual: z.boolean(),
-  is_final: z.boolean().describe('A final method cannot be overridden; relevant when planning an extension.'),
-  has_implementation: z.boolean().describe('Derived from MethodDef.RVA != 0 — the image carries an implementation. The body itself is never read.'),
-  attributes: z.array(z.string()).describe('Attribute type names only; attribute argument blobs are deliberately not decoded.'),
+  is_final: z.boolean(),
+  has_implementation: z.boolean().describe('MethodDef.RVA != 0; the body itself is never read.'),
+  attributes: z.array(z.string()).describe('Attribute type names only; arguments not decoded.'),
   fidelity: z.literal('il'),
 });
 
@@ -1682,37 +1688,37 @@ export const d365IsvLookupOutput = z.object({
     module: z.string(),
     element_type: z.string().describe('AOT type, e.g. AxTable, AxClass, AxForm.'),
     name: z.string(),
-    blob_size: z.number().nullish().describe('Byte length of the undecoded property blob — a rough "how much is defined here" signal.'),
+    blob_size: z.number().nullish().describe('Byte length of the undecoded property blob.'),
     properties: z.array(z.object({
-      property: z.string().nullish().describe('Resolved property name, or null when the tag is not yet pinned by a fixture.'),
-      tag: z.string().describe('Raw property tag; retained verbatim so an unknown tag is visible rather than dropped.'),
+      property: z.string().nullish().describe('Resolved name, or null when the tag is not yet pinned.'),
+      tag: z.string().describe('Raw property tag, kept verbatim.'),
       value: z.string().nullish(),
-    })).describe('Decoded properties, empty when this element type has no confirmed tag map yet.'),
+    })).describe('Decoded properties; empty when the type has no confirmed tag map.'),
   })),
-  signatures_available: z.boolean().describe('False when the IL signature pass (issue #81) was not run for this database, or include_signatures was not requested.'),
+  signatures_available: z.boolean().describe('False when the IL pass was not run or include_signatures not set.'),
   signature_count: z.number(),
-  signatures: z.array(isvIlSignatureSchema).describe("Method signatures on the matched types, present only when include_signatures is set. fidelity='il' — a weaker claim than the shipped metadata above and never to be rendered as equivalent."),
-  il_provenance: isvIlProvenanceSchema.nullish().describe('Provenance for the signatures block; null when no signatures were returned.'),
+  signatures: z.array(isvIlSignatureSchema).describe("Only with include_signatures. fidelity='il' — weaker than the shipped metadata."),
+  il_provenance: isvIlProvenanceSchema.nullish().describe('Provenance for `signatures`; null when none.'),
   il_command: z.object({
     available: z.boolean(),
-    note: z.string().describe('States that this database holds no IL, method body or source text, that the commands are the operator\'s own action on their own machine, and that use is subject to the vendor licence agreement.'),
+    note: z.string().describe('No IL, body or source is held; running the commands is the operator\'s own action under the vendor licence.'),
     targets: z.array(z.object({
       module: z.string(),
-      assembly: z.string().describe('The image that declares the type — commonly a .netmodule, which is where X++ classes live.'),
-      assembly_path: z.string().describe('Resolved from the scanned metadata root, so the command names the real file.'),
-      qualified_type: z.string().describe('Namespace-qualified type name, as the /item= and -t switches expect.'),
-      ildasm: z.string().describe('Windows SDK ildasm invocation. Emits IL assembly and reads a .netmodule directly. The filename must precede the options or ildasm reports MULTIPLE INPUT FILES SPECIFIED.'),
-      ilspycmd_install: z.string().describe('One-off dotnet global tool install, since ilspycmd is not part of the SDK.'),
-      ilspycmd: z.string().describe('ilspycmd invocation. Emits reconstructed C#, which is a translation rather than the shipped artefact.'),
-      ilspycmd_caveat: z.string().nullish().describe('Set when the declaring image is a .netmodule, which ILSpy commonly cannot load standalone.'),
+      assembly: z.string().describe('Image declaring the type (commonly a .netmodule).'),
+      assembly_path: z.string(),
+      qualified_type: z.string(),
+      ildasm: z.string().describe('Windows SDK ildasm invocation (filename before options).'),
+      ilspycmd_install: z.string().describe('One-off dotnet tool install.'),
+      ilspycmd: z.string().describe('ilspycmd invocation; emits reconstructed C#, a translation.'),
+      ilspycmd_caveat: z.string().nullish().describe('Set when the image is a .netmodule ILSpy cannot load standalone.'),
     })),
-  }).nullish().describe('Present only when include_il_command was explicitly set. Commands for the operator to run locally — never IL, never a method body, never source text.'),
+  }).nullish().describe('Only with include_il_command. Commands for the operator to run locally — never IL, a body or source.'),
   provenance: isvProvenanceSchema,
 });
 
 export const d365IsvExtensionPointsOutput = z.object({
   isv_data_available: z.boolean(),
-  target: z.string().nullish().describe('The standard object asked about, or null when listing a whole module.'),
+  target: z.string().nullish().describe('Standard object asked about; null when listing a module.'),
   module_filter: z.string().nullish(),
   coc_count: z.number(),
   event_count: z.number(),
@@ -1722,9 +1728,9 @@ export const d365IsvExtensionPointsOutput = z.object({
     extension_class: z.string(),
     target: z.string().nullish(),
     target_type: z.string().nullish(),
-    method: z.string().nullish().describe('Wrapped method; null when the ISV declares the extension class without a listed method.'),
+    method: z.string().nullish().describe('Wrapped method; null when none is listed.'),
     is_static: z.boolean(),
-    signature: isvIlSignatureSchema.nullish().describe("The wrapped method's signature, when include_signatures is set and the IL pass has run. This is what a CoC wrapper must match; fidelity='il'."),
+    signature: isvIlSignatureSchema.nullish().describe("Wrapped method's signature (include_signatures, IL pass run); fidelity='il'."),
   })),
   event_handlers: z.array(z.object({
     module: z.string(),
@@ -1732,7 +1738,7 @@ export const d365IsvExtensionPointsOutput = z.object({
     delegate_method: z.string().nullish(),
     handler_element: z.string().nullish(),
     handler_method: z.string().nullish(),
-    direction: z.string().nullish().describe('Pre / Post / other, from delegateTypeId.'),
+    direction: z.string().nullish().describe('Pre / Post / other.'),
   })),
   extends: z.array(z.object({
     module: z.string(),
@@ -1740,8 +1746,8 @@ export const d365IsvExtensionPointsOutput = z.object({
     child: z.string(),
     parent: z.string().nullish(),
   })),
-  signatures_available: z.boolean().describe('False when the IL signature pass (issue #81) was not run for this database, or include_signatures was not requested.'),
-  il_provenance: isvIlProvenanceSchema.nullish().describe('Provenance for any signature attached above; null when none was.'),
+  signatures_available: z.boolean().describe('False when the IL pass was not run or include_signatures not set.'),
+  il_provenance: isvIlProvenanceSchema.nullish().describe('Provenance for attached signatures; null when none.'),
   truncated: z.boolean(),
   provenance: isvProvenanceSchema,
 });
@@ -1756,7 +1762,7 @@ export const xrefIsvFindUsagesOutput = z.object({
   })).describe('Referencing sealed ISV models, most references first.'),
   usages: z.array(z.object({
     module: z.string(),
-    source_path: z.string().describe('Referencing element, e.g. /Classes/LACRunController/Methods/run.'),
+    source_path: z.string().describe('Referencing element path.'),
     target_path: z.string(),
     kind: z.string().nullish().describe('TypeReference | MethodCall | Attribute | ClassExtended | MethodOverride | Property.'),
     line: z.number().nullish(),

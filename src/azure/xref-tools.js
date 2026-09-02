@@ -184,16 +184,16 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch.',
+      description: 'Objects that reference a given D365FO object ("Used By" / "Find All References"). Set `include_isv` to add per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot — do that before changing or deprecating anything a third-party model may touch.',
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`.'),
         objects: z.array(z.string().min(1).max(500)).min(1).max(REFS_BATCH_MAX).optional()
           .describe(`Several objects in one call (max ${REFS_BATCH_MAX}); kind / limit / include_isv apply to each. Unresolvable names come back in \`not_found\`.`),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind. Default: All'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         include_isv: z.boolean().optional().default(false)
-          .describe('Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites.'),
+          .describe('Add a per-model count of references from sealed ISV models (`xref_isv_find_usages` for call sites).'),
         cursor: cursorParam,
         format: formatTextParam,
       },
@@ -359,7 +359,7 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Object name or full path'),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         cursor: cursorParam,
         format: formatTextParam,
       },
@@ -430,7 +430,7 @@ export function registerXrefTools(server, db) {
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
         method_name: z.string().min(1).max(500).describe('Method name (e.g. "construct", "run")'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindMethodCallersOutput.shape,
@@ -494,7 +494,7 @@ export function registerXrefTools(server, db) {
         class_name: z.string().min(1).max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
         direction: z.enum(['subclasses', 'parents']).default('subclasses')
           .describe('"subclasses" = who extends this (default), "parents" = what does this extend'),
-        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max entries to return (default 200, max 1000). Framework base classes have thousands of subclasses.'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max entries to return. Framework base classes have thousands of subclasses.'),
         format: formatTextParam,
       },
       outputSchema: xrefClassHierarchyOutput.shape,
@@ -577,7 +577,7 @@ export function registerXrefTools(server, db) {
       description: 'Find all classes that implement a given interface, including indirect implementors through inheritance.',
       inputSchema: {
         interface_name: z.string().min(1).max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
-        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max implementors to return (default 200, max 1000). Framework interfaces have thousands.'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max implementors to return. Framework interfaces have thousands.'),
         format: formatTextParam,
       },
       outputSchema: xrefInterfaceImplementorsOutput.shape,
@@ -643,13 +643,13 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see xref_list_modules for the scanned build versions).',
+      description: 'Search objects by name pattern in the cross-reference database when only part of the name is known. Scope with `modules` to specific models (see xref_list_modules).',
       inputSchema: {
         pattern: z.string().min(1).max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
           .default('All').describe('Filter by object type'),
         modules: modulesFilterParam,
-        limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
+        limit: z.number().int().min(1).max(500).default(50).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefSearchNamesOutput.shape,
@@ -718,7 +718,7 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Class or table name'),
         method_name: z.string().min(1).max(500).describe('Method name'),
         kind: z.enum(['All', 'Call', 'Read']).default('All').describe('Filter: All, Call (method invocations only), Read (type/field reads only)'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefMethodReferencesOutput.shape,
@@ -789,7 +789,7 @@ export function registerXrefTools(server, db) {
         module_name: z.string().min(1).max(500).describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views'])
           .default('All').describe('Filter by object type'),
-        limit: z.number().int().min(1).max(500).default(200).describe('Max results (default 200, max 500)'),
+        limit: z.number().int().min(1).max(500).default(200).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefModuleObjectsOutput.shape,
@@ -848,7 +848,7 @@ export function registerXrefTools(server, db) {
         module_name: z.string().min(1).max(500).describe('Module name'),
         direction: z.enum(['depends_on', 'depended_by']).default('depends_on')
           .describe('"depends_on" = modules this module references, "depended_by" = modules that reference this one'),
-        limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
+        limit: z.number().int().min(1).max(500).default(50).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefCrossModuleDepsOutput.shape,
@@ -913,7 +913,7 @@ export function registerXrefTools(server, db) {
       description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max rows (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max rows'),
         // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
         // .default('toon') here pinned TOON and defeated the adaptive default.
         format: formatTextParam,
@@ -967,7 +967,7 @@ export function registerXrefTools(server, db) {
       description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
-        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set.'),
+        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed. The by_kind / by_module counts always cover the full result set.'),
         format: formatTextParam,
       },
       outputSchema: xrefImpactAnalysisOutput.shape,
@@ -1040,12 +1040,12 @@ export function registerXrefTools(server, db) {
     'xref_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface.',
+      description: 'List XRef modules with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots). Filter with `origin` / `layer` / `publisher`.',
       inputSchema: {
         origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
         layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
         publisher: z.string().min(1).max(200).optional().describe('Only models whose publisher contains this text (case-insensitive)'),
-        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return (default 200, max 500)'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return'),
         format: formatTextParam,
       },
       outputSchema: xrefListModulesOutput.shape,
@@ -1139,7 +1139,7 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. This is the recommended first call before drilling into an object — pass `object_names` to summarise up to 10 objects in one call instead of one call each.",
+      description: 'Compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, module. The recommended first call before drilling in; `object_names` takes up to 10 objects.',
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name or path. Use this or `object_names`.'),
         object_names: z.array(z.string().min(1).max(500)).min(1).max(SUMMARY_BATCH_MAX).optional()
@@ -1257,7 +1257,7 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'DataEntityViews']).default('All')
           .describe('Object type to search for extensions. Default: All'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindExtensionsOutput.shape,
@@ -1350,7 +1350,7 @@ export function registerXrefTools(server, db) {
         field_name: z.string().min(1).max(500).describe('Field name (e.g. "AccountNum", "InvoiceId")'),
         kind: z.enum(['All', 'Read', 'Write']).default('All')
           .describe('Filter: All, Read (field value reads), Write (field assignments). Default: All'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindFieldUsagesOutput.shape,
@@ -1428,7 +1428,7 @@ export function registerXrefTools(server, db) {
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
         method_name: z.string().min(1).max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindEventHandlersOutput.shape,

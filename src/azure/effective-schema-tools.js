@@ -84,13 +84,13 @@ export function registerEffectiveSchemaTools(server, db) {
     'd365_effective_schema',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Merged view of a table as it exists in this system: base fields plus every field added by a table extension, each attributed to its model (origin base/extension, module, model_origin microsoft/isv/custom), with indexes and relations, and the sealed-ISV table extensions known by name. Replaces lookup_table + find_extensions + one lookup per extension model.',
+      description: 'Merged view of a table as it exists here: base fields plus every table-extension field, each attributed to its model (origin, module, model_origin microsoft/isv/custom), with indexes, relations and the sealed-ISV extensions known by name. Replaces lookup_table + find_extensions + one lookup per model.',
       inputSchema: {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive)'),
         include_isv: z.boolean().optional().default(true).describe('Include sealed-ISV table extensions (inventory only — no field list exists for them). Default true.'),
         modules: modulesFilterParam,
         field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT)
-          .describe(`Max fields to list (default ${FIELD_LIMIT_DEFAULT}); counts are always whole-table.`),
+          .describe(`Max fields to list; counts are always whole-table.`),
         format: formatTextParam,
       },
       outputSchema: d365EffectiveSchemaOutput.shape,

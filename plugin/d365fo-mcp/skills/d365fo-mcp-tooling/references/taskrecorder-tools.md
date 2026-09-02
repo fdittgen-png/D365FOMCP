@@ -8,12 +8,12 @@ Stateless converters for Task Recorder output: `.axtr` (server recording) to str
 
 | Tool | One-line purpose |
 |---|---|
-| `taskrecorder_to_markdown` | Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown description of the recorded test case. |
-| `taskrecorder_to_document` | Generate a formatted, self-contained MHTML web-archive ("Web Archive, single file") that fully documents a D365FO Task Recorder recording — the shareable delive |
+| `taskrecorder_to_markdown` | Parse a Task Recorder (.axtr) file into a structured Markdown test-case description: overview, forms, every step, data sources, security roles, navigation, scope tree. |
+| `taskrecorder_to_document` | Self-contained MHTML document of a Task Recorder recording — the shareable deliverable (vs taskrecorder_to_markdown). |
 
 ## `taskrecorder_to_markdown`
 
-Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown description of the recorded test case. USE THIS for a quick, in-context textual read of what a recording does (steps, forms, data entry, security roles). For a shareable, screenshot-rich deliverable also enriched with KB technical detail and role/user data, use taskrecorder_to_document instead. Provide EITHER file_url (preferred for file uploads/attachments) OR file_content (base64). The output includes: overview, forms visited, every recorded step (commands, data entry, validations, subtasks, navigation), data sources, security roles, navigation flow, and scope tree. Returns the full Markdown in BOTH the text channel and structuredContent.markdown — read either directly.
+Parse a Task Recorder (.axtr) file into a structured Markdown test-case description: overview, forms, every step, data sources, security roles, navigation, scope tree. Quick in-context read; for the screenshot-rich deliverable use taskrecorder_to_document. Provide file_url OR file_content (base64).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -23,21 +23,21 @@ Parse a D365FO Task Recorder (.axtr) file and return a structured Markdown descr
 
 ## `taskrecorder_to_document`
 
-Generate a formatted, self-contained MHTML web-archive ("Web Archive, single file") that fully documents a D365FO Task Recorder recording — the shareable deliverable, vs taskrecorder_to_markdown for a quick textual read. Provide the server recording via file_url OR file_content (.axtr), and the client recording via repro_url OR repro_content (reproReport XML from the D365FO Repro Recorder browser extension) so its screenshots are embedded inline next to each step and each client step is correlated to the matching server action. A legacy Word export (docx_url/docx_content) is still accepted when no repro recording is supplied; omit both and the document still renders from the .axtr alone. The document has five sections: (1) functional overview; (2) the recorded process — each step with its screenshot and the object security from the BPM package; (3) the BPM package security (role/duty/privilege grants); (4) KB technical detail — the used form, executed/related classes & methods, and OData endpoints; (5) role-based security from the Security DB — each role with its sub-roles, duties, privileges, and assigned users. Sections 4 and 5 require the KB_DB_PATH / SEC_DB_PATH databases; when a database is absent that section degrades to a "not available" note and the tool still succeeds. HOW TO READ THE RESULT: the text channel and structuredContent are a SUMMARY (overview + a step→action mapping table + notes), NOT the document itself. The document is written to output_path (open the .mhtml in a browser or Word). To also receive the raw MHTML text in-band, set return_inline=true (it then appears in structuredContent.document_mhtml). Privacy: assigned-user lists contain user id + name + enabled only — email addresses are never emitted.
+Self-contained MHTML document of a Task Recorder recording — the shareable deliverable (vs taskrecorder_to_markdown). Inputs: .axtr via file_url/file_content; client repro recording via repro_url/repro_content for inline screenshots; optional legacy .docx. The response is a SUMMARY — the document is written to output_path (return_inline=true embeds it).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `file_url` | string (min 1, max 2000) | no | URL to the .axtr recording file. |
 | `file_content` | string (min 1, max 20000000) | no | Base64-encoded .axtr recording contents. |
-| `repro_url` | string (min 1, max 2000) | no | URL to the client repro recording XML (reproReport, from the D365FO Repro Recorder browser extension) — the preferred screenshot/step source. |
-| `repro_content` | string (min 1, max 20000000) | no | Base64-encoded client repro recording XML (reproReport). |
-| `docx_url` | string (min 1, max 2000) | no | URL to the legacy Word (.docx) export containing screenshots (used only when no repro recording is supplied). |
-| `docx_content` | string (min 1, max 20000000) | no | Base64-encoded .docx contents (legacy; ignored when a repro recording is supplied). |
-| `file_name` | string (min 1, max 255) | default `"recording.axtr"` | Original .axtr filename (used in the footer). |
-| `output_path` | string (min 1, max 1000) | no | Absolute path to write the generated .mhtml file. If omitted, the document is written to the OS temp directory. |
-| `include_users` | boolean | default `true` | Include the users assigned to each role (no email addresses are ever emitted). |
-| `company` | string (min 1, max 20) | no | Restrict assigned-user lists to this company (legal entity) id. |
+| `repro_url` | string (min 1, max 2000) | no | URL to the client repro recording XML (reproReport) — preferred screenshot/step source. |
+| `repro_content` | string (min 1, max 20000000) | no | Base64-encoded repro recording XML. |
+| `docx_url` | string (min 1, max 2000) | no | URL to the legacy Word export with screenshots (used only without a repro recording). |
+| `docx_content` | string (min 1, max 20000000) | no | Base64-encoded .docx (legacy). |
+| `file_name` | string (min 1, max 255) | default `"recording.axtr"` | Original .axtr filename (footer). |
+| `output_path` | string (min 1, max 1000) | no | Absolute path for the .mhtml; default: OS temp directory. |
+| `include_users` | boolean | default `true` | List the users assigned to each role (never e-mail addresses). |
+| `company` | string (min 1, max 20) | no | Restrict assigned-user lists to this legal entity. |
 | `max_users_per_role` | integer (≤1000) | default `50` | Cap on users listed per role. |
-| `return_inline` | boolean | default `false` | Also return the full MHTML document text inside structuredContent.document_mhtml (and the XML in document_xml when include_xml is set). |
-| `include_xml` | boolean | default `false` | Also emit a machine-consumable contract XML (writes a sibling .xml next to output_path; validates against schemas/task-recording-document.xsd). |
+| `return_inline` | boolean | default `false` | Also return the full MHTML in structuredContent.document_mhtml (and the XML in document_xml). |
+| `include_xml` | boolean | default `false` | Also write a contract XML beside output_path (schemas/task-recording-document.xsd). |
 

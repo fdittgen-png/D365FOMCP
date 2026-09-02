@@ -144,9 +144,9 @@ export function registerKbTools(server, db) {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'),
         fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field.'),
         custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
-        field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT).describe(`Max fields to list (default ${FIELD_LIMIT_DEFAULT}); field_count is always the whole table.`),
+        field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT).describe(`Max fields to list; field_count is always the whole table.`),
         include_provenance: z.boolean().optional().default(false).describe('Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension.'),
-        include_custom_fields: z.boolean().optional().default(false).describe('Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call.'),
+        include_custom_fields: z.boolean().optional().default(false).describe('Also read UI custom fields (`_Custom` suffix) LIVE from the configured environment into a separate ui_custom_fields block. Off by default: makes a network call.'),
         environment: z.string().min(1).max(100).optional().describe('Environment key for include_custom_fields. Defaults to the source marked default.'),
         format: formatTextParam,
       },
@@ -505,14 +505,14 @@ export function registerKbTools(server, db) {
     'd365_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release". Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see d365_list_modules for the scanned build versions).',
+      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities) for discovery, e.g. "tables related to inventory". Scope with `modules` to specific models (see d365_list_modules).',
       inputSchema: {
       query: z.string().min(1).max(1000).optional().describe('Search query (keywords). Use this or `queries`.'),
       queries: z.array(z.string().min(1).max(1000)).min(1).max(SEARCH_BATCH_MAX).optional()
         .describe(`Run several searches in one call (max ${SEARCH_BATCH_MAX}); object_type / modules / limit apply to each.`),
       object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
       modules: modulesFilterParam,
-      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20)'),
+      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
       cursor: cursorParam,
       format: formatTextParam,
     },
@@ -694,11 +694,11 @@ export function registerKbTools(server, db) {
     'd365_get_enum',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++. Pass `enum_names` to resolve up to 10 enums in one call instead of one call each.',
+      description: 'All values of a D365FO enum with their numeric values — essential for correct SQL and X++. `enum_names` resolves up to 10 enums in one call.',
       inputSchema: {
         enum_name: z.string().min(1).max(500).optional().describe('Enum name (e.g. StatusIssue, InventTransType). Use this or `enum_names`.'),
         enum_names: z.array(z.string().min(1).max(500)).min(1).max(ENUM_BATCH_MAX).optional()
-          .describe(`Resolve several enums in one call (max ${ENUM_BATCH_MAX}). Prefer this over repeated single calls — the response envelope is paid once. Names that do not exist come back in \`not_found\` rather than failing the call.`),
+          .describe(`Several enums in one call (max ${ENUM_BATCH_MAX}); unknown names come back in \`not_found\`.`),
         format: formatTextParam,
       },
       outputSchema: d365GetEnumOutput.shape,
@@ -819,7 +819,7 @@ export function registerKbTools(server, db) {
     'd365_check_field_exists',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names. Pass `tables` to check several tables in one call instead of one call each — the usual case when validating a multi-table join.',
+      description: 'Verify that fields exist on a D365FO table; suggests corrections for wrong names. Use BEFORE generating SQL. Pass `tables` to check several tables in one call (the usual case for a multi-table join).',
       inputSchema: {
         table_name: z.string().min(1).max(500).optional().describe('Table name. Use this with `field_names`, or use `tables`.'),
         field_names: z.array(z.string().min(1).max(500)).optional().describe('Array of field names to check on `table_name`.'),
@@ -827,7 +827,7 @@ export function registerKbTools(server, db) {
           table_name: z.string().min(1).max(500),
           field_names: z.array(z.string().min(1).max(500)).min(1),
         })).min(1).max(FIELD_CHECK_BATCH_MAX).optional()
-          .describe(`Check several tables in one call (max ${FIELD_CHECK_BATCH_MAX}). A table that does not exist comes back with found=false rather than failing the whole call.`),
+          .describe(`Several tables in one call (max ${FIELD_CHECK_BATCH_MAX}); a missing table comes back with found=false.`),
         format: formatTextParam,
       },
       outputSchema: d365CheckFieldExistsOutput.shape,
@@ -1067,12 +1067,12 @@ export function registerKbTools(server, db) {
     'd365_get_class_methods',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get method signatures for a D365FO class, table, or data entity. TIER 1 of the two-tier code path: by default this returns signatures plus each body\'s line count (`source_lines`) and NO source. Read the signatures, then pull only the bodies you actually need with `d365_get_method_source` (which takes several method names in one call). `include_source: true` is TIER 2 for a whole class and is roughly 6x this response - measured 12,309 vs 1,939 tokens on BankStatementImportBatch, 123,427 vs 21,023 on InventMovement - so use it on at most one class per investigation.',
+      description: 'Method signatures of a class, table or data entity — TIER 1: signatures plus each body\'s line count (`source_lines`), no source. Then pull only the bodies you need with `d365_get_method_source`. `include_source: true` is ~6x this response; use it on at most one class per investigation.',
       inputSchema: {
         name: z.string().min(1).max(500).describe('Class, table, or data entity name'),
         filter: z.string().min(1).max(500).optional().describe('Optional filter on method name (LIKE pattern). Cheapest way to narrow a wide class.'),
-        include_source: z.boolean().optional().default(false).describe('Return the full X++ body of EVERY method. Default false. ~6x the signature listing; prefer d365_get_method_source for specific methods.'),
-        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results (default 100)'),
+        include_source: z.boolean().optional().default(false).describe('Full X++ body of EVERY method (~6x the signature listing); prefer d365_get_method_source for specific methods.'),
+        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results'),
         cursor: cursorParam,
         format: formatTextParam,
       },
@@ -1210,12 +1210,12 @@ export function registerKbTools(server, db) {
     'd365_get_method_source',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get the full X++ source code for specific methods on a class, table, or data entity. TIER 2 of the two-tier code path: list signatures with `d365_get_class_methods` first (it reports each body\'s `source_lines`), then pull only the bodies you need here. THE RULE, from measurement: **one method -> `method_name`; two or more -> `method_names`.** A batch of 4 is smaller than 4 single calls (1,070 vs 1,092 tokens) AND costs one turn instead of four; at 10 methods it is 2,756 vs 2,855 tokens and 1 turn instead of 10. Only at n=1 does the single form win (140 vs 157 tokens, no round trip to save).',
+      description: 'Full X++ source of specific methods on a class, table or data entity — TIER 2 after `d365_get_class_methods`. One method -> `method_name`; two or more -> `method_names` (a batch of 4 is smaller than 4 single calls and costs one turn instead of four).',
       inputSchema: {
       owner_name: z.string().min(1).max(500).describe('Class, table, or data entity name'),
-      method_name: z.string().min(1).max(500).optional().describe('Method name. Use this for EXACTLY ONE method; for two or more use `method_names`, which is cheaper on both tokens and turns.'),
+      method_name: z.string().min(1).max(500).optional().describe('Method name — for exactly one method; otherwise use `method_names`.'),
       method_names: z.array(z.string().min(1).max(500)).min(1).max(METHOD_SOURCE_BATCH_MAX).optional()
-        .describe(`Fetch several methods on the same owner in one call (max ${METHOD_SOURCE_BATCH_MAX}). USE THIS whenever you want two or more bodies - it is smaller than the equivalent single calls (the owner is carried once, not per method) and costs one turn instead of N. Names that do not exist come back in \`not_found\` rather than failing the call.`),
+        .describe(`Several methods on the same owner in one call (max ${METHOD_SOURCE_BATCH_MAX}) — cheaper than single calls (owner carried once); unknown names come back in \`not_found\`.`),
       format: formatTextParam,
     },
       outputSchema: d365GetMethodSourceOutput.shape,
@@ -1343,7 +1343,7 @@ export function registerKbTools(server, db) {
       description: 'Find all tables that have foreign key relationships TO a given table. Useful for impact analysis.',
       inputSchema: {
         table_name: z.string().min(1).max(500).describe('Target table name'),
-        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max referencing relations to return (default 200, max 1000)'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max referencing relations to return'),
         format: formatTextParam,
       },
       outputSchema: d365FindReferencingTablesOutput.shape,
@@ -1426,8 +1426,8 @@ export function registerKbTools(server, db) {
       description: 'Get a summary of a D365FO module/package: object counts and key tables/classes.',
       inputSchema: {
       module_name: z.string().min(1).max(500).describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)'),
-      table_limit: z.number().int().min(1).max(200).default(20).describe('Max Key Tables rows (default 20, max 200)'),
-      class_limit: z.number().int().min(1).max(200).default(15).describe('Max Key Classes rows (default 15, max 200)'),
+      table_limit: z.number().int().min(1).max(200).default(20).describe('Max Key Tables rows'),
+      class_limit: z.number().int().min(1).max(200).default(15).describe('Max Key Classes rows'),
       format: formatTextParam,
     },
       outputSchema: d365GetModuleSummaryOutput.shape,
@@ -1549,15 +1549,15 @@ export function registerKbTools(server, db) {
     'd365_get_entity_sources',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get the data source chain and fields of a D365FO data entity. Resolves the AOT name (EcoResReleasedProductV2Entity), the OData public name (ReleasedProductV2) and the OData collection (ReleasedProductsV2) alike. Every field carries its owning model, so `custom_only: true` returns just the customisation surface; `fields_like`, `computed_only` and `limit` narrow a wide entity further. Method signatures are OMITTED by default - `method_count` is always returned, pass `include_methods: true` when the entity code path matters.',
+      description: 'Data source chain and fields of a data entity, by AOT name, OData public name or collection name. Every field carries its model: `custom_only` returns the customisation surface; `fields_like` / `computed_only` / `limit` narrow it. Methods omitted unless `include_methods: true` (`method_count` always present).',
       inputSchema: {
         entity_name: z.string().min(1).max(500).describe('Data entity name: AOT name, OData public name, or OData collection name'),
         include_methods: z.boolean().optional().default(false).describe('Include entity method signatures (postLoad, validate*, OData actions). Default false - method_count is always returned.'),
         fields_like: z.string().min(1).max(200).optional().describe('Only fields whose name contains this text (case-insensitive)'),
         custom_only: z.boolean().optional().default(false).describe('Only fields added by a non-Microsoft model or by a table extension - the customisation surface'),
         computed_only: z.boolean().optional().default(false).describe('Only computed/virtual fields (no backing data field)'),
-        include_provenance: z.boolean().optional().default(false).describe('Emit source_module/is_extension on EVERY field. Default false - the pair is emitted only for extension fields, where it carries information; on a standard Microsoft field it repeats the entity\'s own module and cost ~27% of this response.'),
-        limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return (default 500, max 1000)'),
+        include_provenance: z.boolean().optional().default(false).describe('Emit source_module/is_extension on EVERY field (default: only on extension fields — on standard fields it repeats the entity\'s module, ~27% of the response).'),
+        limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return'),
         cursor: cursorParam,
         format: formatTextParam,
       },
@@ -1907,7 +1907,7 @@ export function registerKbTools(server, db) {
     'd365_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Schema (real table names - there is no kb_ prefix except kb_search/kb_metadata): tables(table_name, module_id, table_group, field_count, is_customized, ...), fields(table_name, field_name, field_type, edt, enum_type, mandatory, label, source_module, is_extension), enums(enum_name, ...) + enum_values(enum_name, value_name, value), classes(class_name, module_id, ...), methods(owner_type, owner_name, method_name, signature, source_code, is_static), relations(source_table, related_table, relation_name, constraints_json, relationship_type), data_entities(entity_name, public_name, public_collection, primary_table, ...), entity_fields(entity_name, field_name, data_field, data_source), modules(module_id, table_count, ...), model_versions(model_name, module_id, publisher, layer, origin, version), labels(label_id, text), kb_search(object_type, object_name, content). Query sqlite_master for the authoritative list if in doubt.',
+      description: 'Raw READ-ONLY SQL against the KB (500-row cap), for what no other tool covers. Tables: tables, fields, enums, enum_values, classes, methods, relations, data_entities, entity_fields, modules, model_versions, labels, kb_search (no kb_ prefix otherwise). Columns: PRAGMA table_info(<table>) or d365_sql_template.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query to execute'),
         // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
@@ -2109,13 +2109,13 @@ export function registerKbTools(server, db) {
     'd365_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the knowledge base. Filter with `origin` / `layer` / `publisher` to see only the customisation surface - `origin: "custom"` returns a handful of models instead of ~170 - and set `include_counts: false` for a bare model list.',
+      description: 'List modules/packages with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher) — the Level-0 directory of the KB. `origin: "custom"` returns a handful of models instead of ~170; `include_counts: false` for a bare list.',
       inputSchema: {
         origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
         layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
         publisher: z.string().min(1).max(200).optional().describe('Only models whose publisher contains this text (case-insensitive)'),
         include_counts: z.boolean().optional().default(true).describe('Include table/class/enum/entity/form counts. Set false for a bare model list.'),
-        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return (default 200, max 500)'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return'),
         format: formatTextParam,
       },
       outputSchema: d365ListModulesOutput.shape,

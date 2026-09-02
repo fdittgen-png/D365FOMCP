@@ -252,15 +252,9 @@ export function registerCustomFieldTools(server, db) {
     {
       annotations: READ_ONLY_LIVE_ANNOTATIONS,
       description:
-        'List D365FO UI custom fields (the `_Custom` suffix) read LIVE from a configured environment. ' +
-        'These are created in System administration > Setup > Custom fields, stored in a runtime table extension, ' +
-        'and therefore exist in NO build snapshot — d365_lookup_table and d365_check_field_exists cannot see them ' +
-        'from metadata alone. Filter by table_name (attribution derived via the entity model), entity_name (observed ' +
-        'directly), or field_name. Call with no filter to list the configured environments and cache state. ' +
-        'Each row carries the OData/EDM type (Edm.String, Edm.Int32, Edm.Decimal, Edm.DateTimeOffset, or a ' +
-        'namespaced enum for a checkbox), MaxLength and nullability — NOT the D365 EDT name. A picklist custom ' +
-        'field is indistinguishable from Text here (Edm.String) and its allowed values are not in $metadata: do ' +
-        'not claim to know them from this tool.',
+        'UI custom fields (`_Custom` suffix) read LIVE from a configured environment — created in System administration > ' +
+        'Setup > Custom fields, they exist in NO build snapshot. Filter by table_name (derived), entity_name (observed) or ' +
+        'field_name; no filter lists the environments. Types are OData/EDM, not EDTs; a picklist looks like Text.',
       inputSchema: {
         table_name: z.string().min(1).max(500).optional()
           .describe('Only custom fields attributable to this table. Attribution is derived from the entity model — see `attribution` on each row.'),

@@ -164,7 +164,7 @@ export function registerSemanticTools(server, semDb, kbDb = null) {
 
   // ── d365_map_entity (WRITE) ────────────────────────────────────────────────
   server.registerTool('d365_map_entity', {
-    description: 'Record that technical objects ARE a functional entity in this installation (e.g. sales_order = SalesTable header, SalesLine line). Upsert; repeat confirmations raise confidence. Set confirmed_by_user only after the user agreed in conversation. Metadata only — no data, no conversation text.',
+    description: 'Record that technical objects ARE a functional entity here (e.g. sales_order = SalesTable header, SalesLine line). Upsert; repeat confirmations raise confidence. confirmed_by_user only after the user agreed. Metadata only.',
     inputSchema: {
       entity_id: z.string().min(1).max(64).describe('Vocabulary id, e.g. sales_order, customer (see d365_entity_map).'),
       objects: z.array(z.object({
@@ -235,13 +235,13 @@ export function registerSemanticTools(server, semDb, kbDb = null) {
 
   // ── d365_map_dq_rule (WRITE) ───────────────────────────────────────────────
   server.registerTool('d365_map_dq_rule', {
-    description: 'Record a declarative data-quality rule on an entity, object or field: one dimension, a dialect-free spec, a severity. Upsert on (object, field, dimension, spec); enabled:false adds a version, never deletes. The rule is stored and served — never executed here.',
+    description: 'Record a declarative data-quality rule on an entity, object or field: one dimension, a dialect-free spec, a severity. Upsert on (object, field, dimension, spec); enabled:false adds a version. Stored and served, never executed here.',
     inputSchema: {
       entity_id: z.string().min(1).max(64).optional().describe('Vocabulary id the rule belongs to (links it across ERPs).'),
       object_name: z.string().min(1).max(200).optional().describe('Technical object (table/entity) the rule checks.'),
       field_name: z.string().min(1).max(200).optional(),
       dimension: z.enum(DQ_DIMENSIONS),
-      spec: z.record(z.string(), z.unknown()).describe('Per-dimension shape, e.g. {type:"length",max:20} · {type:"not_null"} · {type:"enum",enum:"SalesStatus"} · {type:"unique",fields:[…]} · {type:"fk",to:"CustTable.AccountNum"} · {type:"cross_field",expr:"…"} · {type:"age",field,max_days} · {type:"target",entity,checks:[…]}. No sample values.'),
+      spec: z.record(z.string(), z.unknown()).describe('Per-dimension spec, e.g. {type:"length",max:20} or {type:"fk",to:"CustTable.AccountNum"}; shapes in docs/Semantic-Layer.md. No sample values.'),
       severity: z.enum(DQ_SEVERITIES).default('warning'),
       confirmed_by_user: z.boolean().default(false),
       enabled: z.boolean().default(true).describe('false = disable (new version).'),
@@ -304,7 +304,7 @@ export function registerSemanticTools(server, semDb, kbDb = null) {
 
   // ── d365_entity_map (READ) ─────────────────────────────────────────────────
   server.registerTool('d365_entity_map', {
-    description: 'What a functional entity IS technically in this installation (entity_id → objects by role), or which entities a technical object belongs to (object_name → entities). Accumulated from confirmed sessions; check before re-deriving "what belongs to Sales".',
+    description: 'What a functional entity IS technically here (entity_id → objects by role), or which entities an object belongs to (object_name → entities). Check before re-deriving "what belongs to Sales".',
     inputSchema: {
       entity_id: z.string().min(1).max(64).optional().describe('Forward: vocabulary id, e.g. sales_order.'),
       object_name: z.string().min(1).max(200).optional().describe('Reverse: technical object, e.g. SalesTable.'),
@@ -389,7 +389,7 @@ export function registerSemanticTools(server, semDb, kbDb = null) {
 
   // ── d365_dq_rules (READ) ───────────────────────────────────────────────────
   server.registerTool('d365_dq_rules', {
-    description: 'Applicable data-quality rules for an object and/or entity: rules bound to the object directly plus rules linked to the entities it is mapped to, with source/confidence provenance. This is the INPUT to build/gen-dq-sql.js — the MCP never runs a rule.',
+    description: 'Applicable data-quality rules for an object and/or entity — bound directly or via mapped entities, with source/confidence. INPUT to build/gen-dq-sql.js; the MCP never runs a rule.',
     inputSchema: {
       entity_id: z.string().min(1).max(64).optional(),
       object_name: z.string().min(1).max(200).optional(),

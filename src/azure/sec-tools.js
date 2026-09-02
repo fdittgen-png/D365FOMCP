@@ -124,7 +124,7 @@ export function registerSecTools(server, db) {
   const FIND_CAP_DEFAULT = 100;   // find_roles_by_*: one list, the whole answer
   const LIST_CAP_MAX = 2000;
   const listLimitParam = (dflt) => z.number().int().min(1).max(LIST_CAP_MAX).optional().default(dflt)
-    .describe(`Max rows per list (default ${dflt})`);
+    .describe(`Max rows per list`);
   const clampListLimit = (limit, dflt) =>
     (Number.isInteger(limit) && limit > 0 ? Math.min(limit, LIST_CAP_MAX) : dflt);
   // 'user' when the caller set the limit, 'cap' when the default cut the list.
@@ -265,7 +265,7 @@ export function registerSecTools(server, db) {
         include_entity_permissions: z.boolean().optional().default(false)
           .describe('true: complete lists (can exceed 400 KB on wide roles)'),
         entity_permission_limit: z.number().int().min(1).max(ROLE_ENTITY_PERMISSION_MAX).optional().default(ROLE_SUMMARY_CAP)
-          .describe(`Max entity permissions in the summary view (default ${ROLE_SUMMARY_CAP})`),
+          .describe(`Max entity permissions in the summary view`),
         format: formatTextParam,
       },
       outputSchema: secLookupRoleOutput.shape,
@@ -703,7 +703,7 @@ export function registerSecTools(server, db) {
       inputSchema: {
       role_name: z.string().min(1).max(500).describe('Role name'),
       direction: z.enum(['children', 'parents']).default('children').describe('Traverse direction'),
-      limit: z.number().int().min(1).max(1000).optional().default(100).describe('Max related roles (default 100)'),
+      limit: z.number().int().min(1).max(1000).optional().default(100).describe('Max related roles'),
       format: formatTextParam,
     },
       outputSchema: secRoleHierarchyOutput.shape,
@@ -1227,7 +1227,7 @@ export function registerSecTools(server, db) {
       role1: z.string().min(1).max(500).describe('First role name'),
       role2: z.string().min(1).max(500).describe('Second role name'),
       list_limit: z.number().int().min(1).max(2000).optional().default(50)
-        .describe('Max names per list (default 50); counts stay exact'),
+        .describe('Max names per list; counts stay exact'),
       format: formatTextParam,
     },
       outputSchema: secCompareRolesOutput.shape,
@@ -1321,7 +1321,7 @@ export function registerSecTools(server, db) {
     'sec_effective_permissions',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Compute the NET effective permissions for a user or role, resolving sub-roles and applying Deny-over-Grant (Deny wins). Returns one row per object with the effective verdict on all six access levels (Read/Create/Update/Delete/Correct/Invoke) and a status: granted (control enabled) · partial (some ops denied → control likely greyed) · denied (blocked). An object ABSENT from the result means no grant at all (control hidden). Consumes duty chains, direct privileges and direct entity permissions. Use to answer "can this user actually use this button, and if not why?".',
+      description: 'NET effective permissions for a user or role: sub-roles resolved, Deny-over-Grant applied. One row per object with the verdict on Read/Create/Update/Delete/Correct/Invoke and a status: granted · partial (control likely greyed) · denied. An object absent from the result has no grant at all (hidden).',
       inputSchema: {
         user_id: z.string().min(1).max(500).optional().describe('User ID (provide this OR role_name)'),
         role_name: z.string().min(1).max(500).optional().describe('Role name (provide this OR user_id)'),
@@ -1578,7 +1578,7 @@ export function registerSecTools(server, db) {
     'sec_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across roles, duties, privileges, and users. Scope with `modules` to search only security objects from specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see sec_stats for the scanned build versions). Note: users carry no module and are excluded when the filter is set.',
+      description: 'Full-text search across roles, duties, privileges and users. Scope with `modules` to specific models (see sec_stats); users carry no module and are excluded when the filter is set.',
       inputSchema: {
       query: z.string().min(1).max(500).describe('Search keywords'),
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
@@ -1794,7 +1794,7 @@ export function registerSecTools(server, db) {
     'sec_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke).',
+      description: 'Raw READ-ONLY SQL against the security database (500-row cap). Tables: roles, duties, privileges, role_duties, role_direct_privileges, duty_privileges, privilege_entry_points, users, user_roles, user_role_companies, role_subroles, role_direct_entity_permissions. Columns: PRAGMA table_info(<table>).',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query'),
         // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
@@ -2081,7 +2081,7 @@ export function registerSecTools(server, db) {
     'sec_object_access',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Reverse permission chain: given an object name (menu item, form, table), find every privilege, duty, role and user whose access touches it — including Deny paths (⛔, which REMOVE access and override grants) and direct entity permissions. Surfaces all six access levels (Read/Create/Update/Delete/Correct/Invoke; Invoke governs action buttons). Use to answer "who can — or is blocked from — this object/button?".',
+      description: 'Reverse permission chain for an object (menu item, form, table): every privilege, duty, role and user whose access touches it, including Deny paths (⛔ — they REMOVE access) and direct entity permissions, on all six access levels (Invoke governs action buttons).',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name to trace (e.g., VendInvoiceJournal, CustTable)'),
         limit: z.number().int().min(1).max(500).optional().default(200).describe('Max access paths to return'),
