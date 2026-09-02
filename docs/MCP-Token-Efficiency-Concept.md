@@ -1,6 +1,6 @@
 # MCP Services — Token Efficiency and Best-Practice Improvement Concept
 
-_Status: proposal · 2026-09-02 · measured on the local KB (1.28 GB), XRef (3.70 GB) and Sec (181 MB) snapshots; token figures are bytes ÷ 4 unless a source is named._
+_Status: **implemented 2026-09-02** on branch `feat/token-efficiency-w0-w7` (see §10 for the measured end state and what stays open) · measurements on the local KB (1.28 GB), XRef (3.70 GB) and Sec (181 MB) snapshots; token figures are bytes ÷ 4 unless a source is named._
 
 ## 0. What this document is
 
@@ -295,6 +295,49 @@ Phases 1–2 are pure tuning and can ship behind the existing tests within a spr
 2. **W3.1 — `sec_lookup_role` default:** confirm summary-by-default (N=50) is acceptable to the Sec-tool consumers before the default changes.
 3. **W5 — resources:** approve the connector/Claude-Code resource-support spike before any catalogue moves.
 4. **W7 — semantic layer:** approve the first write path in the platform (`d365_map_entity`) and name the owner of the ERP-neutral vocabulary.
+
+## 10. Implementation status (2026-09-02, branch `feat/token-efficiency-w0-w7`)
+
+Everything below is measured by the tests that now gate it: `test/tool-schema-budget.test.js` (captures the real `tools/list` message off an in-memory transport — byte-identical to the stdio servers) and `test/response-size-golden.test.js` (ten default-arg calls on a wide synthetic fixture, both channels, every response validated against its `outputSchema`).
+
+### Fixed cost — `tools/list`
+
+| Stage | Tools | Bytes | ~tk | Note |
+|---|---:|---:|---:|---|
+| Documented before (three-set test sum) | 51 | 114,932 | 28.7k | wrong baseline |
+| W0 measured, four servers as registered | 58 | 155,789 | 38.9k | +38% over the documented figure |
+| After W3/#83/#85/#109 (new tools + params) + titles | 58 | 172,000 | 43.0k | deliberate raises, each recorded |
+| + W7 semantic layer (4 tools) | 62 | 184,786 | 46.2k | |
+| **After W1** | **63** | **155,766** | **38.9k** | −15.3% vs. pre-W1; back to the W0 figure with 5 more tools |
+| `core` profile, per request | 25 | 71,109 | 17.8k | **−54%**, now covers every tool set |
+
+W1 levers as shipped: `.nullable()`→`.nullish()`/`.optional()` −5,904 B · `$schema` stripped on the wire −6,552 B · descriptions ≤300 chars + input `.describe()` dedupe −9,039 B · ISV + Task Recorder output prose −6,549 B. **Two corrections to §2:** output `.describe()` prose *was* a lever for the ISV and Task Recorder schemas (9.4 KB) — the "dead end" holds for KB/XRef/Sec core tools only; and `$ref` sharing via Zod `.meta({id})` (−3,244 B) **cannot ship**: Zod copies `id` into each definition and the SDK client's AJV validator rejects the keyword, failing every `callTool`. Reverted; the budget test now compiles both registration paths with the SDK's own validator so it cannot recur.
+
+### Variable cost — golden fixture, default args, `structuredContent` bytes
+
+| Call | Before | After | |
+|---|---:|---:|---|
+| `sec_lookup_role` | 326,597 | **12,942** | −96% (summary by default, `include_entity_permissions` opt-in) |
+| `sec_stats` | 26,053 | **496** | −98% (`model_count` + origin breakdown, `include_model_versions` opt-in) |
+| `d365_lookup_table` | 57,621 | **32,055** | −44% (`field_limit` 200, provenance per response) |
+| paginated tools | — | +0.2–1.3% | `has_more`/`next_cursor` on 8 list tools |
+| ten calls total | 180 KB | 129 KB | |
+
+### Shipped per workstream
+
+| | Shipped | Open |
+|---|---|---|
+| W0 #104 | budget test over `tool-sets.js` (single source of registration), golden test, wire facts, CLAUDE.md corrected | — |
+| W1 #105 | see above | `$ref` needs an SDK `reused` option or a client that accepts `id`; `minLength`/`maxLength` guards (4.6 KB) are the #42 validation and stay |
+| W2 #106 | per-request `?profile=` / `X-MCP-Tool-Profile` / env, applied to every tool set via `withRegistrationPolicy`; a profile that would empty a server falls back to `full` | tune `CORE_TOOLS` from logged usage |
+| W3 #107 | items 1–6 incl. the no-limit audit; three batch tools (#83) — `sec_lookup_role role_names[]` is a marginal trade (+0.5% JSON, +2.3 KB schema), recorded | Sec consumers to confirm N=50 (decision 2) |
+| W4 #108 | `MCP_TEXT_CHANNEL` / `?text=summary` / header mechanism via `AsyncLocalStorage`; `summary` = H2 + one line; default **`full`**; empty `clientInfo` policy table | **the client measurement** — then populate the table or flip the default |
+| W5 #109 | A: cursor pagination on 8 tools, rule #15; B: `d365://snapshot`, `d365://modules` resources + `title` on every tool (+1.4 KB) | resource-support spike in claude.ai / Claude Code; `d365://sql-templates` (query is inline in kb-tools.js) |
+| W6 #110 | raw_sql `formatTextParam` fix + static scan; freshness banner (#86 base) wired centrally after the H2, `_meta.kind` on meta-responses; checkJs tooling (#103, 215-error baseline); evals + runner | #86 per-model `indexed_at` / partial-build caveat; #103 ratchet to zero |
+| W7 #111 | vocabulary v1 (60 entities), `d365fo_semantic.sqlite` store with privacy guards, `d365_map_entity`/`d365_map_dq_rule` (write) + `d365_entity_map`/`d365_dq_rules` (read), KB-derived seed (676 rules on 3 tables, 6 dimensions), two-dialect generator, export, docs | `functional_context` implicit hint on read tools; `CORE_TOOLS` membership; Azure `SEMANTIC_DB_PATH` app setting |
+| #85 | `d365_effective_schema` (+5.7 KB schema) | field groups (no KB table) |
+
+Out of scope on purpose: #84 Labels v2 (KB schema migration + full rebuild).
 
 ## 9. Related
 
