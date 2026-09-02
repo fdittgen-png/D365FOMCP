@@ -87,43 +87,35 @@ const SRC_ROOT = join(__dirname, '..', 'src');
 const emptyDb = () => new Database(':memory:');
 
 /**
- * Per-server ceilings, ≤2% above the 2026-09-02 measurement (kb 69,113 ·
- * xref 36,596 · sec 36,837 · taskrecorder 13,243 B; total 155,789 B ≈ 38,947 tk)
- * PLUS exactly the measured cost of `title` on every tool (W5.B, #109):
- * kb +529 · xref +443 · sec +439 · taskrecorder +44 = **+1,455 B** (~364 tk),
- * measured 2026-09-02 → kb 69,642 · xref 37,039 · sec 37,276 · taskrecorder
- * 13,287; total 157,244 B ≈ 39,311 tk. A deliberate cost: a display name on
- * every tool for ~0.9% of the list.
+ * Per-server ceilings, ≤2% above the measurement. Re-baselined DOWN on
+ * 2026-09-02 after W1 (#105): kb 74,354 · xref 35,047 · sec 38,234 ·
+ * taskrecorder 8,131 B; total 155,766 B ≈ 38,942 tk (from 183,810 B before W1,
+ * −15.3%: nullable→nullish/optional −5,904 · `$schema` strip −6,552 ·
+ * descriptions + input prose −9,039 · ISV/Task-Recorder output prose −6,549).
+ * Lowering the ceiling after a diet is the point — otherwise the saving erodes
+ * one unnoticed 300 B at a time.
  * `tools` is the count the server registers today — a drop means a set was
  * removed or filtered, which is as much a "come and look" event as a breach.
  */
 const BUDGET = {
-  // Every ceiling below also carries the measured `title` delta (W5.B): kb +529 ·
-  // xref +443 · sec +439 · taskrecorder +44 — see the docblock above.
-  // kb raised 70,400 -> 71,000 on 2026-09-02 (#83): d365_search `queries[]` (+84 B measured).
-  // kb raised 71,000 -> 76,400 and 21 -> 22 tools on 2026-09-02 (#85): d365_effective_schema
-  // (+5,679 B measured — a rich typed payload: attributed fields, indexes, relations, ISV inventory).
-  // kb 76,400 -> 77,100, sec 42,600 -> 43,000 on 2026-09-02 (#109): `cursor` input +
-  // has_more/next_cursor on the 8 paginated tools (+319 B kb, +130 B sec; xref fits).
-  // kb 77,700 -> 91,100 and 22 -> 26 tools on 2026-09-02 (W7 #111): the four
-  // semantic-layer tools (d365_map_entity, d365_map_dq_rule, d365_entity_map,
-  // d365_dq_rules) measured +11,656 B — the 9 DQ dimension spec schemas are the
-  // bulk. W1 (#105) trims from here.
-  kb: { maxBytes: 91_100, tools: 26 },
-  // xref raised 37,300 -> 38,600 on 2026-09-02 (#83): xref_find_references `objects[]` (+864 B).
-  xref: { maxBytes: 39_700, tools: 17 },
-  // sec raised 37,500 -> 38,700 on 2026-09-02 (W3 #107.1): sec_lookup_role /
-  // sec_role_hierarchy / sec_compare_roles gained the summary-view inputs and
-  // the exact-count keys that make a capped list honest (+824 B measured).
-  // sec raised 38,700 -> 39,800 on 2026-09-02 (W3 #107.6): `limit` + exact-count
-  // keys on sec_lookup_duty/privilege/user and sec_find_roles_by_* (+1,015 B).
-  // sec raised 39,800 -> 42,600 on 2026-09-02 (#83): sec_lookup_role `role_names[]`. +2,363 B,
-  // mostly the top-level payload keys repeated as optional beside `roles[]` — the
-  // price of the disjoint single/batch contract on a wide payload.
-  sec: { maxBytes: 44_000, tools: 18 },
-  taskrecorder: { maxBytes: 13_544, tools: 2 },
+  // History (all 2026-09-02): kb 70,400 -> 71,000 (#83 d365_search queries[]);
+  // -> 76,400 and 22 tools (#85 d365_effective_schema, +5,679 B); -> 77,100
+  // (#109 cursor pagination); -> 91,100 and 26 tools (W7 #111, four semantic
+  // tools +11,656 B); W1 (#105) 88,940 measured -> 74,354, ceiling 75,800.
+  kb: { maxBytes: 75_800, tools: 26 },
+  // xref 37,300 -> 38,600 (#83 objects[]); W1: 38,702 measured -> 35,047, ceiling 35,700.
+  xref: { maxBytes: 35_700, tools: 17 },
+  // sec 37,500 -> 38,700 (W3 #107.1 summary views) -> 39,800 (#107.6 limits) ->
+  // 42,600 (#83 sec_lookup_role role_names[]: +2,363 B, mostly the payload keys
+  // repeated as optional beside roles[] — the price of a disjoint single/batch
+  // contract inside ONE object schema; W1 could not remove it without $ref).
+  // W1: 42,881 measured -> 38,234, ceiling 39,000.
+  sec: { maxBytes: 39_000, tools: 18 },
+  // W1: 13,287 measured -> 8,131 (descriptions 1,755+755 chars and 2.7 KB of
+  // output prose on taskrecorder_to_document), ceiling 8,290.
+  taskrecorder: { maxBytes: 8_290, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 188_400;
+const TOTAL_MAX_BYTES = 158_800;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {

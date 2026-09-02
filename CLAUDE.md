@@ -174,33 +174,60 @@ the KB server also ships `isv-kb-tools` + `custom-fields-tools`, XRef ships
 tool also carries a `title`**, derived on the registration path
 (`deriveToolTitle` in `tool-sets.js`: `d365_lookup_table` → "Lookup table") — a
 deliberate **+1,455 B (~364 tk, 0.9%)** measured off the transport, so the
-current full list is **157,244 B (~39,311 tk)**: KB 69,642 · XRef 37,039 · Sec
-37,276 · Task Recorder 13,287.
+list was **157,244 B (~39,311 tk)**: KB 69,642 · XRef 37,039 · Sec 37,276 · Task
+Recorder 13,287; the four W7 semantic tools then took the KB to 88,940 and the
+four servers to **183,810 B (63 tools)**.
 
-Composition, four servers, on the wire (before titles; `title` adds 1,397 B, 0.9%):
+**W1 (#105, 2026-09-02) took that to 155,766 B (~38,942 tk, −15.3%)** — KB 26
+tools 74,354 · XRef 17 tools 35,047 · Sec 18 tools 38,234 · Task Recorder 2 tools
+8,131 — with no tool removed and every `structuredContent` payload byte-identical
+(golden test). Per lever, measured off the transport:
+
+| Lever | KB | XRef | Sec | TR | Total |
+|---|---:|---:|---:|---:|---:|
+| `.nullable()` → `.nullish()` (319) / `.optional()` (35 envelope keys the handler omits) | −3,416 | −727 | −1,470 | −291 | **−5,904** |
+| `"$schema"` stripped from the wire (`trimToolsListWire`, tool-sets.js) | −2,704 | −1,768 | −1,872 | −208 | **−6,552** |
+| Tool descriptions ≤ 300 chars + input `.describe()` that repeated the name/enum/`default`/`maximum` | −5,037 | −598 | −1,195 | −2,209 | **−9,039** |
+| Output `.describe()` prose on the ISV schemas (6.7 KB) and `taskrecorder_to_document` (2.7 KB) | −3,429 | −562 | −110 | −2,448 | **−6,549** |
+| `$ref` for row shapes used twice in one tool (`.meta({ id })`) — **measured −3,244, REVERTED** | | | | | 0 |
+
+Composition after W1, four servers, on the wire:
 
 | Field | Bytes | Share |
 |---|---:|---:|
-| `outputSchema` | 86,020 | **55.2%** |
-| `inputSchema` | 43,005 | 27.6% |
-| `description` | 17,826 | 11.4% |
-| `annotations` | 4,581 | 2.9% |
-| `execution` (SDK 1.27 adds `{"taskSupport":"forbidden"}` to every tool, unasked) | 2,262 | 1.5% |
-| `name` | 1,627 | 1.0% |
+| `outputSchema` | 87,531 | **56.2%** |
+| `inputSchema` | 44,568 | 28.6% |
+| `description` | 12,359 | 7.9% |
+| `annotations` | 5,026 | 3.2% |
+| `execution` (SDK 1.27 adds `{"taskSupport":"forbidden"}` to every tool, unasked) | 2,457 | 1.6% |
+| `name` | 1,752 | 1.1% |
+| `title` (W5.B, deliberate) | 1,502 | 1.0% |
 
 > **`outputSchema` is the dominant term, and it is structure, not prose.** Output
-> `.describe()` text is ~1.8% of outputSchema bytes for KB/XRef/Sec (~210 tk in
-> total) — **not a lever**; the only place output prose matters is
-> `taskrecorder_to_document` (3.4 KB). What the bytes are: `type` keys, `required`
-> arrays, `anyOf:[{type},{type:"null"}]` nullable wrappers, `additionalProperties`,
-> and a `"$schema":"http://json-schema.org/draft-07/schema#"` on **every** input
-> and output schema (116 of 116 — the SDK converts via `z4mini.toJSONSchema(…,
-> {target:'draft-7'})`, ≈6 KB in total). Repeated nested shapes are **inlined**:
-> 0 `$ref`, 0 `$defs` on the wire, so the single/batch row duplication in
-> `d365_lookup_table` / `d365_check_field_exists` / `d365_get_enum` /
-> `xref_object_summary` is paid twice. Those structural levers belong to W1
-> (#105); the typed-first contract (rule #5) is what makes the schemas large, and
-> they are genuinely useful to a validating client, so each trim is a trade.
+> `.describe()` text on the core KB/XRef/Sec tools is ~200 tk in total — **not a
+> lever** (the ISV and Task Recorder schemas were the exception and are done).
+> What remains is `type` keys, `required` arrays, `additionalProperties:false`,
+> and the `anyOf` nullable wrapper on every field that can genuinely be null.
+> Two structural levers were tried in W1 and are **off**, for reasons that must
+> not be re-learned:
+> - **`$ref`/`definitions` via Zod `.meta({ id })`** works with the stock SDK
+>   converter (a 5-field row used 3× goes 912 → 578 B) but Zod copies the `id`
+>   INTO the definition and **AJV — the SDK client's `structuredContent`
+>   validator — rejects that keyword at compile time**, failing every `callTool`.
+>   The tools/list hook strips it for the entry points, but a `McpServer` that
+>   calls `registerKbTools()` directly (the integration harness, any library
+>   user) is not hooked and would break. `output-schemas.js` registers none; the
+>   budget test compiles BOTH registration paths with the SDK's own
+>   `AjvJsonSchemaValidator` so a future `.meta({ id })` fails there, not in a
+>   client. Re-open only with a hook the register functions install themselves.
+> - **A pre-built JSON Schema on `registerTool`** is not accepted by SDK 1.27:
+>   `normalizeObjectSchema()` recognises only Zod schemas and silently emits an
+>   empty `{type:"object"}` for a plain object.
+>
+> Still untouched, and each a real trade: input `.min(1).max(500)` guards emit
+> `minLength`/`maxLength` on every string parameter (~4.6 KB — they ARE the
+> validation, issue #42); `annotations` (all three hints differ from the MCP
+> defaults, so all three carry information); `title` (W5.B).
 
 - **Keep shared-parameter descriptions SHORT.** `formatTextParam` now carries only
   what the enum cannot (which value is default, when to override). The long-form
@@ -213,10 +240,13 @@ Composition, four servers, on the wire (before titles; `title` adds 1,397 B, 0.9
   parameter wasting >4,000 B, or an entry point that registers a tool set
   outside `src/azure/tool-sets.js` (the one list both the servers and the test
   use). It also prints the `core` figure for all four servers and asserts every
-  tool carries a `title`. Raising a ceiling is a normal, deliberate act; doing it
-  unnoticed is what this prevents. Current (≤2% headroom, moved by exactly the
-  measured title delta): kb 69,642 → 70,929 B · xref 37,039 → 37,743 B · sec
-  37,276 → 37,939 B · taskrecorder 13,287 → 13,544 B.
+  tool carries a `title`, that `"$schema"` is off the wire, and that every
+  output schema compiles in the SDK client's AJV on both the hooked and the
+  unhooked registration path. Raising a ceiling is a normal, deliberate act;
+  doing it unnoticed is what this prevents — and **lowering it after a diet is
+  the point**, otherwise the saving quietly erodes. Current (≤2% headroom,
+  re-baselined DOWN after W1): kb 74,354 → 75,800 B · xref 35,047 → 35,700 B ·
+  sec 38,234 → 39,000 B · taskrecorder 8,131 → 8,290 B · total 155,766 → 158,800 B.
 - **MCP resources (W5.B, #109 part B)** — `src/azure/resources.js`, registered
   on the registration path for every server: `d365://snapshot` (service,
   `build_date`, `schema_version`, `model_count`, `tool_count` after the profile,
@@ -242,9 +272,9 @@ Composition, four servers, on the wire (before titles; `title` adds 1,397 B, 0.9
   client and `core` to another; the resolved preferences are logged once per
   request (`console.info`, App Insights) so `CORE_TOOLS` can be tuned from what
   clients actually ask for. Stdio servers resolve once from env at startup.
-  Measured 2026-09-02 off the transport: **23 of 58 tools — 155,789 → 77,539 B
-  (~38,947 → ~19,385 tk, −50.2%)**; KB 69,113 → 31,308 (−54.7%), XRef 36,596 →
-  14,596 (−60.1%), Sec 36,837 → 18,392 (−50.1%). The filter is applied on the
+  Measured 2026-09-02 off the transport, after W1: **25 of 63 tools — 155,766 →
+  71,109 B (~38,942 → ~17,777 tk, −54.3%)**; KB 74,354 → 28,339 (−61.9%), XRef
+  35,047 → 14,673 (−58.1%), Sec 38,234 → 19,966 (−47.8%). The filter is applied on the
   registration path in `tool-sets.js` (`registerServiceTools` →
   `withRegistrationPolicy`), so it reaches EVERY set — ISV and custom-fields
   included; it used to sit in `installToolGuards`, which only three sets call,
