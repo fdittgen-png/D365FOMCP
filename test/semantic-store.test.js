@@ -6,6 +6,7 @@
  */
 
 import { describe, it, before } from 'node:test';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +39,8 @@ import {
   recordDqRun,
   exportSemantic,
   confidenceFor,
+  mappedObjectsForEntity,
+  entityDisplayName,
 } from '../src/azure/semantic-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -113,6 +116,8 @@ describe('vocabulary', () => {
     assert.equal(getVocabularyEntry(db, 'SALES_ORDER').version, '1.0.0');
     assert.equal(ensureVocabulary(db), null, 'already loaded → no-op');
     assert.ok(suggestEntities(db, 'sales').includes('sales_order'));
+    assert.ok(suggestEntities(db, 'sales_ord').includes('sales_order'), 'an underscore in the term is a literal, not a stripped char (#115)');
+    assert.deepEqual(suggestEntities(db, '%'), [], 'a wildcard in the term is escaped');
     assert.throws(() => loadVocabulary(db, { version: '1.0.0', entities: [{ entity_id: 'Bad Id', name: 'x', process: 'master_data' }] }));
     assert.throws(() => loadVocabulary(db, { version: '1.0.0', entities: [{ entity_id: 'a', name: 'x', process: 'master_data' }], relations: [{ from: 'a', to: 'zzz', relation: 'party' }] }));
   });
@@ -250,5 +255,35 @@ describe('dq rules', () => {
     const text = JSON.stringify(exp);
     assert.doesNotMatch(text, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, 'no e-mail in export');
     assert.doesNotMatch(text, /"row_key"|"sample"/);
+  });
+});
+
+describe('not-found helpers (#115 item 2)', () => {
+  it('mappedObjectsForEntity: top mappings by confidence with role; entityDisplayName: vocabulary name', () => {
+    const own = openSemanticDb(':memory:');
+    loadVocabulary(own, { version: '1.0.0', entities: [{ entity_id: 'sales_order', name: 'Sales order', process: 'order_to_cash' }] });
+    upsertMapping(own, { entity_id: 'sales_order', object_type: 'table', object_name: 'SalesLine', role: 'line', source: 'assistant_inferred' });
+    upsertMapping(own, { entity_id: 'sales_order', object_type: 'table', object_name: 'SalesTable', role: 'header', source: 'user_confirmed' });
+    for (let i = 0; i < 6; i++) upsertMapping(own, { entity_id: 'sales_order', object_type: 'class', object_name: `Helper${i}`, role: 'reference', source: 'context_hint' });
+
+    const top = mappedObjectsForEntity(own, 'SALES_ORDER');
+    assert.equal(top.length, 5, 'default limit 5');
+    assert.deepEqual(top.slice(0, 2).map(m => [m.object_name, m.role]), [['SalesTable', 'header'], ['SalesLine', 'line']], 'confidence desc');
+    assert.deepEqual(Object.keys(top[0]).sort(), ['confidence', 'object_name', 'object_type', 'role']);
+    assert.equal(mappedObjectsForEntity(own, 'sales_order', 2).length, 2);
+    assert.deepEqual(mappedObjectsForEntity(own, 'nope'), []);
+    assert.equal(entityDisplayName(own, 'sales_order'), 'Sales order');
+    assert.equal(entityDisplayName(own, 'nope'), null);
+    own.close();
+  });
+
+  it('both return []/null on a database without the semantic tables, and never throw', () => {
+    const plain = new (createRequire(import.meta.url)('better-sqlite3'))(':memory:');
+    assert.deepEqual(mappedObjectsForEntity(plain, 'sales_order'), []);
+    assert.equal(entityDisplayName(plain, 'sales_order'), null);
+    plain.close();
+    assert.deepEqual(mappedObjectsForEntity(null, 'sales_order'), []);
+    assert.equal(entityDisplayName(undefined, 'sales_order'), null);
+    assert.deepEqual(mappedObjectsForEntity({ prepare() { throw new Error('x'); } }, 'sales_order'), []);
   });
 });
