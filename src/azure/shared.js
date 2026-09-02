@@ -600,10 +600,27 @@ export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
  *   silently pin the encoding for every such call, which is exactly how this
  *   was wrong the first time.
  */
-export function structuredResult(typed, markdownText, format = 'auto') {
+export function structuredResult(typed, markdownText, format = 'auto', { coverage } = {}) {
+  // Coverage boundaries (#116): the fired keys join the typed payload; the
+  // `_…_` lines go directly under the H2 (and under the freshness banner once
+  // withFreshnessBanner adds it — that wrapper inserts on the line after the
+  // heading, so the order on the wire is heading / banner / coverage / body).
+  //
+  // The text channel renders the PRE-merge payload: the `_…_` line IS the text
+  // rendering of the fired key, so encoding the key into TOON as well would pay
+  // the same signal twice. structuredContent carries the key, text the line.
+  const cov = coverage && typeof coverage === 'object' ? coverage : null;
+  const body = typed;
+  if (cov && cov.keys && typeof cov.keys === 'object' && Object.keys(cov.keys).length
+      && typed && typeof typed === 'object' && !Array.isArray(typed)) {
+    typed = { ...typed, ...cov.keys };
+  }
+  const covText = cov && typeof cov.text === 'string' && cov.text.trim() ? cov.text.trim() : '';
+  const withCoverage = (text) => (covText ? insertAfterHeading(text, covText) : text);
+
   if (getRequestContext().textChannel === 'summary') {
     return {
-      content: [{ type: 'text', text: summaryText(typed, markdownText) }],
+      content: [{ type: 'text', text: withCoverage(summaryText(typed, markdownText)) }],
       structuredContent: typed,
     };
   }
@@ -611,12 +628,13 @@ export function structuredResult(typed, markdownText, format = 'auto') {
   // An explicit `format: "markdown"` is honoured unconditionally: those callers
   // quote the text verbatim into a document, so size is not the criterion.
   if (format === 'markdown' && markdownText) {
-    return { content: [{ type: 'text', text: markdownText }], structuredContent: typed };
+    return { content: [{ type: 'text', text: withCoverage(markdownText) }], structuredContent: typed };
   }
 
   const heading = extractLeadingHeading(markdownText);
-  const toon = encodeToon(typed);
-  const toonText = heading ? `${heading}\n\n${toon}` : toon;
+  const toon = encodeToon(body);
+  const toonText = withCoverage(heading ? `${heading}\n\n${toon}` : toon);
+  markdownText = markdownText ? withCoverage(markdownText) : markdownText;
 
   // An explicit `format: "toon"` pins the encoding too — only the DEFAULT is
   // adaptive, so a caller that has decided still gets what it asked for.
@@ -646,6 +664,106 @@ export function structuredResult(typed, markdownText, format = 'auto') {
     content: [{ type: 'text', text }],
     structuredContent: typed,
   };
+}
+
+/**
+ * Insert `lines` directly after the leading heading of `text` (or prepend them
+ * when there is none). The blank line that followed the heading is kept after
+ * the inserted block, so the body still starts on its own paragraph.
+ */
+function insertAfterHeading(text, lines) {
+  const heading = extractLeadingHeading(text);
+  if (!heading) return `${lines}\n\n${text}`;
+  const rest = text.slice(heading.length); // '' or starts with '\n'
+  return `${heading}\n${lines}${rest}`;
+}
+
+// ── Coverage boundaries (#116, Q3) ───────────────────────────────────────────
+//
+// W3 made `truncated` exact for ROWS. This is the same discipline for
+// COVERAGE: a data response states, one line per signal and only when the
+// condition holds, what it is NOT covering — so the model cannot summarise a
+// partial view as the whole. Every signal text lives HERE and nowhere else
+// (static scan in test/response-format.test.js); a handler computes the
+// signals and passes `{ coverage: coverageNotes(signals) }` to structuredResult.
+//
+// Typed keys follow rule #14: present only when fired, never false/null.
+
+/**
+ * @param {{
+ *   field_limit_hit?: { shown: number, total: number },
+ *   provenance_omitted?: { count: number, total: number, models?: string[] },
+ *   isv_not_scanned?: boolean,
+ *   isv_excluded?: { count: number },
+ *   partial_build?: { since?: string|null },
+ *   custom_layer?: string,
+ * }} [signals]
+ * @returns {{ text: string, keys: Record<string, boolean|number> }}
+ */
+export function coverageNotes(signals = {}) {
+  const s = signals && typeof signals === 'object' ? signals : {};
+  const lines = [];
+  const keys = {};
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+
+  const fl = s.field_limit_hit;
+  if (fl && n(fl.shown) != null && n(fl.total) != null && n(fl.shown) < n(fl.total)) {
+    lines.push(`_Fields capped at ${n(fl.shown)} of ${n(fl.total)} — use fields_like / custom_only / field_limit._`);
+    keys.field_limit_hit = true;
+  }
+
+  const po = s.provenance_omitted;
+  if (po && n(po.count) > 0) {
+    const models = Array.isArray(po.models) ? po.models.filter(m => typeof m === 'string' && m.trim()).map(m => m.trim()) : [];
+    const who = models.length ? ` (models: ${models.slice(0, 5).join(', ')}${models.length > 5 ? ', …' : ''})` : '';
+    const total = n(po.total) != null ? n(po.total) : n(po.count);
+    lines.push(`_${n(po.count)} of ${total} fields come from extensions${who} — pass include_provenance or custom_only to see which._`);
+    keys.provenance_omitted = n(po.count);
+  }
+
+  if (s.isv_not_scanned === true) {
+    lines.push('_Sealed-ISV models not scanned in this snapshot — ISV usages/extensions absent, not zero._');
+    keys.isv_not_scanned = true;
+  }
+
+  const ie = s.isv_excluded;
+  if (ie && n(ie.count) > 0) {
+    lines.push(`_${n(ie.count)} sealed-ISV usages exist — pass include_isv:true._`);
+    keys.isv_excluded = n(ie.count);
+  }
+
+  const pb = s.partial_build;
+  if (pb) {
+    const since = typeof pb === 'object' && pb.since ? String(pb.since).slice(0, 10) : 'the last full build';
+    lines.push(`_KB is a delta-merged snapshot; kb_search may be stale for base tables extended since ${since}._`);
+    keys.partial_build = true;
+  }
+
+  // Existing behaviour reused, not duplicated: customLayerNote already decides
+  // whether the name carries a custom prefix and returns '' otherwise. Text
+  // only — #116 lists no typed key for it.
+  if (typeof s.custom_layer === 'string' && s.custom_layer) {
+    const note = customLayerNote(s.custom_layer).trim();
+    if (note) lines.push(note);
+  }
+
+  return { text: lines.join('\n'), keys };
+}
+
+/**
+ * One `kb_metadata` value by key (`partial_build`, `has_customizations`, …),
+ * or null when the table/key is absent or the read fails. The
+ * `partial_build` flag is set by the delta-merge path (#86) and feeds
+ * coverageNotes({ partial_build }).
+ */
+export function readKbMetadataFlag(db, key) {
+  if (!db || typeof db.prepare !== 'function' || typeof key !== 'string' || !key) return null;
+  try {
+    const row = db.prepare('SELECT value FROM kb_metadata WHERE key = ?').get(key);
+    return row?.value == null ? null : String(row.value);
+  } catch {
+    return null;
+  }
 }
 
 /**

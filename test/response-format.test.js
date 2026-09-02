@@ -603,6 +603,33 @@ for (const file of ['kb-tools.js', 'sec-tools.js']) {
   });
 }
 
+// ── #116 (Q3): coverage-boundary texts come from coverageNotes() only ────────
+//
+// Every boundary line (`Fields capped at`, `Sealed-ISV models not scanned`,
+// `sealed-ISV usages exist`, `delta-merged snapshot`) is produced by ONE helper
+// in shared.js so the wording, the typed key and the "only when fired" rule
+// cannot drift per handler. A tool file passes `{ coverage: coverageNotes(...) }`
+// to structuredResult and never writes the sentence itself.
+
+const COVERAGE_LITERALS = [
+  'Fields capped at',
+  'Sealed-ISV models not scanned',
+  'sealed-ISV usages exist',
+  'delta-merged snapshot',
+];
+
+for (const file of [...TOOL_FILES, 'semantic-tools.js']) {
+  test(`given ${file}, when scanned for hand-written coverage-boundary text, then none is present (use coverageNotes)`, () => {
+    const src = readSource(file);
+    for (const literal of COVERAGE_LITERALS) {
+      assert.ok(
+        !src.includes(literal),
+        `${file} hand-writes the coverage signal "${literal}". Build it with coverageNotes(signals) from shared.js and pass { coverage } to structuredResult (#116).`,
+      );
+    }
+  });
+}
+
 // ── No hand-rolled "No results"/not-found strings ────────────────────────────
 
 for (const file of TOOL_FILES) {
