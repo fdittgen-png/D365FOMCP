@@ -21,7 +21,7 @@ Security configuration snapshot (AOT roles/duties/privileges + user/role assignm
 | `sec_compare_roles` | Compare two roles side by side: shared vs unique duties and privileges. |
 | `sec_effective_permissions` | Compute the NET effective permissions for a user or role, resolving sub-roles and applying Deny-over-Grant (Deny wins). |
 | `sec_search` | Full-text search across roles, duties, privileges, and users. |
-| `sec_stats` | Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML p |
+| `sec_stats` | Security database statistics: role, user and company counts, scanned models by origin. |
 | `sec_raw_sql` | Execute a raw SQL query against the security database. |
 | `sec_licence_assessment` | Assess the minimum required D365 licence tier for one or all users based on their assigned security roles. |
 | `sec_what_if` | Simulate adding or removing roles from a user. |
@@ -163,10 +163,11 @@ Full-text search across roles, duties, privileges, and users. Scope with `module
 
 ## `sec_stats`
 
-Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML provenance: version, layer, origin microsoft/isv/custom).
+Security database statistics: role, user and company counts, scanned models by origin. include_model_versions=true lists each model with its build version.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
+| `include_model_versions` | boolean | default `false` | true: per-model build versions (Descriptor provenance) |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_raw_sql`

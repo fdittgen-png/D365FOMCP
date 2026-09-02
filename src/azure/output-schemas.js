@@ -1197,9 +1197,16 @@ export const secStatsMetadataEntrySchema = z.object({
 });
 export const secStatsOutput = z.object({
   build_info: z.array(secStatsMetadataEntrySchema),
-  // Build provenance of every scanned model (empty on sec databases built
-  // before model_versions capture).
-  model_versions: z.array(modelVersionRowSchema),
+  // Scanned models: count + per-origin breakdown (0 on sec databases built
+  // before model_versions capture). The full per-model list (37 KB on a real
+  // snapshot) is present only with include_model_versions=true (#107.2).
+  model_count: z.number(),
+  models_by_origin: z.object({
+    microsoft: z.number(),
+    isv: z.number(),
+    custom: z.number(),
+  }),
+  model_versions: z.array(modelVersionRowSchema).optional(),
   grant_roles: z.number(),
   deny_roles: z.number(),
   total_duties: z.number(),

@@ -526,8 +526,17 @@ describe('sec_stats', () => {
     assert.doesNotMatch(buildInfoSection, /^\|/m);
   });
 
-  it('reports the scanned model build versions', async () => {
+  it('reports the scanned-model count by origin and OMITS the per-model list by default (#107.2)', async () => {
     const full = await callToolFull('sec_stats', {});
+    assert.equal(full.structuredContent.model_count, 2);
+    assert.deepEqual(full.structuredContent.models_by_origin, { microsoft: 1, isv: 0, custom: 1 });
+    assert.ok(!('model_versions' in full.structuredContent), 'the 37 KB list is opt-in; the key is absent, not []');
+    assert.match(full.content[0].text, /Scanned Models \| 2 \(microsoft 1, isv 0, custom 1\)/);
+    assertSdkOutputContract('sec_stats', full);
+  });
+
+  it('reports the scanned model build versions with include_model_versions', async () => {
+    const full = await callToolFull('sec_stats', { include_model_versions: true });
     const iext = full.structuredContent.model_versions.find(m => m.model_name === 'iExtension');
     assert.equal(iext.version, '10.0.32.7');
     assert.equal(iext.origin, 'custom');

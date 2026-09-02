@@ -1561,26 +1561,29 @@ export function registerSecTools(server, db) {
     'sec_stats',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML provenance: version, layer, origin microsoft/isv/custom).',
-      inputSchema: { format: formatTextParam },
+      description: 'Security database statistics: role, user and company counts, scanned models by origin. include_model_versions=true lists each model with its build version.',
+      inputSchema: {
+        include_model_versions: z.boolean().optional().default(false)
+          .describe('true: per-model build versions (Descriptor provenance)'),
+        format: formatTextParam,
+      },
       outputSchema: secStatsOutput.shape,
     },
-    async ({ format }) => {
+    async ({ include_model_versions, format }) => {
       const meta = q('SELECT key, value FROM sec_metadata ORDER BY key');
+      // Which build of each scanned model the security objects came from
+      // ([] on sec databases built before model_versions capture).
+      const versions = queryModelVersions(q);
+      const byOrigin = { microsoft: 0, isv: 0, custom: 0 };
+      for (const v of versions) {
+        const o = String(v.origin ?? '').toLowerCase();
+        if (o in byOrigin) byOrigin[o]++;
+      }
 
       const typed = {
         build_info: meta.map(r => ({ key: r.key, value: String(r.value) })),
-        // Which build of each scanned model the security objects came from
-        // ([] on sec databases built before model_versions capture).
-        model_versions: queryModelVersions(q).map(v => ({
-          model_name: v.model_name,
-          module_id: v.module_id ?? null,
-          display_name: v.display_name ?? null,
-          publisher: v.publisher ?? null,
-          layer: v.layer ?? null,
-          origin: v.origin ?? null,
-          version: v.version ?? null,
-        })),
+        model_count: versions.length,
+        models_by_origin: byOrigin,
         grant_roles: q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Grant'`)[0]?.n || 0,
         deny_roles: q(`SELECT COUNT(*) as n FROM roles WHERE permission_type = 'Deny'`)[0]?.n || 0,
         total_duties: q(`SELECT COUNT(*) as n FROM duties`)[0]?.n || 0,
@@ -1591,6 +1594,19 @@ export function registerSecTools(server, db) {
         user_role_assignments: q(`SELECT COUNT(*) as n FROM user_roles`)[0]?.n || 0,
         companies: q(`SELECT COUNT(DISTINCT company_id) as n FROM user_role_companies`)[0]?.n || 0,
       };
+      // The 180-row list was 37 KB inside a *stats* call (#107.2): opt-in only,
+      // and the key is absent (not an empty array) when it was not asked for.
+      if (include_model_versions === true) {
+        typed.model_versions = versions.map(v => ({
+          model_name: v.model_name,
+          module_id: v.module_id ?? null,
+          display_name: v.display_name ?? null,
+          publisher: v.publisher ?? null,
+          layer: v.layer ?? null,
+          origin: v.origin ?? null,
+          version: v.version ?? null,
+        }));
+      }
 
       // P4-10: render Build Info as a bulleted list rather than a generic
       // |key|value| table. Build metadata has a fixed small set of keys and
@@ -1614,8 +1630,9 @@ export function registerSecTools(server, db) {
       out += `| Disabled Users | ${typed.disabled_users} |\n`;
       out += `| User-Role Assignments | ${typed.user_role_assignments} |\n`;
       out += `| Companies | ${typed.companies} |\n`;
+      out += `| Scanned Models | ${typed.model_count} (microsoft ${byOrigin.microsoft}, isv ${byOrigin.isv}, custom ${byOrigin.custom}) |\n`;
 
-      if (typed.model_versions.length) {
+      if (typed.model_versions?.length) {
         out += '\n## Scanned Model Versions\n';
         out += formatMarkdownTable(
           typed.model_versions.map(m => ({
