@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  D365FO Cross-Reference MCP (d365xref) — evaluation set, mcp-builder format.
+  Read-only, independent questions; every answer is a single string compared verbatim.
+  Verified 2026-09-02 against the local XRef snapshot (~/.claude/d365fo_xref.sqlite);
+  the tool calls that produce each answer are in xref.answers.md / xref.calls.json.
+-->
+<evaluation>
+   <qa_pair>
+      <question>SalesFormLetter_Invoice: how deep is its inheritance chain (number of ancestor classes up to and including Object), and how many DIRECT subclasses (depth 1 only) does its immediate parent class have? Answer as ancestors,direct-subclasses with no spaces.</question>
+      <answer>5,10</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Exactly one Chain-of-Command extension class targets the customer group form (CustGroup). Which module declares it, and how many modules does that module depend on according to its outbound cross-module references? Answer as module,count with no spaces.</question>
+      <answer>SubscriptionBilling,24</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The customer group table's static find method: across all methods that call it, how many distinct modules do the callers belong to? Answer with the number.</question>
+      <answer>10</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The documentStatus method of SalesFormLetter_Invoice overrides a declaration on one of its ancestors. Which ancestor class declares the overridden method? Answer with the class name.</question>
+      <answer>FormLetterServiceController</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Run an impact analysis on the customer group table (CustGroup). How many of the references it reports are method Calls, and how many references come from the AdvancedQualityManagement module? Answer as calls,aqm with no spaces.</question>
+      <answer>158,2</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Among the sealed ISV models scanned into the cross-reference (binary-only vendor models, absent from the main snapshot), which one references the customer group table (CustGroup) most often? Answer with the model name.</question>
+      <answer>Lasernet</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>How many tables does the CreditManagement module declare, and how many of them have names beginning with CredManCreditLimit? Answer as tables,credit-limit-tables with no spaces.</question>
+      <answer>37,7</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>For the SubscriptionBilling module: how many modules reference it (inbound cross-module dependencies), and which module does it reference the most itself? Answer as count,module with no spaces.</question>
+      <answer>10,ApplicationSuite</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Of SalesFormLetter's direct subclasses, some carry a two-letter country suffix (name ending in an underscore followed by exactly two uppercase letters). How many are there, and in which module are they declared (one module covers all of them)? Answer as count,module with no spaces.</question>
+      <answer>2,ApplicationSuite</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Of the sales-order status enum (SalesStatus) and the purchase-order status enum (PurchStatus), exactly one is referenced from sealed ISV models. Which one, and how many sealed-ISV references target the enum object itself (as reported alongside the main reference lookup, not counting references to its individual values)? Answer as enum,count with no spaces.</question>
+      <answer>SalesStatus,6</answer>
+   </qa_pair>
+</evaluation>

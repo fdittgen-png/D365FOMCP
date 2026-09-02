@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  D365FO Security MCP (d365sec) — evaluation set, mcp-builder format.
+  Read-only, independent questions about roles, duties, privileges and entry points ONLY —
+  never users. Roles are addressed by their display name (the DMF export keys them that way);
+  duties and privileges by AOT name. Verified 2026-09-02 against the local Sec snapshot
+  (~/.claude/d365fo_sec.sqlite, build 2026-08-14); calls in sec.answers.md / sec.calls.json.
+-->
+<evaluation>
+   <qa_pair>
+      <question>The privilege that maintains customer groups (CustGroupMaintain) belongs to exactly one duty. Which duty (AOT id), and how many roles obtain the privilege through that duty? Answer as duty,count with no spaces.</question>
+      <answer>CustCustomerProcessEnable,5</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Which privilege gives the Accounts receivable manager role Delete access to the CustGroup display menu item (the customer groups form)? Answer with the privilege AOT name.</question>
+      <answer>CustGroupMaintain</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>How many duties do the Accounts receivable manager and the Collections manager roles have in common? Answer with the number.</question>
+      <answer>28</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The duty CustCustomerProcessEnable: how many privileges does it grant, and how many entry points does its customer-group maintenance privilege (CustGroupMaintain) cover? Answer as privileges,entry-points with no spaces.</question>
+      <answer>9,2</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Does the Accounting manager role hold Update access on the CustGroup display menu item (customer groups form)? Answer True or False.</question>
+      <answer>False</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>How many roles include the duty CustCustomerProcessEnable but do NOT reach the read-only privilege CustGroupView through any duty? Answer with the number.</question>
+      <answer>2</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>What licence type does the security snapshot record for the Collections manager role, and what is the role's stored AOT identifier (role_id, exactly as stored)? Answer as licence,role_id with no spaces.</question>
+      <answer>Enterprise,COLLECTIONLETTERCOLLECTIONSMANAGER</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Which model declares the second-most security objects in the snapshot (after ApplicationSuite), and how many role names declared in that model contain the word "manager"? Answer as model,count with no spaces.</question>
+      <answer>PersonnelManagement,6</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The duty "Inquire into sales tax transaction status" (TaxSalesTaxTransactionStatusInquire): how many roles include it, and how many privileges does it grant? Answer as roles,privileges with no spaces.</question>
+      <answer>15,115</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The Sales manager role can read the ElectronicMessages display menu item. Does that access come through a duty or through a directly assigned privilege, and does the role also have Create access on it? Answer as source,create where source is duty or direct_priv and create is True or False, no spaces.</question>
+      <answer>direct_priv,False</answer>
+   </qa_pair>
+</evaluation>

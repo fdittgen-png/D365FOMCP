@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  D365FO Knowledge Base MCP (d365kb) — evaluation set, mcp-builder format.
+  Read-only, independent questions; every answer is a single string compared verbatim.
+  Verified 2026-09-02 against the local KB snapshot (build 2026-08-14, app 10.39.2142.10721);
+  the tool calls that produce each answer are in kb.answers.md / kb.calls.json.
+-->
+<evaluation>
+   <qa_pair>
+      <question>On the sales order header table (SalesTable) the order-status field is enum-typed. What integer does that enum assign to the value meaning the order has been fully invoiced? Answer with the number only.</question>
+      <answer>3</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The posted customer-invoice header table (CustInvoiceJour) relates to the customer master through two relations that both target the same customer-master field. Which extended data type does that target field use? Answer with the EDT name.</question>
+      <answer>CustAccount</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>In the V3 customer data entity (CustCustomerV3Entity), among the entity fields whose names contain "Group" exactly one is mandatory. Which data-source table field does it map to? Answer as Table.Field.</question>
+      <answer>CustTable.CustGroup</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Take the class that posts sales-order invoices, SalesFormLetter_Invoice. What is the name of its grandparent class (the parent of its parent)? Answer with the class name.</question>
+      <answer>FormLetterServiceController</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>SalesFormLetter_Invoice overrides the method that reports which document status its posting produces. Which DocumentStatus enum value does that implementation return? Answer with the enum value name only.</question>
+      <answer>Invoice</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Which publisher, as recorded in the model descriptors, ships the model that declares the general-journal lines table LedgerJournalTrans? Answer with the publisher string exactly as recorded.</question>
+      <answer>Microsoft Corporation</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>For the customer group table (CustGroup): take the number of tables that reference it through a table relation and subtract the number of tables it itself reaches through foreign-key edges in one hop. Answer with the resulting number.</question>
+      <answer>74</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The sales-order status enum and the purchase-order status enum (the enum behind PurchTable's status field) assign the same integer to the fully-invoiced state but name integer value 2 differently. What is the purchase-side name of value 2? Answer with the value name.</question>
+      <answer>Received</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Which Microsoft-origin extension model adds the most fields to the customer master table (CustTable), how many does it add there, and how many fields does the same model add to the vendor master table (VendTable)? Answer as model,CustTable-count,VendTable-count with no spaces.</question>
+      <answer>CreditManagement,19,0</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The built-in SQL template that joins customer invoice headers to their lines uses a composite key. According to the table relation on the lines table (CustInvoiceTrans) that is named after the header table, how many field pairs form that key? Answer with the number.</question>
+      <answer>4</answer>
+   </qa_pair>
+</evaluation>

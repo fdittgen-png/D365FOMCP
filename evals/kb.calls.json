@@ -1,0 +1,96 @@
+{
+  "service": "kb",
+  "note": "Recorded tool calls that reproduce each <qa_pair> answer in kb.xml, in order. `expr` is JavaScript over r (structuredContent per call) and text (text channel per call); it must evaluate to the <answer> string. Replayed by scripts/run-evals.mjs.",
+  "pairs": [
+    {
+      "id": 1,
+      "title": "SalesTable status enum: integer of Invoiced",
+      "calls": [
+        { "tool": "d365_lookup_table", "arguments": { "table_name": "SalesTable", "fields_like": "SalesStatus" } },
+        { "tool": "d365_get_enum", "arguments": { "enum_name": "SalesStatus" } }
+      ],
+      "expr": "r[1].enum_name === r[0].fields[0].enum_type ? r[1].values.find(v => v.name === 'Invoiced').value : 'enum mismatch'"
+    },
+    {
+      "id": 2,
+      "title": "CustInvoiceJour -> CustTable: EDT of the shared target field",
+      "calls": [
+        { "tool": "d365_get_join_keys", "arguments": { "table1": "CustInvoiceJour", "table2": "CustTable" } },
+        { "tool": "d365_lookup_table", "arguments": { "table_name": "CustTable", "fields_like": "AccountNum" } }
+      ],
+      "expr": "(f => r[1].fields.find(x => x.name === f).edt)(r[0].relations[0].join_pairs[0].related_field)"
+    },
+    {
+      "id": 3,
+      "title": "CustCustomerV3Entity: the one mandatory *Group* field's source",
+      "calls": [
+        { "tool": "d365_get_entity_sources", "arguments": { "entity_name": "CustCustomerV3Entity", "fields_like": "Group", "limit": 30 } },
+        { "tool": "d365_check_field_exists", "arguments": { "table_name": "CustTable", "field_names": ["CustGroup"] } }
+      ],
+      "expr": "(m => m.length === 1 && r[1].checks[0].exists ? m[0].data_source + '.' + m[0].data_field : 'ambiguous')(r[0].entity_fields.filter(x => x.is_mandatory))"
+    },
+    {
+      "id": 4,
+      "title": "Grandparent class of SalesFormLetter_Invoice",
+      "calls": [
+        { "tool": "d365_get_class_methods", "arguments": { "name": "SalesFormLetter_Invoice", "limit": 1 } },
+        { "tool": "d365_get_class_methods", "arguments": { "name": "SalesFormLetter", "limit": 1 } }
+      ],
+      "expr": "r[1].owner_name === r[0].extends_class ? r[1].extends_class : 'parent mismatch'"
+    },
+    {
+      "id": 5,
+      "title": "SalesFormLetter_Invoice.documentStatus() return value",
+      "calls": [
+        { "tool": "d365_get_class_methods", "arguments": { "name": "SalesFormLetter_Invoice", "filter": "documentStatus", "limit": 5 } },
+        { "tool": "d365_get_method_source", "arguments": { "owner_name": "SalesFormLetter_Invoice", "method_name": "documentStatus" } }
+      ],
+      "expr": "/DocumentStatus::(\\w+)/.exec(r[1].source_code)[1]"
+    },
+    {
+      "id": 6,
+      "title": "Publisher of the model declaring LedgerJournalTrans",
+      "calls": [
+        { "tool": "d365_lookup_table", "arguments": { "table_name": "LedgerJournalTrans", "field_limit": 1 } },
+        { "tool": "d365_get_module_summary", "arguments": { "module_name": "ApplicationSuite", "table_limit": 1, "class_limit": 1 } }
+      ],
+      "expr": "[...new Set(r[1].models.filter(m => m.module_id === r[0].module_id).map(m => m.publisher))].join(',')"
+    },
+    {
+      "id": 7,
+      "title": "CustGroup: referencing tables minus one-hop FK targets",
+      "calls": [
+        { "tool": "d365_find_referencing_tables", "arguments": { "table_name": "CustGroup", "limit": 1 } },
+        { "tool": "d365_graph_traverse", "arguments": { "start_node": "CustGroup", "max_depth": 1 } }
+      ],
+      "expr": "r[0].reference_count - r[1].node_count"
+    },
+    {
+      "id": 8,
+      "title": "PurchStatus: name of value 2",
+      "calls": [
+        { "tool": "d365_lookup_table", "arguments": { "table_name": "PurchTable", "fields_like": "PurchStatus" } },
+        { "tool": "d365_get_enum", "arguments": { "enum_names": ["SalesStatus", "PurchStatus"] } }
+      ],
+      "expr": "r[1].enums.find(e => e.enum_name === r[0].fields[0].enum_type).values.find(v => v.value === 2).name"
+    },
+    {
+      "id": 9,
+      "title": "Largest Microsoft extension model on CustTable, and on VendTable",
+      "calls": [
+        { "tool": "d365_effective_schema", "arguments": { "table_name": "CustTable", "field_limit": 1 } },
+        { "tool": "d365_effective_schema", "arguments": { "table_name": "VendTable", "field_limit": 1 } }
+      ],
+      "expr": "(m => m.module + ',' + m.field_count + ',' + (r[1].contributing_models.find(x => x.module === m.module)?.field_count ?? 0))(r[0].contributing_models.filter(x => x.origin === 'extension' && x.model_origin === 'microsoft').sort((a, b) => b.field_count - a.field_count)[0])"
+    },
+    {
+      "id": 10,
+      "title": "Invoice header->lines composite key size (template vs relation)",
+      "calls": [
+        { "tool": "d365_sql_template", "arguments": {} },
+        { "tool": "d365_get_join_keys", "arguments": { "table1": "CustInvoiceJour", "table2": "CustInvoiceTrans" } }
+      ],
+      "expr": "(n => String(n) === /(\\d+)-field key/.exec(r[0].templates.find(t => t.tables_used.includes('CustInvoiceTrans')).description)[1] ? n : 'template disagrees')(r[1].relations.find(x => x.relation_name === 'CustInvoiceJour').join_pairs.length)"
+    }
+  ]
+}
