@@ -199,12 +199,68 @@ export function effectiveProfile(service, db = null, profile = getRequestContext
   return serviceToolNames(service, db).some(n => toolInProfile(n, 'core')) ? 'core' : 'full';
 }
 
+/* ── tools/list wire trim (W1, #105) ──────────────────────────────────────── */
+
+const LIST_TOOLS_METHOD = 'tools/list';
+const WIRE_TRIMMED = Symbol.for('d365fo.mcp.toolsListWireTrimmed');
+
+/**
+ * Two keys the SDK's Zod→JSON-Schema conversion puts on the wire that no client
+ * needs, removed from the `tools/list` RESULT — the schemas the server
+ * validates against are untouched, because the SDK keeps validating with the
+ * Zod objects, never with this JSON:
+ *
+ *   1. `"$schema":"http://json-schema.org/draft-07/schema#"` on every
+ *      inputSchema and outputSchema — 53 B × 126 schemas ≈ 6.6 KB per request,
+ *      pure overhead: the MCP `Tool` type already fixes the dialect.
+ *   2. `"id":"<name>"` inside every `definitions` entry. Zod emits it for a
+ *      schema registered with `.meta({ id })`, which is how output-schemas.js
+ *      shares a row shape between the single and batch branch of a tool as a
+ *      `$ref` instead of inlining it twice. The SDK client validates
+ *      `structuredContent` with AJV, and AJV REJECTS the draft-04 `id` keyword
+ *      (`NOT SUPPORTED: keyword "id", use "$id"`) — so without this strip every
+ *      `callTool` on a `$ref` tool would fail on an SDK client. The budget test
+ *      round-trips a real `Client.callTool` to prove the trim holds.
+ *
+ * Mechanism: DECORATE the handler McpServer installed, do not replace it — the
+ * SDK's listing logic (enabled flag, pipe strategy, `execution`) stays its own.
+ * `Protocol` keeps handlers in `_requestHandlers` (a Map keyed by method); if a
+ * future SDK moves it, this is a no-op and the budget test's wire-facts
+ * assertion (`$schema` 0, `id` 0) is what fails, loudly.
+ */
+export function trimToolsListWire(server) {
+  const proto = server?.server;
+  const handlers = proto?._requestHandlers;
+  if (!(handlers instanceof Map) || proto[WIRE_TRIMMED]) return false;
+  const original = handlers.get(LIST_TOOLS_METHOD);
+  if (typeof original !== 'function') return false;
+  handlers.set(LIST_TOOLS_METHOD, async (request, extra) => {
+    const result = await original(request, extra);
+    for (const tool of result?.tools ?? []) {
+      for (const schema of [tool.inputSchema, tool.outputSchema]) {
+        if (!schema || typeof schema !== 'object') continue;
+        delete schema.$schema;
+        for (const def of Object.values(schema.definitions ?? {})) {
+          if (def && typeof def === 'object') delete def.id;
+        }
+      }
+    }
+    return result;
+  });
+  proto[WIRE_TRIMMED] = true;
+  return true;
+}
+
 /** Register every tool set of one service onto `server`, under the request's policy. */
 export function registerServiceTools(service, server, db) {
   const sets = TOOL_SETS[service];
   if (!sets) throw new Error(`Unknown MCP service "${service}" — expected one of ${Object.keys(TOOL_SETS).join(', ')}`);
   const view = withRegistrationPolicy(server, { service, db, profile: effectiveProfile(service, db) });
   for (const register of sets) register(view, db);
+  // McpServer installs its tools/list handler on the first registerTool, so the
+  // trim can only be attached now — after the sets — and only on a real server
+  // (the test mocks have no `.server`).
+  trimToolsListWire(server);
   // Snapshot-scoped catalogues as MCP resources (W5.B). No-op on a server
   // without registerResource (the test mocks). `tool_count` is read lazily so
   // the snapshot resource reports what this request actually registered.

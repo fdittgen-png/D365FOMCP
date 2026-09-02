@@ -62,6 +62,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
+import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
+
 import { TOOL_SETS, registerServiceTools } from '../src/azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../src/azure/server-metadata.js';
 import { CORE_TOOLS } from '../src/azure/tool-guards.js';
@@ -191,7 +193,7 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
   const grand = Object.fromEntries([...FIELDS, 'other'].map(f => [f, 0]));
   let total = 0;
   let toolTotal = 0;
-  let schemaKeys = 0, schemaCount = 0, refs = 0, defs = 0;
+  let schemaKeys = 0, schemaCount = 0, refs = 0, defs = 0, defIds = 0;
 
   for (const [svc, { maxBytes, tools: expectedTools }] of Object.entries(BUDGET)) {
     const m = await measureService(svc);
@@ -204,6 +206,7 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
         schemaCount++;
         if ('$schema' in s) schemaKeys++;
         walk(s, n => { if ('$ref' in n) refs++; if ('$defs' in n || 'definitions' in n) defs++; });
+        for (const d of Object.values(s.definitions ?? {})) if (d && typeof d === 'object' && 'id' in d) defIds++;
       }
     }
 
@@ -232,10 +235,57 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
   console.log(`  TOTAL        ${toolTotal} tools  ${total} B (~${Math.round(total / 4)} tk) per request`
     + `  ≈ $${(Math.round(total / 4) * 0.5e-6 * 40).toFixed(3)} over a 40-turn session`);
   console.log(`  composition: ${[...FIELDS, 'other'].map(f => `${f} ${grand[f]} B ${pct(grand[f])}`).join(' · ')}`);
-  console.log(`  wire facts:  $schema on ${schemaKeys}/${schemaCount} schemas · $ref ${refs} · $defs/definitions ${defs}\n`);
+  console.log(`  wire facts:  $schema on ${schemaKeys}/${schemaCount} schemas · $ref ${refs} · $defs/definitions ${defs} · definition ids ${defIds}\n`);
+
+  // W1 (#105) wire trim — `trimToolsListWire` in tool-sets.js. Both facts are
+  // load-bearing: `$schema` is ~6.6 KB of pure overhead per request, and a
+  // leftover `id` inside a definition makes the SDK client's AJV throw at
+  // compile time, failing every callTool on a `$ref` tool. If the SDK moves
+  // `_requestHandlers`, THIS is what fails — not a client in production.
+  assert.equal(schemaKeys, 0, `"$schema" reached the wire on ${schemaKeys} schemas — trimToolsListWire did not attach`);
+  assert.equal(defIds, 0, `${defIds} definitions still carry Zod's "id" — AJV (the SDK client) rejects that keyword`);
+  assert.ok(refs > 0 && defs > 0, 'output-schemas.js registers shared row shapes with .meta({ id }); expected $ref/definitions on the wire');
 
   assert.ok(total <= TOTAL_MAX_BYTES,
     `combined tools/list is ${total} B, over the ${TOTAL_MAX_BYTES} B ceiling`);
+});
+
+test('tool-schema budget: every wire outputSchema compiles in the SDK client\'s AJV and still separates valid from invalid payloads', async () => {
+  // What a real client does with the list: compile each outputSchema with AJV
+  // (strict: false, as the SDK ships it) and validate structuredContent against
+  // it. Compiling is where the `id` keyword blows up; validating a `$ref` tool
+  // with a good and a bad payload proves the reference resolves to the row
+  // shape rather than to nothing.
+  const validator = new AjvJsonSchemaValidator();
+  const byName = new Map();
+  for (const svc of Object.keys(BUDGET)) {
+    const m = await measureService(svc);
+    for (const t of m.raw) {
+      if (!t.outputSchema) continue;
+      let v;
+      assert.doesNotThrow(() => { v = validator.getValidator(t.outputSchema); },
+        `${t.name}: the SDK client cannot compile this outputSchema`);
+      byName.set(t.name, v);
+    }
+  }
+
+  // d365_get_enum: `values[]` and `enums[].values[]` share the EnumValue $ref.
+  const enumV = byName.get('d365_get_enum');
+  assert.ok(enumV, 'd365_get_enum has an outputSchema');
+  assert.equal(enumV({ enum_name: 'SalesStatus', module_id: null, label: null, value_count: 1,
+    values: [{ name: 'None', value: 0, label: null }] }).valid, true, 'a single-target enum payload validates');
+  assert.equal(enumV({ requested_count: 1, resolved_count: 1, not_found: [],
+    enums: [{ enum_name: 'X', module_id: null, label: 'L', value_count: 1, values: [{ name: 'A', value: 1, label: 'a' }] }] }).valid, true,
+  'a batch enum payload validates through the $ref');
+  const bad = enumV({ enum_name: 'X', value_count: 1, values: [{ name: 7, value: 'not-a-number' }] });
+  assert.equal(bad.valid, false, 'a row violating the referenced shape is rejected');
+  assert.match(bad.errorMessage ?? '', /values\/0/, 'the error points into the $ref-resolved row');
+
+  // sec_lookup_role: the three sub-lists are $ref-shared between the single
+  // branch and roles[].
+  const roleV = byName.get('sec_lookup_role');
+  assert.equal(roleV({ requested_count: 1, resolved_count: 0, not_found: ['x'], roles: [] }).valid, true);
+  assert.equal(roleV({ roles: [{ role_id: 'r' }] }).valid, false, 'an incomplete role row inside roles[] is rejected');
 });
 
 test('tool-schema budget: the `core` profile figure, per server, selected per request (W2, #106)', async () => {
