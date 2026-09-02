@@ -64,6 +64,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { TOOL_SETS, registerServiceTools } from '../src/azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../src/azure/server-metadata.js';
+import { CORE_TOOLS } from '../src/azure/tool-guards.js';
+import { runWithRequestContext } from '../src/azure/request-context.js';
 
 // The budget is the FULL surface. A profile or guard left over in the
 // environment would silently shrink or alter it.
@@ -204,6 +206,45 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
 
   assert.ok(total <= TOTAL_MAX_BYTES,
     `combined tools/list is ${total} B, over the ${TOTAL_MAX_BYTES} B ceiling`);
+});
+
+test('tool-schema budget: the `core` profile figure, per server, selected per request (W2, #106)', async () => {
+  // `?profile=core` / `X-MCP-Tool-Profile: core` / `MCP_TOOL_PROFILE=core`
+  // resolve into the request context; registration reads it there. Measured the
+  // same way as the full list — a real McpServer, the real tools/list message —
+  // inside a request context, so this is what a connector URL carrying
+  // `?profile=core` receives. Printed for tuning, asserted for shape.
+  const report = [];
+  let fullTotal = 0, coreTotal = 0, coreTools = 0;
+  for (const svc of Object.keys(BUDGET)) {
+    const full = await measureService(svc);
+    const core = await runWithRequestContext({ profile: 'core', textChannel: 'full' }, () => measureService(svc));
+    fullTotal += full.bytes; coreTotal += core.bytes; coreTools += core.tools.length;
+
+    const names = core.tools.map(t => t.name);
+    const members = full.tools.map(t => t.name).filter(n => CORE_TOOLS.has(n));
+    let note = '';
+    if (members.length === 0) {
+      // A profile that would empty a server falls back to `full` — the SDK
+      // installs no tools/list handler for a server with zero tools and the
+      // client gets -32601. Task Recorder is that server today.
+      assert.deepEqual(names, full.tools.map(t => t.name),
+        `${svc}: no CORE_TOOLS member — core must fall back to the full list, never to an empty server`);
+      note = '  (no CORE_TOOLS member → full)';
+    } else {
+      assert.deepEqual(names, members,
+        `${svc}: core must register exactly the CORE_TOOLS members of the full list, in the same order`);
+    }
+    assert.ok(core.bytes <= full.bytes, `${svc}: core (${core.bytes} B) cannot exceed full (${full.bytes} B)`);
+
+    report.push(`  ${svc.padEnd(12)} full ${String(full.tools.length).padStart(2)} tools ${String(full.bytes).padStart(7)} B`
+      + `  →  core ${String(core.tools.length).padStart(2)} tools ${String(core.bytes).padStart(7)} B`
+      + `  (${full.bytes ? (100 * (core.bytes - full.bytes) / full.bytes).toFixed(1) : '0.0'}%)${note}`);
+  }
+  console.log(`\ntools/list under MCP_TOOL_PROFILE=core / ?profile=core (per request):\n${report.join('\n')}`);
+  console.log(`  TOTAL        full ${fullTotal} B (~${Math.round(fullTotal / 4)} tk)  →  core ${coreTools} tools ${coreTotal} B (~${Math.round(coreTotal / 4)} tk)`
+    + `  ${(100 * (coreTotal - fullTotal) / fullTotal).toFixed(1)}%\n`);
+  assert.ok(coreTotal < fullTotal, 'the profile must actually shrink the combined list');
 });
 
 test('tool-schema budget: every entry point registers through tool-sets.js, so the test measures what the servers ship', () => {

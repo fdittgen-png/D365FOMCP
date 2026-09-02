@@ -155,6 +155,8 @@ Task Recorder's 3.4 KB of output prose is the one exception where describe-trimm
 
 Make `MCP_TOOL_PROFILE` selectable per request, not per process: an HTTP header (`X-MCP-Tool-Profile: core`) or query parameter on the Streamable HTTP endpoints, with the env var as the default. The stateless transport already builds a fresh `McpServer` per request, so this is a one-line lookup in `installToolGuards`. The claude.ai connector URL can then carry `?profile=core` while Claude Code keeps the full list. Measured saving: −43% of the three-service list; the `CORE_TOOLS` list is hand-picked — tune it from the W0 golden test's real call frequencies.
 
+> **Shipped 2026-09-02 (#106).** `src/azure/request-context.js` resolves `profile` per request (query `?profile=` > header `X-MCP-Tool-Profile` > env `MCP_TOOL_PROFILE` > `full`; unknown → fall through) into an `AsyncLocalStorage` store; the four HTTP entry points wrap server construction + `handleRequest` in `runWithRequestContext`, stdio servers resolve once from env. The filter moved from `installToolGuards` to `registerServiceTools` (tool-sets.js) so it reaches every set. Measured off the transport: 58 → 23 tools, 155,789 → 77,539 B (**−50.2%**); KB −54.7%, XRef −60.1%, Sec −50.1%. A profile that would empty a server (Task Recorder has no `CORE_TOOLS` member) falls back to `full` — the SDK answers `tools/list` with `-32601` on an empty server.
+
 ### W3 — Bounded and summarised responses (tuning, M)
 
 Ordered by measured payload:

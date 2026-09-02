@@ -207,16 +207,29 @@ Composition, four servers, on the wire:
   concept-§3.1 calls with default args against a wide synthetic fixture, both
   channels within ±10% of `test/fixtures/response-size-baseline.json`.
   `GOLDEN_UPDATE=1` re-baselines — deliberately, in the diff.
-- **`MCP_TOOL_PROFILE=core`** registers 30 of 58 tools — 155,789 → 107,113 B
-  (~38,947 → ~26,778 tk, **−31%**, ~$0.24 over a 40-turn session). Off by
-  default. It filters only what passes through `installToolGuards`
-  (`registerKbTools` / `registerXrefTools` / `registerSecTools`): the ISV,
-  custom-fields and Task Recorder sets are untouched, which is why the two
-  largest KB tools (`d365_isv_lookup` 10.7 KB, `d365_isv_extension_points`
-  7.9 KB) survive the profile — a W2 (#106) item. The list in `CORE_TOOLS` is
-  hand-picked, not measured — tune it from real usage. A test asserts every name
-  in it still exists, because renaming a tool would otherwise shrink the profile
-  silently (it caught two wrong names on the first run).
+- **Tool profile `core` is a PER-REQUEST preference (W2, #106)**, resolved once
+  per request in `src/azure/request-context.js` and carried on an
+  `AsyncLocalStorage` store: `?profile=core` on the connector URL > the
+  `X-MCP-Tool-Profile` header > `MCP_TOOL_PROFILE` env > `full`. Unknown values
+  fall through, never error. The same deployment serves the full list to one
+  client and `core` to another; the resolved preferences are logged once per
+  request (`console.info`, App Insights) so `CORE_TOOLS` can be tuned from what
+  clients actually ask for. Stdio servers resolve once from env at startup.
+  Measured 2026-09-02 off the transport: **23 of 58 tools — 155,789 → 77,539 B
+  (~38,947 → ~19,385 tk, −50.2%)**; KB 69,113 → 31,308 (−54.7%), XRef 36,596 →
+  14,596 (−60.1%), Sec 36,837 → 18,392 (−50.1%). The filter is applied on the
+  registration path in `tool-sets.js` (`registerServiceTools` →
+  `withRegistrationPolicy`), so it reaches EVERY set — ISV and custom-fields
+  included; it used to sit in `installToolGuards`, which only three sets call,
+  and the two largest KB tools (`d365_isv_lookup` 10.7 KB,
+  `d365_isv_extension_points` 7.9 KB) survived it. **A profile that would leave
+  a server with zero tools falls back to `full`** (`effectiveProfile`): the SDK
+  installs no `tools/list` handler for an empty server and the client gets
+  `-32601` — Task Recorder has no `CORE_TOOLS` member and is that server today.
+  `CORE_TOOLS` stays in `tool-guards.js`, hand-picked, not measured. A test
+  asserts every name in it still exists across all four servers, because
+  renaming a tool would otherwise shrink the profile silently (it caught two
+  wrong names on the first run).
 
 **Guardrails are opt-in and armed at the MCP entry points** (`src/local/*.js`,
 `src/functions/*.js` set `MCP_TOOL_GUARDS=on`), not defaulted on in the library —
