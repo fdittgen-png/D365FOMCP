@@ -2363,4 +2363,26 @@ describe('response shaping — d365_lookup_table field narrowing', () => {
     const res = await call({ table_name: 'InventTable', fields_like: 'ITEM' });
     assert.deepEqual(res.structuredContent.fields.map(f => f.name), ['ItemId']);
   });
+
+  it('field_limit caps the list after the filters; field_count / fields_matched stay whole-table (#107.3)', async () => {
+    const res = await call({ table_name: 'InventTable', field_limit: 2 });
+    const t = res.structuredContent;
+    assert.equal(t.field_count, 3);
+    assert.equal(t.fields_matched, 3);
+    assert.equal(t.fields_shown, 2);
+    assert.equal(t.fields_truncated, true);
+    assert.equal(t.fields.length, 2);
+    assert.match(res.content[0].text, /Showing first 2 results \(default cap, max 2000\)/);
+    assert.match(res.content[0].text, /raise `field_limit`/);
+    // The default and an untruncated call carry the flag as false, not absent.
+    const full = await call({ table_name: 'InventTable' });
+    assert.equal(full.structuredContent.fields_truncated, false);
+    assert.equal(full.structuredContent.fields_matched, 3);
+  });
+
+  it('field_limit: a negative value falls back to the default without Zod (rule #13)', async () => {
+    const res = await tools['d365_lookup_table'].handler({ table_name: 'InventTable', field_limit: -5, format: 'markdown' });
+    assert.equal(res.structuredContent.fields.length, 3);
+    assert.equal(res.structuredContent.fields_truncated, false);
+  });
 });

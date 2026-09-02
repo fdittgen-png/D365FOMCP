@@ -157,9 +157,12 @@ export const d365LookupTableOutput = z.object({
   clustered_index: z.string().nullable(),
   replacement_key: z.string().nullable(),
   field_count: z.number(),
-  // Rows in `fields` after the fields_like / custom_only filters (equals
-  // field_count when neither is passed).
+  // fields_matched = rows after the fields_like / custom_only filters (equals
+  // field_count when neither is passed); fields_shown = rows in `fields` after
+  // field_limit (#107.3); fields_truncated = matched > shown.
+  fields_matched: z.number(),
   fields_shown: z.number(),
+  fields_truncated: z.boolean(),
   // Customization summary: is_customized=true when an AxTableExtension adds
   // fields; custom_field_count counts them; customization_modules lists the
   // models that contributed them.

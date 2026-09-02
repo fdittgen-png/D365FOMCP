@@ -130,6 +130,8 @@ export function registerKbTools(server, db) {
   }
 
   // ── 1. d365_lookup_table ──────────────────────────────────────────────────
+  const FIELD_LIMIT_DEFAULT = 200;
+  const FIELD_LIMIT_MAX = 2000;
   server.registerTool(
     'd365_lookup_table',
     {
@@ -139,15 +141,19 @@ export function registerKbTools(server, db) {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'),
         fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field.'),
         custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
+        field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT).describe(`Max fields to list (default ${FIELD_LIMIT_DEFAULT}); field_count is always the whole table.`),
         include_custom_fields: z.boolean().optional().default(false).describe('Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call.'),
         environment: z.string().min(1).max(100).optional().describe('Environment key for include_custom_fields. Defaults to the source marked default.'),
         format: formatTextParam,
       },
       outputSchema: d365LookupTableOutput.shape,
     },
-    async ({ table_name, fields_like, custom_only, include_custom_fields, environment, format }) => {
+    async ({ table_name, fields_like, custom_only, field_limit, include_custom_fields, environment, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
+      // Defensive default - the test mock server bypasses Zod (contract rule #13).
+      const fieldLimit = Number.isInteger(field_limit) && field_limit > 0
+        ? Math.min(field_limit, FIELD_LIMIT_MAX) : FIELD_LIMIT_DEFAULT;
 
       const customizedCol = tablesHaveCustomization ? 'is_customized' : '0 AS is_customized';
       const tbl = q(
@@ -193,11 +199,14 @@ export function registerKbTools(server, db) {
         ? fields_like.trim().toLowerCase()
         : null;
       const customFieldsOnly = custom_only === true;
-      const shownFieldRows = (fieldsLikeTerm || customFieldsOnly)
+      const matchedFieldRows = (fieldsLikeTerm || customFieldsOnly)
         ? fieldRows.filter(f =>
           (!fieldsLikeTerm || String(f.field_name).toLowerCase().includes(fieldsLikeTerm))
           && (!customFieldsOnly || Boolean(f.is_extension)))
         : fieldRows;
+      // #107.3: a 300-field table shipped 60 KB by default. The cap applies
+      // after the filters; field_count / fields_matched stay whole-table.
+      const shownFieldRows = matchedFieldRows.slice(0, fieldLimit);
 
       const idxRows = q(
         `SELECT index_name, is_unique, is_clustered, fields_json FROM indexes_tbl WHERE table_name = ? COLLATE NOCASE`, [row.table_name]
@@ -234,7 +243,9 @@ export function registerKbTools(server, db) {
         clustered_index: row.clustered_index ?? null,
         replacement_key: row.replacement_key ?? null,
         field_count: fieldRows.length,
+        fields_matched: matchedFieldRows.length,
         fields_shown: shownFieldRows.length,
+        fields_truncated: matchedFieldRows.length > shownFieldRows.length,
         is_customized: Boolean(row.is_customized),
         custom_field_count: fieldRows.filter(f => f.is_extension).length,
         customization_modules: [...new Set(
@@ -298,7 +309,12 @@ export function registerKbTools(server, db) {
         })),
         ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand', 'Custom'],
       );
-      out += '\n\n';
+      if (typed.fields_truncated) {
+        out += truncationNote('cap', typed.fields_shown, FIELD_LIMIT_MAX);
+        out += `_${typed.fields_matched} fields match. Narrow with \`fields_like\` / \`custom_only\`, or raise \`field_limit\`._\n\n`;
+      } else {
+        out += '\n\n';
+      }
 
       out += '## Indexes\n';
       if (typed.indexes.length > 0) {
