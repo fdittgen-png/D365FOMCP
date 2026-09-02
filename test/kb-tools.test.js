@@ -1970,9 +1970,13 @@ describe('d365_lookup_table — customization provenance', () => {
 
   after(() => { if (customDb) customDb.close(); });
 
-  it('flags the table as customized and lists the contributing module', async () => {
-    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ table_name: 'CustTable', format: 'markdown' });
-    const res = await customTools['d365_lookup_table'].handler(validated);
+  const call = async (args) => {
+    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ format: 'markdown', ...args });
+    return customTools['d365_lookup_table'].handler(validated);
+  };
+
+  it('flags the table as customized and lists the contributing module; include_provenance puts the pair on every row', async () => {
+    const res = await call({ table_name: 'CustTable', include_provenance: true });
     const t = res.structuredContent;
     assert.equal(t.is_customized, true);
     assert.equal(t.custom_field_count, 1);
@@ -1984,6 +1988,30 @@ describe('d365_lookup_table — customization provenance', () => {
     assert.equal(base.is_extension, false);
     // Markdown surfaces the customization too.
     assert.match(res.content[0].text, /Customized: 1 custom field/);
+    assert.match(res.content[0].text, /\| Custom \|/);
+  });
+
+  it('default omits is_extension/source_module on EVERY row; the header summary still says the table is customized (#107.4)', async () => {
+    const res = await call({ table_name: 'CustTable' });
+    const t = res.structuredContent;
+    assert.equal(t.is_customized, true);
+    assert.deepEqual(t.customization_modules, ['iExtension']);
+    for (const f of t.fields) {
+      assert.ok(!('is_extension' in f), `${f.name}: is_extension must be absent by default`);
+      assert.ok(!('source_module' in f), `${f.name}: source_module must be absent by default`);
+    }
+    assert.doesNotMatch(res.content[0].text, /\| Custom \|/);
+    // The absent keys must validate: optional, not nullable.
+    const { d365LookupTableOutput } = await import('../src/azure/output-schemas.js');
+    assert.doesNotThrow(() => d365LookupTableOutput.parse(t));
+  });
+
+  it('custom_only emits the pair on every row (all rows are extensions, so it distinguishes)', async () => {
+    const res = await call({ table_name: 'CustTable', custom_only: true });
+    const t = res.structuredContent;
+    assert.equal(t.fields.length, 1);
+    assert.equal(t.fields[0].is_extension, true);
+    assert.equal(t.fields[0].source_module, 'iExtension');
   });
 });
 

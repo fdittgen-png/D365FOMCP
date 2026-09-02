@@ -272,14 +272,23 @@ function buildSec() {
 function captureTools(register, db) {
   const handlers = {};
   register({
-    registerTool: (name, config, handler) => { handlers[name] = { schema: config.inputSchema || {}, handler }; },
+    registerTool: (name, config, handler) => {
+      handlers[name] = { schema: config.inputSchema || {}, outputSchema: config.outputSchema, handler };
+    },
   }, db);
   return handlers;
 }
 
 /** Run a handler with the caller's args passed through Zod so every `.default()`
  *  applies — this is exactly what a client sending only the required arguments
- *  gets (`format` resolves to 'auto', the adaptive text channel). */
+ *  gets (`format` resolves to 'auto', the adaptive text channel).
+ *
+ *  The typed payload is also validated against the tool's registered
+ *  outputSchema, exactly as the MCP SDK does on send (#107.4): a key that is
+ *  OMITTED per rule #14 must be `.optional()` in the schema, a key that is
+ *  present-but-null must be `.nullable()` — getting that wrong is a runtime
+ *  -32602 on every call, and the size gate is the one place every shaped
+ *  default response passes through. */
 async function callDefault(handlers, name, args) {
   const tool = handlers[name];
   assert.ok(tool, `tool "${name}" not registered`);
@@ -287,6 +296,10 @@ async function callDefault(handlers, name, args) {
   const result = await tool.handler(validated);
   assert.ok(!result.isError, `${name}: returned an error — ${result.content?.[0]?.text?.slice(0, 200)}`);
   assert.ok(result.structuredContent, `${name}: no structuredContent — the size gate needs a typed payload`);
+  assert.ok(tool.outputSchema, `${name}: no outputSchema registered`);
+  const parsed = z.object(tool.outputSchema).safeParse(result.structuredContent);
+  assert.ok(parsed.success, `${name}: structuredContent does not satisfy its outputSchema — `
+    + (parsed.success ? '' : JSON.stringify(parsed.error.issues.slice(0, 5))));
   return {
     json: JSON.stringify(result.structuredContent).length,
     text: result.content[0].text.length,

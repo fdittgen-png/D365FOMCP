@@ -40,6 +40,7 @@ Get complete metadata for a D365FO table: fields (name, type, EDT), primary key,
 | `fields_like` | string (min 1, max 200) | no | Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field. |
 | `custom_only` | boolean | default `false` | Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected. |
 | `field_limit` | integer (≥1, ≤2000) | default `200` | Max fields to list (default 200); field_count is always the whole table. |
+| `include_provenance` | boolean | default `false` | Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension. |
 | `include_custom_fields` | boolean | default `false` | Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call. |
 | `environment` | string (min 1, max 100) | no | Environment key for include_custom_fields. Defaults to the source marked default. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |

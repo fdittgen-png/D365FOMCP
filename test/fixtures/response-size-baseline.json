@@ -3,8 +3,8 @@
   "tolerance": 0.1,
   "calls": {
     "d365_lookup_table": {
-      "json": 42035,
-      "text": 16670
+      "json": 32055,
+      "text": 15855
     },
     "d365_search": {
       "json": 3311,

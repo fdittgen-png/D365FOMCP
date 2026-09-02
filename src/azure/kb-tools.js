@@ -142,18 +142,25 @@ export function registerKbTools(server, db) {
         fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field.'),
         custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
         field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT).describe(`Max fields to list (default ${FIELD_LIMIT_DEFAULT}); field_count is always the whole table.`),
+        include_provenance: z.boolean().optional().default(false).describe('Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension.'),
         include_custom_fields: z.boolean().optional().default(false).describe('Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call.'),
         environment: z.string().min(1).max(100).optional().describe('Environment key for include_custom_fields. Defaults to the source marked default.'),
         format: formatTextParam,
       },
       outputSchema: d365LookupTableOutput.shape,
     },
-    async ({ table_name, fields_like, custom_only, field_limit, include_custom_fields, environment, format }) => {
+    async ({ table_name, fields_like, custom_only, field_limit, include_provenance, include_custom_fields, environment, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
       // Defensive default - the test mock server bypasses Zod (contract rule #13).
       const fieldLimit = Number.isInteger(field_limit) && field_limit > 0
         ? Math.min(field_limit, FIELD_LIMIT_MAX) : FIELD_LIMIT_DEFAULT;
+      // Provenance is decided per RESPONSE, never per row (rule #14, #107.4):
+      // custom_only -> every row is an extension, emit it; include_provenance
+      // -> emit everywhere; otherwise nowhere. Same policy as
+      // d365_get_entity_sources; the header still carries the customisation
+      // summary (custom_field_count, customization_modules) in every case.
+      const emitProvenance = include_provenance === true || custom_only === true;
 
       const customizedCol = tablesHaveCustomization ? 'is_customized' : '0 AS is_customized';
       const tbl = q(
@@ -258,8 +265,10 @@ export function registerKbTools(server, db) {
           enum_type: f.enum_type ?? null,
           label: f.label ? resolve(f.label) : null,
           mandatory: toNum(f.mandatory),
-          is_extension: Boolean(f.is_extension),
-          source_module: f.source_module ?? null,
+          ...(emitProvenance ? {
+            is_extension: Boolean(f.is_extension),
+            source_module: f.source_module ?? null,
+          } : {}),
         })),
         indexes: idxRows.map(i => ({
           name: i.index_name,
@@ -305,9 +314,11 @@ export function registerKbTools(server, db) {
           Enum: f.enum_type ?? '',
           Label: f.label ?? '-',
           Mand: f.mandatory ?? '',
-          Custom: f.is_extension ? (f.source_module || '✓') : '',
+          ...(emitProvenance ? { Custom: f.is_extension ? (f.source_module || '✓') : '' } : {}),
         })),
-        ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand', 'Custom'],
+        emitProvenance
+          ? ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand', 'Custom']
+          : ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand'],
       );
       if (typed.fields_truncated) {
         out += truncationNote('cap', typed.fields_shown, FIELD_LIMIT_MAX);

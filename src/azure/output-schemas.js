@@ -116,8 +116,12 @@ export const d365LookupTableFieldSchema = z.object({
   mandatory: z.number().nullable(),
   // Customization provenance (false / null on standard Microsoft fields, and
   // on KB databases built before the customization columns existed).
-  is_extension: z.boolean(),
-  source_module: z.string().nullable(),
+  // OPTIONAL, decided per response (#107.4, rule #14): present on every row
+  // with custom_only / include_provenance, absent on every row otherwise —
+  // the pair cost +3,714 tk on a 284-field entity while repeating the table's
+  // own module. Absent, never null-when-omitted: hence optional, not nullish.
+  is_extension: z.boolean().optional(),
+  source_module: z.string().nullable().optional(),
 });
 
 export const d365LookupTableIndexSchema = z.object({
