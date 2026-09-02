@@ -58,8 +58,11 @@ function safeIsv(db) {
   try { return hasIsvData(db) === true; } catch { return false; }
 }
 
-/** The `d365://snapshot` document. Pure apart from the reads; safe on any db. */
-export function snapshotInfo({ db = null, service, toolCount = null } = {}) {
+/**
+ * The `d365://snapshot` document. Pure apart from the reads; safe on any db.
+ * @param {{ db?: any, service?: string, toolCount?: number | (() => number) | null }} [opts]
+ */
+export function snapshotInfo({ db = null, service = undefined, toolCount = null } = {}) {
   const built = db ? readBuildDate(db) : null;
   return {
     service,
@@ -72,8 +75,11 @@ export function snapshotInfo({ db = null, service, toolCount = null } = {}) {
   };
 }
 
-/** The `d365://modules` document. */
-export function modulesInfo({ db = null, service } = {}) {
+/**
+ * The `d365://modules` document.
+ * @param {{ db?: any, service?: string }} [opts]
+ */
+export function modulesInfo({ db = null, service = undefined } = {}) {
   const models = safeModelVersions(db);
   return {
     service,
@@ -93,9 +99,9 @@ function jsonContents(uri, build) {
  * Register the resources of one service. Returns the URIs registered.
  *
  * @param {any} server  McpServer (or a prototype-chained view of one).
- * @param {{ db?: any, service: string, toolCount?: number | (() => number) }} opts
+ * @param {{ db?: any, service?: string, toolCount?: number | (() => number) | null }} [opts]
  */
-export function registerResources(server, { db = null, service, toolCount = null } = {}) {
+export function registerResources(server, { db = null, service = 'snapshot', toolCount = null } = {}) {
   if (!server || typeof server.registerResource !== 'function') return [];
   const registered = [];
 

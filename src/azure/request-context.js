@@ -104,7 +104,7 @@ function readQuery(query, name) {
 /**
  * Resolve the preferences for one request / one process.
  *
- * @param {{ headers?: any, query?: any, env?: object, clientInfo?: {name?: string} }} [sources]
+ * @param {{ headers?: any, query?: any, env?: object, clientInfo?: {name?: string}, policy?: Record<string, string> }} [sources]
  *   `headers`: Fetch `Headers`, Azure `HttpRequest.headers`, or a plain object.
  *   `query`: `URLSearchParams`, a plain object, or a full URL string.
  *   `env`: defaults to `process.env`.
