@@ -183,6 +183,8 @@ Options:
 
 **Recommendation: B, gated on a measurement.** Before building it, run the Run-4 method against Claude Code (stdio) and the claude.ai connector once more to confirm which channel each bills. If both bill JSON only, A is sufficient and simpler. `structuredContent` stays the typed payload regardless; `structuredResult` remains the single choke point.
 
+> **Mechanism shipped 2026-09-02 (#108), default unchanged.** `structuredResult` reads `getRequestContext().textChannel`: `full` is byte-identical to before; `summary` emits the H2 line + `_Payload in structuredContent (N keys, M bytes)._` (≤ 300 B). Both A and B are available without further code: A = `MCP_TEXT_CHANNEL=summary` (or `?text=summary` / `X-MCP-Text-Channel` per request); B = `CLIENT_TEXT_CHANNEL_POLICY` in request-context.js (stdio `clientInfo.name` → channel), shipped **empty**. What remains is the decision path's step 1 — the per-client billing measurement — recorded on #108 before either switch is thrown.
+
 ### W5 — Pagination and resources (architecture, L)
 
 1. **Cursor pagination** on the list-shaped tools — `xref_find_references`, `xref_find_usages`, `d365_search`, `d365_get_class_methods`, `d365_get_entity_sources`, `sec_search`, `sec_find_roles_by_*`: add `cursor` (opaque base64 offset — stateless-compatible), return `has_more` + `next_cursor` + `total_count`. Keep `limit` semantics unchanged so existing callers are byte-identical until they pass `cursor`. Replaces "raise the limit and re-pay the head".

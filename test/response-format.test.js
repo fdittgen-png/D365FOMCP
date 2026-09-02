@@ -270,6 +270,73 @@ test('given shared.js helpers, when imported, then structuredResult defaults to 
   assert.equal(structuredResult({ a: 1 }, 'plain').content[0].text, encodeToon({ a: 1 }));
 });
 
+// ── W4 (#108): text-channel policy — mechanism only, default unchanged ───────
+
+const SAMPLE_PAYLOADS = [
+  { typed: { a: 1 }, md: '## Context\n\n| a |\n|---|\n| 1 |' },
+  { typed: { table_name: 'CustTable', field_count: 2, fields: [{ name: 'AccountNum', type: 'String' }, { name: 'CustGroup', type: 'String' }] },
+    md: '## Table CustTable\n\n| name | type |\n|---|---|\n| AccountNum | String |\n| CustGroup | String |' },
+  { typed: { query: 'Sales%', result_count: 0, results: [], truncated: false }, md: '## Search\n\nNo rows.' },
+];
+
+test('given the default (full) text channel, when structuredResult renders three sample payloads, then the output is byte-identical to the pre-#108 behaviour', async () => {
+  const { structuredResult, encodeToon } = await import('../src/azure/shared.js');
+  const { runWithRequestContext } = await import('../src/azure/request-context.js');
+  for (const { typed, md } of SAMPLE_PAYLOADS) {
+    const heading = md.split('\n', 1)[0];
+    const toonText = `${heading}\n\n${encodeToon(typed)}`;
+    const expectedAuto = md.length < toonText.length ? md : toonText;
+
+    const implicit = structuredResult(typed, md);
+    assert.equal(implicit.content[0].text, expectedAuto, 'no context → adaptive, exactly as before');
+    assert.deepEqual(implicit.structuredContent, typed);
+
+    const explicit = await runWithRequestContext({ profile: 'full', textChannel: 'full' }, () => structuredResult(typed, md));
+    assert.deepEqual(explicit, implicit, 'an explicit full channel changes nothing');
+    assert.equal(structuredResult(typed, md, 'toon').content[0].text, toonText);
+    assert.equal(structuredResult(typed, md, 'markdown').content[0].text, md);
+  }
+});
+
+test('given the summary text channel, when structuredResult renders, then the text is the H2 line plus one pointer line (≤ 300 B) and structuredContent is untouched', async () => {
+  const { structuredResult } = await import('../src/azure/shared.js');
+  const { runWithRequestContext } = await import('../src/azure/request-context.js');
+  await runWithRequestContext({ profile: 'full', textChannel: 'summary' }, async () => {
+    for (const { typed, md } of SAMPLE_PAYLOADS) {
+      for (const format of [undefined, 'auto', 'toon', 'markdown']) {
+        const r = structuredResult(typed, md, format);
+        const text = r.content[0].text;
+        assert.ok(text.startsWith('## '), `summary keeps the H2 context line (rule #3): ${text}`);
+        assert.ok(Buffer.byteLength(text, 'utf8') <= 300, `summary text is ≤ 300 B, got ${Buffer.byteLength(text)}`);
+        assert.equal(text.split('\n').length, 3, 'exactly heading, blank, pointer');
+        assert.match(text, /^## .+\n\n_Payload in structuredContent \(\d+ keys, \d+ bytes\)\._$/);
+        assert.equal(text.split('\n')[0], md.split('\n')[0], 'the heading is the tool\'s own');
+        assert.deepEqual(r.structuredContent, typed, 'the typed payload is untouched');
+        assert.equal(r.isError, undefined);
+        // `format` chooses the ENCODING of a full channel; on summary there is nothing to encode.
+        assert.ok(!text.includes('|') && !text.includes('AccountNum'), 'no payload content leaks into the summary');
+      }
+    }
+    const noHeading = structuredResult({ a: 1 }, 'plain');
+    assert.ok(noHeading.content[0].text.startsWith('## Result'), 'a missing heading still yields an H2 opener');
+  });
+});
+
+test('given the summary text channel, when emptyResult/notFoundResult/errorResult are called, then they are unaffected (meta-responses)', async () => {
+  const { emptyResult, notFoundResult, errorResult } = await import('../src/azure/shared.js');
+  const { runWithRequestContext } = await import('../src/azure/request-context.js');
+  const baseline = {
+    empty: emptyResult('tables', { n: 0 }),
+    notFound: notFoundResult('Table', 'Foo', ['Bar']),
+    error: errorResult('db-error', 'hint'),
+  };
+  await runWithRequestContext({ profile: 'full', textChannel: 'summary' }, () => {
+    assert.deepEqual(emptyResult('tables', { n: 0 }), baseline.empty);
+    assert.deepEqual(notFoundResult('Table', 'Foo', ['Bar']), baseline.notFound);
+    assert.deepEqual(errorResult('db-error', 'hint'), baseline.error);
+  });
+});
+
 test('given shared.js helpers, when errorResult/notFoundResult are called, then isError is true', async () => {
   const { errorResult, notFoundResult } = await import('../src/azure/shared.js');
   assert.equal(errorResult('db-error', 'hint').isError, true);

@@ -12,6 +12,7 @@ import { z } from 'zod';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 import { ensureSecIndexes } from './sec-indexes.js';
+import { getRequestContext } from './request-context.js';
 
 // ── Shared tool input params ─────────────────────────────────────────────────
 //
@@ -436,6 +437,20 @@ export function extractLeadingHeading(text) {
   return /^#{1,6}\s+\S/.test(firstLine) ? firstLine.trimEnd() : '';
 }
 
+/**
+ * The 'summary' text channel (W4, #108): the H2 context line (rule #3 still
+ * holds) and one line that says where the payload is and how big it is. Nothing
+ * from the payload itself — a client on this channel reads `structuredContent`.
+ */
+export function summaryText(typed, markdownText) {
+  const heading = extractLeadingHeading(markdownText) || '## Result';
+  let bytes = 0;
+  try { bytes = Buffer.byteLength(JSON.stringify(typed) ?? '', 'utf8'); } catch { bytes = 0; }
+  const keys = Array.isArray(typed) ? typed.length
+    : (typed && typeof typed === 'object') ? Object.keys(typed).length : (typed === undefined ? 0 : 1);
+  return `${heading}\n\n_Payload in structuredContent (${keys} keys, ${bytes} bytes)._`;
+}
+
 // ── Read-only DB tool annotations ────────────────────────────────────────────
 // Frozen so a tool file can't accidentally flip a hint at registration time.
 export const READ_ONLY_DB_ANNOTATIONS = Object.freeze({
@@ -473,14 +488,38 @@ export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
  * `structuredContent` is always the typed JSON regardless of `format` — it is
  * mandated by the MCP protocol whenever the tool declares an outputSchema.
  *
+ * TEXT-CHANNEL POLICY (W4, #108). The request context's `textChannel` decides
+ * what the text channel CARRIES; `format` only decides how it is encoded:
+ *
+ *   'full'    (default) — TOON / Markdown rendering of `typed`, exactly as
+ *             before; byte-identical to the pre-#108 behaviour.
+ *   'summary' — the H2 context line plus ONE line naming the payload's key
+ *             count and byte size, and nothing else. For a client that is
+ *             measured to bill `structuredContent` and discard the text, the
+ *             full text channel is pure wire waste (1.3–2× the JSON alone).
+ *
+ * Selected per request via `?text=summary`, `X-MCP-Text-Channel: summary` or
+ * `MCP_TEXT_CHANNEL=summary` (request-context.js). The default stays 'full'
+ * until #108's client measurement is recorded — this is the mechanism, not the
+ * decision.
+ *
  * @param {object} typed         Typed payload (also returned as structuredContent).
  * @param {string} markdownText  Full Markdown rendering (heading + body).
- * @param {'toon'|'markdown'} [format='toon']  Text-channel rendering.
+ * @param {'auto'|'toon'|'markdown'} [format='auto']  Text-channel encoding.
+ *   'auto' picks the smaller of TOON and Markdown per response; the other two
+ *   pin it. Anything else (including `undefined` from the test mock server,
+ *   which bypasses Zod) is treated as 'auto' — a 'toon' default here would
+ *   silently pin the encoding for every such call, which is exactly how this
+ *   was wrong the first time.
  */
-// The default is 'auto', not 'toon': the test mock server bypasses Zod and
-// passes `undefined`, and a 'toon' default here would silently pin the encoding
-// for every such call — which is exactly how this was wrong the first time.
 export function structuredResult(typed, markdownText, format = 'auto') {
+  if (getRequestContext().textChannel === 'summary') {
+    return {
+      content: [{ type: 'text', text: summaryText(typed, markdownText) }],
+      structuredContent: typed,
+    };
+  }
+
   // An explicit `format: "markdown"` is honoured unconditionally: those callers
   // quote the text verbatim into a document, so size is not the criterion.
   if (format === 'markdown' && markdownText) {
