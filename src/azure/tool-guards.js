@@ -91,6 +91,8 @@ export function semanticStore() {
  *   - a repeat of an existing context_hint bumps `confirmations` (+0.03
  *     confidence each, capped in confidenceFor) — upsertMapping only bumps for
  *     user_confirmed, so that step is done here, and only on hint-sourced rows.
+ * @param {any} semDb
+ * @param {{ functional_context?: string, object_type?: string, object_name?: string }} [hint]
  * @returns {{action:'inserted'|'confirmed'|'unchanged'|'skipped', reason?:string}|null}
  */
 export function recordContextHint(semDb, { functional_context, object_type, object_name } = {}) {
@@ -112,7 +114,7 @@ export function recordContextHint(semDb, { functional_context, object_type, obje
         .run(confirmations, confidenceFor('context_hint', confirmations), new Date().toISOString(), r.row.id);
       return { action: 'confirmed' };
     }
-    return { action: r.action };
+    return { action: /** @type {'inserted'|'unchanged'|'confirmed'|'skipped'} */ (r.action) };
   } catch (err) {
     console.error('[semantic-store] context hint not recorded:', err?.message ?? err);
     return null;

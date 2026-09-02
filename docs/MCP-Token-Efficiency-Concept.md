@@ -339,6 +339,23 @@ W1 levers as shipped: `.nullable()`→`.nullish()`/`.optional()` −5,904 B · `
 
 Out of scope on purpose: #84 Labels v2 (KB schema migration + full rebuild).
 
+## 11. Response-quality follow-up (2026-09-02, branch `feat/response-quality-q1-q6`, stacked on §10)
+
+The question after §10 was: what raises the *quality* of Claude's answers without giving back the token savings? Answer: fix the data the model reads, and make the cheapest responses — not-found, empty, "I am not covering X" — carry the most information. Six issues, all implemented on top of §10.
+
+| # | Change | Quality effect | Token effect (measured) |
+|---|---|---|---|
+| Q1 #114 | Sec answer defects: `duty_privileges` was matched without `COLLATE NOCASE` (0 rows vs 1 for `CustGroupView`); `role_duties` carried case-twin rows one tool counted twice (54 vs 53). Seven shared query functions now back every affected tool. | `parent_duties` populated; duty counts identical across `lookup_role` / `compare_roles` / `role_hierarchy`; Deny-wins preserved | 0 — same payloads, correct content (+44 B schema) |
+| Q2 #115 | `functional_context` (vocabulary id) on 9 read tools → records a `context_hint` mapping on success (W7's implicit path, now live); `notFoundResult` enriched at all 31 call sites with `closestNames` recovery (case → prefix → contains → Levenshtein ≤2) and the objects mapped to the entity; `xref_search_names` path-miss note | A near-miss name or an unknown entity now returns the right name instead of a bare "not found" | +1,297 B on `tools/list` (9 × ~145 B); not-found text +≤400 B on a path that replaces a 5–20k tk rediscovery |
+| Q3 #116 | Coverage signals from one helper (`coverageNotes`): `field_limit_hit`, `provenance_omitted` (count + models), `isv_not_scanned`, `isv_excluded` (exact count), `partial_build` (now written by the delta-merge path) | The model can say "12 of 340 shown" and "ISV usages exist, not shown" instead of summarising a partial view as the whole | +1,035 B schema; +91–284 B text per response **only where a signal fires** |
+| Q4 #117 | Tool-routing moved from descriptions into server `instructions` (≤600 chars/service, verb contract + first-call rule + habits + boundary line; test asserts every claim against the registered tools) + `d365://tool-guide` resource with the 14 recipes | Fewer wrong-tool-first turns | −790 B descriptions per request; instructions are paid once per session |
+| Q5 #118 | `xref_check_exists`, `sec_check_exists` — batch-only preflight (1..50), canonical casing back, `not_found[]` with suggestions; both in `CORE_TOOLS` | The model verifies the names it is about to write in one call | +3,446 B on `tools/list` for the pair (output schemas 724 / 779 B); each use replaces 3–5 lookups |
+| Q6 #119 | LLM eval leg (`npm run evals -- <svc> --llm`), discipline metrics (pass rate, median calls, median bytes, lever-use rate, first-call-correct), `--compare` regression gate, CI workflow (replay on PRs; LLM leg secret-gated) | Quality becomes a number that regresses visibly, with the token budget beside it | CI-time only; no real LLM run yet (no API key on the build box — cost estimate ≈ $0.03/question recorded) |
+
+Net on the fixed cost: 155,766 → **160,800 B** (+3.2%), of which the two preflight tools are 3.4 KB and `functional_context` 1.3 KB — both deliberate, both listed in the budget test with their cause. Golden responses: +23–70 B JSON where a coverage key fires. Suite 1,579 → **1,715**; typecheck 215 held; eval replay 40/40. Also fixed in passing: `d365_find_referencing_tables` emitted `returned_count` without declaring it — the SDK validator was rejecting every non-empty response on the live server.
+
+Open after this branch: #119 first real LLM run (needs a key + a snapshot on the runner); the `check_*`-first habit is in the instructions but unmeasured until that run.
+
 ## 9. Related
 
 - Workstream issues (filed 2026-09-02): W0 #104 · W1 #105 · W2 #106 · W3 #107 · W4 #108 (ADR) · W5 #109 (ADR) · W6 #110 · W7 #111 (ADR) · umbrella #112.

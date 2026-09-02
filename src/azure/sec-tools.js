@@ -235,7 +235,9 @@ export function privilegeRoles(db, privilegeName) {
 
 // ── Register all 18 Security tools ──────────────────────────────────────────
 
-export function registerSecTools(server, db, { semanticDb } = {}) {
+/** @param {{ semanticDb?: any }} [opts] test injection of the semantic store (#115) */
+export function registerSecTools(server, db, opts = {}) {
+  const { semanticDb } = opts;
   // Agent guardrails (loop detection + one-shot staleness note) wrap every
   // tool registered below. Returns a proxy, so the shared McpServer is not
   // mutated and a second register*Tools() call cannot double-wrap it.
@@ -2492,7 +2494,7 @@ export function registerSecTools(server, db, { semanticDb } = {}) {
       for (const { name, kind } of items) {
         const found = lookups[kind](name);
         if (found) hits.push({ name, exists: true, kind, label: found.label, canonical_name: found.canonical_name });
-        else misses.push({ name, kind, suggestions: kind === 'entry_point' ? [] : closestNames(db, name, kind, 3) });
+        else misses.push({ name, kind, suggestions: kind === 'entry_point' ? [] : closestNames(db, name, /** @type {any} */ (kind), 3) });
       }
       const typed = { requested_count: items.length, found_count: hits.length, artefacts: hits, not_found: misses };
 

@@ -599,6 +599,8 @@ export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
  *   which bypasses Zod) is treated as 'auto' — a 'toon' default here would
  *   silently pin the encoding for every such call, which is exactly how this
  *   was wrong the first time.
+ * @param {{ coverage?: { text: string, keys: Record<string, number|boolean> } }} [opts]
+ *   Coverage boundaries from `coverageNotes()` (#116).
  */
 export function structuredResult(typed, markdownText, format = 'auto', { coverage } = {}) {
   // Coverage boundaries (#116): the fired keys join the typed payload; the
@@ -703,6 +705,7 @@ function insertAfterHeading(text, lines) {
 export function coverageNotes(signals = {}) {
   const s = signals && typeof signals === 'object' ? signals : {};
   const lines = [];
+  /** @type {Record<string, number|boolean>} */
   const keys = {};
   const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 

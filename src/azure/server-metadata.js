@@ -103,11 +103,11 @@ export const SERVICES = Object.freeze({
       'Impact analysis, Chain-of-Command extension discovery, event handlers, class hierarchies, interface implementors, ' +
       'cross-module dependencies. Read-only snapshot; every data response carries its snapshot date.',
     instructions:
-      'find_* = a list · object_summary = counts · class_*/interface_*/method_* = one aspect · impact_analysis = blast radius · ' +
-      'search_names = pattern on the object PATH · list_*/module_*/cross_* = catalogues · isv_* = sealed ISV. ' +
-      'First call: xref_object_summary, then find_* detail; xref_impact_analysis before modifying. ' +
-      'Always pass limit; modules to scope; batch object_names; cursor paging. Responses state what they do not cover (ISV excluded unless include_isv). ' +
-      '0 rows from xref_search_names without a leading % is a path miss, not absence — retry %name%. xref_raw_sql: LIMIT, never SELECT *.',
+      'find_* = a list · check_* = boolean, batch · object_summary = counts · class_*/interface_*/method_* = one aspect · impact_analysis = blast radius · ' +
+      'search_names = PATH pattern · list_*/module_*/cross_* = catalogues · isv_* = sealed ISV. ' +
+      'First call: xref_check_exists for names, xref_object_summary for counts, then find_*; xref_impact_analysis before modifying. ' +
+      'limit; modules; batch object_names; cursor paging. Responses state what they do not cover (ISV unless include_isv). ' +
+      '0 rows from search_names without leading % = path miss, not absence — retry %name%. raw_sql: LIMIT only.',
   },
   sec: {
     name: 'd365fo-sec',
@@ -119,12 +119,12 @@ export const SERVICES = Object.freeze({
       'and licence (Team Members / Activity / Operations) assessment. Labels resolved to English text. ' +
       'Internal staff data only — no customer or vendor records. Read-only snapshot; every data response carries its snapshot date.',
     instructions:
-      'lookup_* = one object in full · find_* = a list · effective_*/permission_*/object_* = net access ' +
-      '(role→duty→privilege→entry point, Deny wins) · compare_* = diff · search = ranked by text · stats = counts. ' +
-      'First call: "can user X do Y" → sec_effective_permissions; "who can reach Y" → sec_object_access; roles → sec_lookup_role ' +
-      '(include_entity_permissions opt-in). Case-insensitive; pass menu items/tables, not entity names. ' +
-      'limit, modules, batch role_names, cursor paging. Data responses carry their snapshot date and state what they do not cover; ' +
-      'verify with a trace. sec_raw_sql is last resort.',
+      'lookup_* = one object in full · find_* = a list · check_* = boolean, batch · effective_*/permission_*/object_* = net access ' +
+      '(role→duty→privilege→entry point, Deny wins) · compare_* = diff · search = ranked · stats = counts. ' +
+      'First call: sec_check_exists for names; "can user X do Y" → sec_effective_permissions; "who reaches Y" → sec_object_access; roles → sec_lookup_role ' +
+      '(entity perms opt-in). Case-insensitive; pass menu items/tables, not entities. ' +
+      'limit, modules, batch role_names, cursor. Responses carry snapshot date and state what they do not cover; ' +
+      'verify with a trace; raw_sql last resort.',
   },
   taskrecorder: {
     name: 'd365fo-taskrecorder',

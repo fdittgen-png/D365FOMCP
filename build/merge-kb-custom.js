@@ -245,6 +245,11 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     setMeta.run('has_customizations', '1');
     setMeta.run('build_date', new Date().toISOString());
     setMeta.run('last_custom_merge', new Date().toISOString());
+    // #116 coverage signal `partial_build`: this database is a DELTA merge, so
+    // kb_search may be stale for base tables that only gained extension fields
+    // since the last full build (see CLAUDE.md "Post-compile refresh"). A full
+    // build creates a fresh kb_metadata without this key, which is what clears it.
+    setMeta.run('partial_build', new Date().toISOString());
     if (hasTable(db, 'main', 'model_versions')) {
       setMeta.run('model_versions_count',
         String(db.prepare('SELECT COUNT(*) AS n FROM main.model_versions').get().n));

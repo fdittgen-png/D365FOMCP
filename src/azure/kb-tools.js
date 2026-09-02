@@ -64,7 +64,9 @@ import {
 
 // ── Register all 17 KB tools ────────────────────────────────────────────────
 
-export function registerKbTools(server, db, { semanticDb } = {}) {
+/** @param {{ semanticDb?: any }} [opts] test injection of the semantic store (#115) */
+export function registerKbTools(server, db, opts = {}) {
+  const { semanticDb } = opts;
   // Agent guardrails (loop detection + one-shot staleness note) wrap every
   // tool registered below. Returns a proxy, so the shared McpServer is not
   // mutated and a second register*Tools() call cannot double-wrap it.

@@ -116,14 +116,8 @@ describe('server-metadata: instructions are true against the registered tool set
       entity: 'd365_entity_map — semantic-layer reader',
       dq: 'd365_dq_rules — semantic-layer reader',
     },
-    // `check` (#118: xref_check_exists / sec_check_exists — boolean, batch) belongs
-    // in the verb contract line of server-metadata.js, which #117 item 1 owns.
-    // Listed here until that line reads `check_* = boolean, batch`; delete then.
-    xref: {
-      check: 'xref_check_exists — preflight existence check (#118); pending the #117 contract line',
-    },
+    xref: {},
     sec: {
-      check: 'sec_check_exists — preflight existence check (#118); pending the #117 contract line',
       role: 'sec_role_hierarchy — one aspect of one role',
       company: 'sec_company_users — one-purpose list',
       licence: 'sec_licence_assessment — one-purpose assessment',

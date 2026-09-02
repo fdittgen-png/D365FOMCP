@@ -76,7 +76,9 @@ function toNum(v) {
 }
 const toStr = (v) => (v == null ? null : String(v));
 
-export function registerEffectiveSchemaTools(server, db, { semanticDb } = {}) {
+/** @param {{ semanticDb?: any }} [opts] test injection of the semantic store (#115) */
+export function registerEffectiveSchemaTools(server, db, opts = {}) {
+  const { semanticDb } = opts;
   const q = (sql, params = []) => query(db, sql, params);
   const tableHasColumn = (table, col) => {
     try { return q(`PRAGMA table_info(${table})`).some(c => c.name === col); } catch { return false; }
