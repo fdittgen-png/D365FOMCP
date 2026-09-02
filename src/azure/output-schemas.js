@@ -1599,3 +1599,98 @@ export const xrefIsvFindUsagesOutput = z.object({
   truncated: z.boolean(),
   provenance: isvProvenanceSchema,
 });
+
+// ── Semantic layer (ADR W7 + W7b, issue #111) ────────────────────────────────
+//
+// Metadata-only payloads: entity ids, object/field names, roles, declarative
+// specs, provenance. No row data, no sample values — see semantic-store.js.
+
+export const semMappedObjectSchema = z.object({
+  object_type: z.string(),
+  object_name: z.string(),
+  model: z.string().nullable(),
+  role: z.string().describe('header | line | master | setup | transaction | reference | posting | ui'),
+  source: z.string().describe('user_confirmed | assistant_inferred | context_hint | seed'),
+  confidence: z.number(),
+  confirmations: z.number(),
+  verified: z.boolean().describe('True when the object exists in the KB snapshot.'),
+});
+
+export const d365MapEntityOutput = z.object({
+  entity_id: z.string(),
+  entity_name: z.string(),
+  process: z.string(),
+  source: z.string(),
+  inserted: z.number(),
+  confirmed: z.number(),
+  unchanged: z.number(),
+  unverified_objects: z.array(z.string()).describe('Objects not found in the KB; recorded with verified=false.'),
+  objects: z.array(semMappedObjectSchema),
+});
+
+export const d365MapDqRuleOutput = z.object({
+  rule_id: z.string(),
+  version: z.number(),
+  action: z.string().describe('inserted | versioned | confirmed | unchanged'),
+  entity_id: z.string().nullable(),
+  object_name: z.string().nullable(),
+  field_name: z.string().nullable(),
+  dimension: z.string(),
+  severity: z.string(),
+  source: z.string(),
+  confidence: z.number(),
+  enabled: z.boolean(),
+  spec: z.record(z.string(), z.unknown()),
+});
+
+export const d365EntityMapOutput = z.object({
+  direction: z.string().describe('forward (entity -> objects) | reverse (object -> entities)'),
+  entity_id: z.string().nullable(),
+  entity_name: z.string().nullable(),
+  process: z.string().nullable(),
+  object_name: z.string().nullable(),
+  mapping_count: z.number(),
+  by_role: z.array(z.object({
+    role: z.string(),
+    objects: z.array(semMappedObjectSchema),
+  })).describe('Forward direction only; empty in reverse.'),
+  entities: z.array(z.object({
+    entity_id: z.string(),
+    entity_name: z.string().nullable(),
+    process: z.string().nullable(),
+    role: z.string(),
+    source: z.string(),
+    confidence: z.number(),
+    confirmations: z.number(),
+  })).describe('Reverse direction only; empty in forward.'),
+  related_entities: z.array(z.object({
+    entity_id: z.string(),
+    relation: z.string(),
+    direction: z.string().describe('out | in'),
+  })),
+});
+
+export const semDqRuleSchema = z.object({
+  rule_id: z.string(),
+  version: z.number(),
+  entity_id: z.string().nullable(),
+  object_name: z.string().nullable(),
+  field_name: z.string().nullable(),
+  dimension: z.string(),
+  spec: z.record(z.string(), z.unknown()),
+  severity: z.string(),
+  source: z.string().describe('kb_derived | user_confirmed | assistant_inferred | seed'),
+  confidence: z.number(),
+  enabled: z.boolean(),
+  binding: z.string().describe('object | entity:<id> — how the rule became applicable.'),
+});
+
+export const d365DqRulesOutput = z.object({
+  entity_id: z.string().nullable(),
+  object_name: z.string().nullable(),
+  rule_count: z.number(),
+  by_dimension: z.array(z.object({ dimension: z.string(), count: z.number() })),
+  rules: z.array(semDqRuleSchema),
+  truncated: z.boolean(),
+  note: z.string().describe('Rules are served, never executed here; render with build/gen-dq-sql.js.'),
+});
