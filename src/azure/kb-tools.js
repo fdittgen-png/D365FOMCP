@@ -32,6 +32,7 @@ import { installToolGuards } from './tool-guards.js';
 import { z } from 'zod';
 import { isCustomFieldName } from './custom-fields.js';
 import { hasIsvData } from './isv-schema.js';
+import { registerEffectiveSchemaTools, queryTableFields } from './effective-schema-tools.js';
 import {
   resolveCustomFieldChecks,
   customFieldsForTable,
@@ -187,15 +188,10 @@ export function registerKbTools(server, db) {
       // two sides never drift.
       let fieldRows = [];
       try {
-        // is_extension / source_module are projected as constants on older DBs
-        // so downstream code can rely on the keys existing regardless.
-        const extCols = fieldsHaveCustomization
-          ? 'is_extension, source_module'
-          : '0 AS is_extension, NULL AS source_module';
-        fieldRows = q(
-          `SELECT field_name, field_type, edt, enum_type, label, mandatory, ${extCols}
-           FROM fields WHERE table_name = ? COLLATE NOCASE ORDER BY field_name`, [row.table_name]
-        );
+        // Shared with d365_effective_schema (issue #85): is_extension /
+        // source_module are projected as constants on older DBs so downstream
+        // code can rely on the keys existing regardless.
+        fieldRows = queryTableFields(q, row.table_name, fieldsHaveCustomization);
       } catch (err) {
         console.error('[kb-tools:d365_lookup_table fields]', err);
       }
@@ -2276,4 +2272,9 @@ export function registerKbTools(server, db) {
       return structuredResult(typed, out, format);
     }
   );
+
+  // ── 18. d365_effective_schema (issue #85) — own module, registered here so
+  // tool-sets.js and every entry point stay untouched. `server` is already the
+  // guarded proxy (installToolGuards is idempotent either way).
+  registerEffectiveSchemaTools(server, db);
 }

@@ -187,6 +187,48 @@ export const d365LookupTableOutput = z.object({
   ui_custom_field_note: z.string().nullish().describe('Why the live block is absent or partial.'),
 });
 
+// ── d365_effective_schema (issue #85) ────────────────────────────────────────
+// `origin` / `module` / `model_origin` are on EVERY field row (rule #14: they
+// are what distinguishes the rows). The isv_* keys are present together or
+// absent together: absent with include_isv=false or on a pre-ISV database.
+export const d365EffectiveFieldSchema = z.object({
+  name: z.string(),
+  type: z.string().nullable(),
+  edt: z.string().nullable(),
+  enum_type: z.string().nullable(),
+  label: z.string().nullable(),
+  mandatory: z.number().nullable(),
+  origin: z.enum(['base', 'extension']),
+  module: z.string().nullable(),
+  model_origin: z.string().nullable(),
+});
+export const d365EffectiveSchemaOutput = z.object({
+  table_name: z.string(),
+  module_id: z.string().nullable(),
+  model_origin: z.string().nullable(),
+  label: z.string().nullable(),
+  table_group: z.string().nullable(),
+  field_count: z.number(),
+  base_field_count: z.number(),
+  extension_field_count: z.number(),
+  fields_shown: z.number(),
+  fields_truncated: z.boolean(),
+  contributing_models: z.array(z.object({
+    module: z.string().nullable(),
+    origin: z.enum(['base', 'extension']),
+    model_origin: z.string().nullable(),
+    field_count: z.number(),
+  })),
+  fields: z.array(d365EffectiveFieldSchema),
+  indexes: z.array(d365LookupTableIndexSchema),
+  relations: z.array(d365LookupTableRelationSchema),
+  isv_extensions: z.array(z.object({ module: z.string(), extension_name: z.string() })).optional(),
+  isv_delete_actions: z.array(z.object({
+    module: z.string(), target: z.string().nullable(), relation: z.string().nullable(), action: z.string().nullable(),
+  })).optional(),
+  isv_provenance: z.lazy(() => isvProvenanceSchema).optional(),
+});
+
 // ── Pilot 2: d365_get_class_methods ──────────────────────────────────────────
 
 export const d365ClassMethodSchema = z.object({

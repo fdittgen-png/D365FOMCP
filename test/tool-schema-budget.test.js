@@ -90,7 +90,9 @@ const emptyDb = () => new Database(':memory:');
  */
 const BUDGET = {
   // kb raised 70,400 -> 71,000 on 2026-09-02 (#83): d365_search `queries[]` (+84 B measured).
-  kb: { maxBytes: 71_000, tools: 21 },
+  // kb raised 71,000 -> 76,400 and 21 -> 22 tools on 2026-09-02 (#85): d365_effective_schema
+  // (+5,679 B measured — a rich typed payload: attributed fields, indexes, relations, ISV inventory).
+  kb: { maxBytes: 76_400, tools: 22 },
   // xref raised 37,300 -> 38,600 on 2026-09-02 (#83): xref_find_references `objects[]` (+864 B).
   xref: { maxBytes: 38_600, tools: 17 },
   // sec raised 37,500 -> 38,700 on 2026-09-02 (W3 #107.1): sec_lookup_role /
@@ -104,7 +106,7 @@ const BUDGET = {
   sec: { maxBytes: 42_600, tools: 18 },
   taskrecorder: { maxBytes: 13_500, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 165_500;
+const TOTAL_MAX_BYTES = 170_500;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {
