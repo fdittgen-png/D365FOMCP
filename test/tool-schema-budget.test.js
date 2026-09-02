@@ -64,6 +64,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { TOOL_SETS, registerServiceTools } from '../src/azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../src/azure/server-metadata.js';
+import { CORE_TOOLS } from '../src/azure/tool-guards.js';
+import { runWithRequestContext } from '../src/azure/request-context.js';
 
 // The budget is the FULL surface. A profile or guard left over in the
 // environment would silently shrink or alter it.
@@ -84,19 +86,30 @@ const emptyDb = () => new Database(':memory:');
 
 /**
  * Per-server ceilings, ≤2% above the 2026-09-02 measurement (kb 69,113 ·
- * xref 36,596 · sec 36,837 · taskrecorder 13,243 B; total 155,789 B ≈ 38,947 tk).
+ * xref 36,596 · sec 36,837 · taskrecorder 13,243 B; total 155,789 B ≈ 38,947 tk)
+ * PLUS exactly the measured cost of `title` on every tool (W5.B, #109):
+ * kb +529 · xref +443 · sec +439 · taskrecorder +44 = **+1,455 B** (~364 tk),
+ * measured 2026-09-02 → kb 69,642 · xref 37,039 · sec 37,276 · taskrecorder
+ * 13,287; total 157,244 B ≈ 39,311 tk. A deliberate cost: a display name on
+ * every tool for ~0.9% of the list.
  * `tools` is the count the server registers today — a drop means a set was
  * removed or filtered, which is as much a "come and look" event as a breach.
  */
 const BUDGET = {
+  // Every ceiling below also carries the measured `title` delta (W5.B): kb +529 ·
+  // xref +443 · sec +439 · taskrecorder +44 — see the docblock above.
   // kb raised 70,400 -> 71,000 on 2026-09-02 (#83): d365_search `queries[]` (+84 B measured).
   // kb raised 71,000 -> 76,400 and 21 -> 22 tools on 2026-09-02 (#85): d365_effective_schema
   // (+5,679 B measured — a rich typed payload: attributed fields, indexes, relations, ISV inventory).
   // kb 76,400 -> 77,100, sec 42,600 -> 43,000 on 2026-09-02 (#109): `cursor` input +
   // has_more/next_cursor on the 8 paginated tools (+319 B kb, +130 B sec; xref fits).
-  kb: { maxBytes: 77_100, tools: 22 },
+  // kb 77,700 -> 91,100 and 22 -> 26 tools on 2026-09-02 (W7 #111): the four
+  // semantic-layer tools (d365_map_entity, d365_map_dq_rule, d365_entity_map,
+  // d365_dq_rules) measured +11,656 B — the 9 DQ dimension spec schemas are the
+  // bulk. W1 (#105) trims from here.
+  kb: { maxBytes: 91_100, tools: 26 },
   // xref raised 37,300 -> 38,600 on 2026-09-02 (#83): xref_find_references `objects[]` (+864 B).
-  xref: { maxBytes: 38_600, tools: 17 },
+  xref: { maxBytes: 39_700, tools: 17 },
   // sec raised 37,500 -> 38,700 on 2026-09-02 (W3 #107.1): sec_lookup_role /
   // sec_role_hierarchy / sec_compare_roles gained the summary-view inputs and
   // the exact-count keys that make a capped list honest (+824 B measured).
@@ -105,10 +118,10 @@ const BUDGET = {
   // sec raised 39,800 -> 42,600 on 2026-09-02 (#83): sec_lookup_role `role_names[]`. +2,363 B,
   // mostly the top-level payload keys repeated as optional beside `roles[]` — the
   // price of the disjoint single/batch contract on a wide payload.
-  sec: { maxBytes: 43_000, tools: 18 },
-  taskrecorder: { maxBytes: 13_500, tools: 2 },
+  sec: { maxBytes: 44_000, tools: 18 },
+  taskrecorder: { maxBytes: 13_544, tools: 2 },
 };
-const TOTAL_MAX_BYTES = 172_000;
+const TOTAL_MAX_BYTES = 188_400;
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {
@@ -118,7 +131,10 @@ const ENTRY_POINTS = {
   taskrecorder: { files: ['local/mcp-server-taskrecorder.js', 'functions/d365taskrecorder.js'], via: 'registerAllTaskRecorderTools' },
 };
 
-const FIELDS = ['name', 'description', 'inputSchema', 'outputSchema', 'annotations'];
+// `title` (W5.B, #109): derived on the registration path for every tool that
+// does not set one. A deliberate cost — a few bytes per tool — so it is
+// measured as its own column rather than hidden in `other`.
+const FIELDS = ['name', 'title', 'description', 'inputSchema', 'outputSchema', 'annotations'];
 
 /**
  * Bytes a service contributes to `tools/list` — ALL of what the protocol ships,
@@ -203,6 +219,8 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
     assert.equal(m.tools.length, expectedTools,
       `${svc}: registers ${m.tools.length} tools, expected ${expectedTools}. A tool set was added, removed or `
       + 'filtered — update BUDGET.tools deliberately once the budget line below has been read.');
+    const untitled = m.raw.filter(t => !t.title).map(t => t.name);
+    assert.deepEqual(untitled, [], `${svc}: every tool carries a title (W5.B); missing on ${untitled.join(', ')}`);
     assert.ok(m.bytes <= maxBytes,
       `${svc}: tools/list is ${m.bytes} B, over the ${maxBytes} B ceiling by ${m.bytes - maxBytes} B `
       + `(~${Math.round((m.bytes - maxBytes) / 4)} tk on EVERY request). Shorten a description, narrow a schema, `
@@ -218,6 +236,45 @@ test('tool-schema budget: tools/list stays within its per-server ceiling (all fo
 
   assert.ok(total <= TOTAL_MAX_BYTES,
     `combined tools/list is ${total} B, over the ${TOTAL_MAX_BYTES} B ceiling`);
+});
+
+test('tool-schema budget: the `core` profile figure, per server, selected per request (W2, #106)', async () => {
+  // `?profile=core` / `X-MCP-Tool-Profile: core` / `MCP_TOOL_PROFILE=core`
+  // resolve into the request context; registration reads it there. Measured the
+  // same way as the full list — a real McpServer, the real tools/list message —
+  // inside a request context, so this is what a connector URL carrying
+  // `?profile=core` receives. Printed for tuning, asserted for shape.
+  const report = [];
+  let fullTotal = 0, coreTotal = 0, coreTools = 0;
+  for (const svc of Object.keys(BUDGET)) {
+    const full = await measureService(svc);
+    const core = await runWithRequestContext({ profile: 'core', textChannel: 'full' }, () => measureService(svc));
+    fullTotal += full.bytes; coreTotal += core.bytes; coreTools += core.tools.length;
+
+    const names = core.tools.map(t => t.name);
+    const members = full.tools.map(t => t.name).filter(n => CORE_TOOLS.has(n));
+    let note = '';
+    if (members.length === 0) {
+      // A profile that would empty a server falls back to `full` — the SDK
+      // installs no tools/list handler for a server with zero tools and the
+      // client gets -32601. Task Recorder is that server today.
+      assert.deepEqual(names, full.tools.map(t => t.name),
+        `${svc}: no CORE_TOOLS member — core must fall back to the full list, never to an empty server`);
+      note = '  (no CORE_TOOLS member → full)';
+    } else {
+      assert.deepEqual(names, members,
+        `${svc}: core must register exactly the CORE_TOOLS members of the full list, in the same order`);
+    }
+    assert.ok(core.bytes <= full.bytes, `${svc}: core (${core.bytes} B) cannot exceed full (${full.bytes} B)`);
+
+    report.push(`  ${svc.padEnd(12)} full ${String(full.tools.length).padStart(2)} tools ${String(full.bytes).padStart(7)} B`
+      + `  →  core ${String(core.tools.length).padStart(2)} tools ${String(core.bytes).padStart(7)} B`
+      + `  (${full.bytes ? (100 * (core.bytes - full.bytes) / full.bytes).toFixed(1) : '0.0'}%)${note}`);
+  }
+  console.log(`\ntools/list under MCP_TOOL_PROFILE=core / ?profile=core (per request):\n${report.join('\n')}`);
+  console.log(`  TOTAL        full ${fullTotal} B (~${Math.round(fullTotal / 4)} tk)  →  core ${coreTools} tools ${coreTotal} B (~${Math.round(coreTotal / 4)} tk)`
+    + `  ${(100 * (coreTotal - fullTotal) / fullTotal).toFixed(1)}%\n`);
+  assert.ok(coreTotal < fullTotal, 'the profile must actually shrink the combined list');
 });
 
 test('tool-schema budget: every entry point registers through tool-sets.js, so the test measures what the servers ship', () => {

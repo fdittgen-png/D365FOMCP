@@ -21,6 +21,8 @@ const {
   stalenessNote, readBuildDate, LOOP_REPEAT_THRESHOLD, LOOP_WINDOW, DEFAULT_STALE_DAYS,
   activeProfile, CORE_TOOLS,
 } = await import('../src/azure/tool-guards.js');
+const { withRegistrationPolicy, registerServiceTools, effectiveProfile, TOOL_SETS } = await import('../src/azure/tool-sets.js');
+const { runWithRequestContext } = await import('../src/azure/request-context.js');
 
 /** Minimal server that records handlers, like the other suites' mock. */
 function mockServer() {
@@ -176,10 +178,14 @@ describe('staleness note', () => {
 });
 
 describe('tool profile', () => {
+  // The filter is applied on the REGISTRATION path (tool-sets.js), so that it
+  // reaches every tool set — not inside installToolGuards, which only three of
+  // the seven sets call. The guards are layered on top, exactly as kb-tools /
+  // xref-tools / sec-tools do it.
   after(() => { delete process.env.MCP_TOOL_PROFILE; });
 
   const registerThree = (server) => {
-    const g = installToolGuards(server, { service: 'kb', db: null });
+    const g = installToolGuards(withRegistrationPolicy(server, { service: 'kb', db: null }), { service: 'kb', db: null });
     g.registerTool('d365_search', {}, async () => okResult());        // core
     g.registerTool('d365_raw_sql', {}, async () => okResult());       // not core
     g.registerTool('sec_what_if', {}, async () => okResult());        // not core
@@ -199,6 +205,14 @@ describe('tool profile', () => {
     const s = registerThree(mockServer());
     assert.deepEqual(Object.keys(s.handlers), ['d365_search'],
       'only the core tool is registered');
+  });
+
+  it('the profile is a REQUEST property: a request context overrides the process env', async () => {
+    delete process.env.MCP_TOOL_PROFILE;
+    const s = await runWithRequestContext({ profile: 'core', textChannel: 'full' }, async () => registerThree(mockServer()));
+    assert.deepEqual(Object.keys(s.handlers), ['d365_search'], '?profile=core on one request trims that request only');
+    const full = registerThree(mockServer());
+    assert.equal(Object.keys(full.handlers).length, 3, 'the next request, without it, sees everything');
   });
 
   it('filters even when the guards themselves are off', () => {
@@ -221,16 +235,41 @@ describe('tool profile', () => {
       'a typo must not silently strip the server down to nothing');
   });
 
-  it('every core tool name is one that actually exists', async () => {
+  it('core reaches EVERY tool set — ISV and custom-fields included', () => {
+    process.env.MCP_TOOL_PROFILE = 'core';
+    for (const svc of ['kb', 'xref', 'sec']) {
+      const names = [];
+      const db = new Database(':memory:');
+      const stats = registerServiceTools(svc, { registerTool(name) { names.push(name); } }, db);
+      db.close();
+      assert.equal(stats.profile, 'core');
+      const outside = names.filter(n => !CORE_TOOLS.has(n));
+      assert.deepEqual(outside, [],
+        `${svc}: under core, only CORE_TOOLS may be registered; these slipped through: ${outside.join(', ')}`);
+      assert.ok(!names.includes('d365_isv_lookup') && !names.includes('d365_isv_extension_points'),
+        'the two largest KB tools used to survive the profile because the ISV set bypassed installToolGuards');
+    }
+  });
+
+  it('a profile that would empty a server falls back to full — never zero tools', () => {
+    // Task Recorder has no CORE_TOOLS member. Zero registered tools means the
+    // SDK installs no tools/list handler and every client gets -32601.
+    process.env.MCP_TOOL_PROFILE = 'core';
+    assert.equal(effectiveProfile('taskrecorder'), 'full');
+    assert.equal(effectiveProfile('kb', new Database(':memory:')), 'core');
+    const names = [];
+    const stats = registerServiceTools('taskrecorder', { registerTool(name) { names.push(name); } });
+    assert.equal(stats.profile, 'full');
+    assert.ok(names.length >= 2, 'the Task Recorder tools are registered under core');
+  });
+
+  it('every core tool name is one that actually exists (across all four servers)', () => {
     delete process.env.MCP_TOOL_PROFILE;
     const registered = new Set();
     const collect = { registerTool(name) { registered.add(name); } };
-    const { registerKbTools } = await import('../src/azure/kb-tools.js');
-    const { registerXrefTools } = await import('../src/azure/xref-tools.js');
-    const { registerSecTools } = await import('../src/azure/sec-tools.js');
-    for (const fn of [registerKbTools, registerXrefTools, registerSecTools]) {
+    for (const svc of Object.keys(TOOL_SETS)) {
       const db = new Database(':memory:');
-      fn(collect, db);
+      registerServiceTools(svc, collect, db);
       db.close();
     }
     const ghosts = [...CORE_TOOLS].filter(n => !registered.has(n));

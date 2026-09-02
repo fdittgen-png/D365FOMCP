@@ -120,7 +120,7 @@ No tool accepts `offset`, `cursor` or `page`; none returns `has_more` / `next_of
 | `title` / `_meta` on tools | Unused; supported by SDK 1.27 | `mcp.d.ts:150-157` |
 | Server `instructions` | 339/255/252/224 chars — compact; KB's repeats the format rule already on `formatTextParam` | `server-metadata.js:83-125` |
 | `format` contract | **All three `*_raw_sql` tools bypass `formatTextParam`** with `z.enum(['markdown','toon']).default('toon')` — pins TOON, defeats the adaptive default, violates rule #5 | `kb-tools.js:1811`, `xref-tools.js:825`, `sec-tools.js:1592` |
-| Freshness | `freshnessBanner(db, service)` does not exist (issue #86); `server-metadata.js:82` still claims "every response states its snapshot date". KB/XRef expose `build_date` only via raw SQL. | issue #86 |
+| Freshness | **Shipped 2026-09-02 (#86 base).** `freshnessBanner(db, service)` + `withFreshnessBanner()` in `shared.js`, wired centrally in `tool-sets.js`: `_KB snapshot: YYYY-MM-DD_` on the line after the H2 of every data response; never on `emptyResult`/`notFoundResult`/`errorResult` (they carry `_meta.kind`), live tools or db-less servers. `server-metadata.js` now says "every data response carries its snapshot date", which is true. Per-model age / `partial_build` remain on #86. | `test/freshness.test.js` |
 | Naming | Prefixes `d365_`/`xref_`/`sec_` consistent; verbs mixed (`lookup`/`get`/`find`/`check`) — acceptable, not worth a rename | — |
 | Evals | One `evals.json` with 3 prompts for the tooling skill; no per-tool correctness or token-budget evals | `skills/…/evals.json` |
 | Type safety | Plain JS, 45/62 files JSDoc-annotated, nothing checks them → issue #103 (checkJs, not a TS migration) | #103 |
@@ -155,6 +155,8 @@ Task Recorder's 3.4 KB of output prose is the one exception where describe-trimm
 
 Make `MCP_TOOL_PROFILE` selectable per request, not per process: an HTTP header (`X-MCP-Tool-Profile: core`) or query parameter on the Streamable HTTP endpoints, with the env var as the default. The stateless transport already builds a fresh `McpServer` per request, so this is a one-line lookup in `installToolGuards`. The claude.ai connector URL can then carry `?profile=core` while Claude Code keeps the full list. Measured saving: −43% of the three-service list; the `CORE_TOOLS` list is hand-picked — tune it from the W0 golden test's real call frequencies.
 
+> **Shipped 2026-09-02 (#106).** `src/azure/request-context.js` resolves `profile` per request (query `?profile=` > header `X-MCP-Tool-Profile` > env `MCP_TOOL_PROFILE` > `full`; unknown → fall through) into an `AsyncLocalStorage` store; the four HTTP entry points wrap server construction + `handleRequest` in `runWithRequestContext`, stdio servers resolve once from env. The filter moved from `installToolGuards` to `registerServiceTools` (tool-sets.js) so it reaches every set. Measured off the transport: 58 → 23 tools, 155,789 → 77,539 B (**−50.2%**); KB −54.7%, XRef −60.1%, Sec −50.1%. A profile that would empty a server (Task Recorder has no `CORE_TOOLS` member) falls back to `full` — the SDK answers `tools/list` with `-32601` on an empty server.
+
 ### W3 — Bounded and summarised responses (tuning, M)
 
 Ordered by measured payload:
@@ -181,11 +183,15 @@ Options:
 
 **Recommendation: B, gated on a measurement.** Before building it, run the Run-4 method against Claude Code (stdio) and the claude.ai connector once more to confirm which channel each bills. If both bill JSON only, A is sufficient and simpler. `structuredContent` stays the typed payload regardless; `structuredResult` remains the single choke point.
 
+> **Mechanism shipped 2026-09-02 (#108), default unchanged.** `structuredResult` reads `getRequestContext().textChannel`: `full` is byte-identical to before; `summary` emits the H2 line + `_Payload in structuredContent (N keys, M bytes)._` (≤ 300 B). Both A and B are available without further code: A = `MCP_TEXT_CHANNEL=summary` (or `?text=summary` / `X-MCP-Text-Channel` per request); B = `CLIENT_TEXT_CHANNEL_POLICY` in request-context.js (stdio `clientInfo.name` → channel), shipped **empty**. What remains is the decision path's step 1 — the per-client billing measurement — recorded on #108 before either switch is thrown.
+
 ### W5 — Pagination and resources (architecture, L)
 
 1. **Cursor pagination** on the list-shaped tools — `xref_find_references`, `xref_find_usages`, `d365_search`, `d365_get_class_methods`, `d365_get_entity_sources`, `sec_search`, `sec_find_roles_by_*`: add `cursor` (opaque base64 offset — stateless-compatible), return `has_more` + `next_cursor` + `total_count`. Keep `limit` semantics unchanged so existing callers are byte-identical until they pass `cursor`. Replaces "raise the limit and re-pay the head".
 2. **Resources for stable, snapshot-scoped catalogues** — candidates: module list (`d365_list_modules` 37 KB), SQL templates, hallucination traps, the raw_sql schema listing, snapshot metadata (`build_date`, `schema_version`, `model_count`) — the natural home for the freshness signal of #86. **Unmeasured, and gated on a spike:** confirm the claude.ai connector and Claude Code actually surface MCP resources before moving anything out of tool responses. If they do not, the same content becomes a `d365_snapshot_info` tool with a tiny schema.
 3. `title` on every tool (human display name; a few bytes each) and a `snapshot` resource make the server self-describing without paying for it per call.
+
+> **Part B shipped 2026-09-02 (#109).** `src/azure/resources.js` registers `d365://snapshot` (all four servers) and `d365://modules` (KB/XRef/Sec) on the registration path; `d365://sql-templates` is NOT exposed — the query is inline in `kb-tools.js` and would have to be duplicated. Every tool now carries a `title` derived from its name in `tool-sets.js` (`deriveToolTitle`), measured at **+1,455 B** on the four-server `tools/list` (KB +529 · XRef +443 · Sec +439 · TR +44; 0.9%) — the ceilings moved by exactly that. The spike (do the connector and Claude Code surface resources?) remains the gate for moving any catalogue OUT of a tool response; part A (cursor pagination) is untouched.
 
 ### W6 — Contract hygiene and quality gates (tuning, S–M)
 

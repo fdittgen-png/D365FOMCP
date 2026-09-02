@@ -79,7 +79,7 @@ export const SERVICES = Object.freeze({
       '63k classes with method signatures and X++ source, data entities with field-to-datasource mapping, ' +
       'forms, menu items, labels and per-model build provenance (Microsoft / ISV / custom layer). ' +
       'Includes curated anti-hallucination data: AX2012→D365 field renames, hallucination traps and verified SQL templates. ' +
-      'Read-only snapshot; every response states its snapshot date.',
+      'Read-only snapshot; every data response carries its snapshot date.',
     instructions:
       'Start with d365_search or d365_lookup_table; use d365_check_field_exists before asserting a field exists; ' +
       'resolve enums with d365_get_enum; use the `modules` filter to scope to custom/ISV models; ' +
@@ -93,7 +93,7 @@ export const SERVICES = Object.freeze({
       'reads or writes any AOT object — methods, tables, fields, classes, forms, enums, menu items. ' +
       'Covers Microsoft standard, ISV (STAEDEAN, iExtension, HISOL) and the Trelleborg custom layer. ' +
       'Impact analysis, Chain-of-Command extension discovery, event handlers, class hierarchies, interface implementors, ' +
-      'cross-module dependencies. Read-only snapshot; every response states its snapshot date.',
+      'cross-module dependencies. Read-only snapshot; every data response carries its snapshot date.',
     instructions:
       'Use xref_object_summary first for counts, then xref_find_references / xref_find_method_callers / xref_find_extensions for detail; ' +
       'xref_impact_analysis before modifying an object. Always pass `limit`; the database is 3 GB — never SELECT * via xref_raw_sql.',
@@ -106,7 +106,7 @@ export const SERVICES = Object.freeze({
       '(menu items, data entities, tables) with Grant/Deny permissions, user-to-role assignments per legal entity, ' +
       'effective-permission resolution (Deny wins), permission traces, role comparison, what-if for additive grants ' +
       'and licence (Team Members / Activity / Operations) assessment. Labels resolved to English text. ' +
-      'Internal staff data only — no customer or vendor records. Read-only snapshot; every response states its snapshot date.',
+      'Internal staff data only — no customer or vendor records. Read-only snapshot; every data response carries its snapshot date.',
     instructions:
       'For "can user X do Y" use sec_effective_permissions or sec_permission_trace (walks role→duty→privilege→entry point, Deny wins). ' +
       'Object names are case-insensitive. Verify every permission claim with a trace before stating it. sec_raw_sql is last resort.',

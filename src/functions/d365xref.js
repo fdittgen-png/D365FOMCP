@@ -13,6 +13,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getXrefDb } from '../azure/shared.js';
 import { registerAllXrefTools } from '../azure/tool-sets.js';
+import { preferencesFromHttpRequest, runWithRequestContext, describePreferences } from '../azure/request-context.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
 // MCP entry point — rather than defaulting on inside the tool library, where a
@@ -42,33 +43,39 @@ app.http('d365xref', {
     const denied = authorizeMcpRequest(request);
     if (denied) return denied;
 
+    // Per-request client preferences (W2 #106 / W4 #108) — see d365kb.js.
+    const prefs = preferencesFromHttpRequest(request);
+    console.info(`d365xref request ${describePreferences(prefs)}`);
+
     try {
-      const server = createXrefServer(requestBaseUrl(request));
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        enableJsonResponse: true,
+      return await runWithRequestContext(prefs, async () => {
+        const server = createXrefServer(requestBaseUrl(request));
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          enableJsonResponse: true,
+        });
+        await server.connect(transport);
+
+        let options;
+        if (request.method === 'POST') {
+          const sizeRejection = validateRequestSize(request);
+          if (sizeRejection) return sizeRejection;
+          const parsedBody = await request.json();
+          options = { parsedBody };
+        }
+
+        const response = await transport.handleRequest(request, options);
+
+        if (!response || !(response instanceof Response)) {
+          return { status: 204 };
+        }
+
+        const responseBody = await response.text();
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseBody,
+        };
       });
-      await server.connect(transport);
-
-      let options;
-      if (request.method === 'POST') {
-        const sizeRejection = validateRequestSize(request);
-        if (sizeRejection) return sizeRejection;
-        const parsedBody = await request.json();
-        options = { parsedBody };
-      }
-
-      const response = await transport.handleRequest(request, options);
-
-      if (!response || !(response instanceof Response)) {
-        return { status: 204 };
-      }
-
-      const responseBody = await response.text();
-      return {
-        status: response.status,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: responseBody,
-      };
     } catch (err) {
       context.error('d365xref MCP error:', err);
       return {

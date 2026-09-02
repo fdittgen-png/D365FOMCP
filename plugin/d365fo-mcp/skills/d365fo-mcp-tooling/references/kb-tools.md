@@ -44,7 +44,7 @@ Get complete metadata for a D365FO table: fields (name, type, EDT), primary key,
 | `include_provenance` | boolean | default `false` | Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension. |
 | `include_custom_fields` | boolean | default `false` | Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call. |
 | `environment` | string (min 1, max 100) | no | Environment key for include_custom_fields. Defaults to the source marked default. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_join_keys`
 
@@ -54,7 +54,7 @@ Get the exact join fields between two D365FO tables. Critical for writing correc
 |---|---|---|---|
 | `table1` | string (min 1, max 500) | yes | First table name |
 | `table2` | string (min 1, max 500) | yes | Second table name |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_search`
 
@@ -68,7 +68,7 @@ Full-text search across all D365FO objects (tables, classes, enums, entities). U
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results (default 20) |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_enum`
 
@@ -78,7 +78,7 @@ Get all values for a D365FO enum with their numeric values. Essential for correc
 |---|---|---|---|
 | `enum_name` | string (min 1, max 500) | no | Enum name (e.g. StatusIssue, InventTransType). Use this or `enum_names`. |
 | `enum_names` | array<string (min 1, max 500)> | no | Resolve several enums in one call (max 10). Prefer this over repeated single calls — the response envelope is paid once. Names that do not exist come back in `not_found` rather than failing the call. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_check_field_exists`
 
@@ -89,7 +89,7 @@ Verify if fields exist on a D365FO table. Returns existence status and suggests 
 | `table_name` | string (min 1, max 500) | no | Table name. Use this with `field_names`, or use `tables`. |
 | `field_names` | array<string (min 1, max 500)> | no | Array of field names to check on `table_name`. |
 | `tables` | array<object> | no | Check several tables in one call (max 25). A table that does not exist comes back with found=false rather than failing the whole call. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_class_methods`
 
@@ -102,7 +102,7 @@ Get method signatures for a D365FO class, table, or data entity. TIER 1 of the t
 | `include_source` | boolean | default `false` | Return the full X++ body of EVERY method. Default false. ~6x the signature listing; prefer d365_get_method_source for specific methods. |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100) |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_method_source`
 
@@ -113,7 +113,7 @@ Get the full X++ source code for specific methods on a class, table, or data ent
 | `owner_name` | string (min 1, max 500) | yes | Class, table, or data entity name |
 | `method_name` | string (min 1, max 500) | no | Method name. Use this for EXACTLY ONE method; for two or more use `method_names`, which is cheaper on both tokens and turns. |
 | `method_names` | array<string (min 1, max 500)> | no | Fetch several methods on the same owner in one call (max 10). USE THIS whenever you want two or more bodies - it is smaller than the equivalent single calls (the owner is carried once, not per method) and costs one turn instead of N. Names that do not exist come back in `not_found` rather than failing the call. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_find_referencing_tables`
 
@@ -123,7 +123,7 @@ Find all tables that have foreign key relationships TO a given table. Useful for
 |---|---|---|---|
 | `table_name` | string (min 1, max 500) | yes | Target table name |
 | `limit` | integer (≥1, ≤1000) | default `200` | Max referencing relations to return (default 200, max 1000) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_module_summary`
 
@@ -134,7 +134,7 @@ Get a summary of a D365FO module/package: object counts and key tables/classes.
 | `module_name` | string (min 1, max 500) | yes | Module name (e.g. ApplicationSuite, EngineeringChangeManagement) |
 | `table_limit` | integer (≥1, ≤200) | default `20` | Max Key Tables rows (default 20, max 200) |
 | `class_limit` | integer (≥1, ≤200) | default `15` | Max Key Classes rows (default 15, max 200) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_get_entity_sources`
 
@@ -150,7 +150,7 @@ Get the data source chain and fields of a D365FO data entity. Resolves the AOT n
 | `include_provenance` | boolean | default `false` | Emit source_module/is_extension on EVERY field. Default false - the pair is emitted only for extension fields, where it carries information; on a standard Microsoft field it repeats the entity's own module and cost ~27% of this response. |
 | `limit` | integer (≥1, ≤1000) | default `500` | Max fields to return (default 500, max 1000) |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_sql_template`
 
@@ -159,7 +159,7 @@ Get a pre-validated SQL query template for common D365FO scenarios. Templates ha
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `scenario` | string (max 500) | no | Search term for template (e.g. "customer invoice", "vendor", "GL entries"). Leave empty to list all. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_hallucination_check`
 
@@ -168,7 +168,7 @@ Check for known D365FO hallucination traps for a table. Returns common LLM mista
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `table_name` | string (min 1, max 500) | yes | Table name to check traps for |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_raw_sql`
 
@@ -177,7 +177,7 @@ Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc querie
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `sql` | string (min 1, max 50000) | yes | SQL SELECT query to execute |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_graph_traverse`
 
@@ -188,7 +188,7 @@ Traverse the D365FO object dependency graph. Find related tables, class hierarch
 | `start_node` | string (min 1, max 500) | yes | Starting object name |
 | `max_depth` | integer (≥0, ≤10) | default `2` | Maximum traversal depth (0-10, default 2) |
 | `edge_type` | string (min 1, max 500) | no | Optional edge type filter: FK, extends, datasource |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_field_renames`
 
@@ -197,7 +197,7 @@ Look up AX2012-to-D365FO field renames for a table. Prevents using obsolete fiel
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `table_name` | string (min 1, max 500) | yes | Table name |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_list_modules`
 
@@ -210,7 +210,7 @@ List D365FO modules/packages with object counts and the build version each was s
 | `publisher` | string (min 1, max 200) | no | Only models whose publisher contains this text (case-insensitive) |
 | `include_counts` | boolean | default `true` | Include table/class/enum/entity/form counts. Set false for a bare model list. |
 | `limit` | integer (≥1, ≤500) | default `200` | Max modules to return (default 200, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_resolve_label`
 
@@ -219,7 +219,7 @@ Resolve D365FO label IDs (like @SYS12345) to human-readable text. Use when you e
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `label_ids` | array<string> | yes | Array of label IDs to resolve, e.g. ["@SYS12345"]. Max 100 per call. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_effective_schema`
 
@@ -231,7 +231,7 @@ Merged view of a table as it exists in this system: base fields plus every field
 | `include_isv` | boolean | default `true` | Include sealed-ISV table extensions (inventory only — no field list exists for them). Default true. |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `field_limit` | integer (≥1, ≤2000) | default `300` | Max fields to list (default 300); counts are always whole-table. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_isv_list_models`
 
@@ -239,7 +239,7 @@ List the sealed (binary-only) ISV models scanned into this KB — publisher, ver
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_isv_lookup`
 
@@ -254,7 +254,7 @@ Look up an object inside the sealed ISV models: does it exist, in which model, a
 | `search_properties` | boolean | default `false` | Also find elements whose decoded properties contain `name` — use this to locate an ISV-added field on a Microsoft table. Results say which element carries it, never that the name is a field of a given type: sealed metadata proves the identifier is there, not its role. |
 | `include_signatures` | boolean | default `false` | Also return the method signatures declared on the matched type, read from the assembly metadata of the sealed model (fidelity=il): parameter names and types, return type, and the static/virtual/final/visibility modifiers. Call this when the question is what a sealed method accepts and returns — for example before writing a Chain-of-Command wrapper, which must match the signature exactly. It does NOT reveal what a method does: no method body is decompiled or stored anywhere in this database, so behaviour cannot be read out of these rows and a method name is a hint, not a description. |
 | `include_il_command` | boolean | default `false` | Also return the exact local disassembly command for the matched type, so the caller can obtain the IL themselves. Set this ONLY when the user has explicitly asked for the IL or for a method body — never by default and never speculatively. It returns commands, not code: this database holds no IL, no method body and no source text, and running the command is the operator's action on their own machine under their own vendor licence agreement. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_isv_extension_points`
 
@@ -266,7 +266,7 @@ Show where sealed ISV models hook into standard D365FO code: Chain-of-Command wr
 | `module` | string (min 1, max 100) | no | Sealed ISV model to list, e.g. "Lasernet". Combine with `target` to narrow further. |
 | `limit` | integer (≥1, ≤500) | default `100` | Max rows per section (default 100, max 500). |
 | `include_signatures` | boolean | default `false` | Attach each wrapped method signature from the assembly metadata (fidelity=il) to the Chain-of-Command rows. Set this when the goal is to write a competing or coexisting CoC wrapper: the wrapper must match the wrapped signature exactly, and the sealed metadata alone does not carry parameter types. Signatures describe the calling contract only — no method body is decompiled or stored. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `d365_custom_fields`
 
@@ -280,5 +280,5 @@ List D365FO UI custom fields (the `_Custom` suffix) read LIVE from a configured 
 | `environment` | string (min 1, max 100) | no | Source key to read from. Defaults to the source marked default. |
 | `refresh` | boolean | default `false` | Bypass the TTL cache and re-read $metadata from the environment. |
 | `limit` | integer (≥1, ≤500) | default `100` |  |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 

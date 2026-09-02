@@ -37,7 +37,7 @@ Get security role details: description, license type, Grant/Deny, sub-roles, dut
 | `role_names` | array<string (min 1, max 500)> | no | Several roles in one call (max 10); the summary options apply to each. Unknown names come back in `not_found`. |
 | `include_entity_permissions` | boolean | default `false` | true: complete lists (can exceed 400 KB on wide roles) |
 | `entity_permission_limit` | integer (≥1, ≤5000) | default `50` | Max entity permissions in the summary view (default 50) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_lookup_duty`
 
@@ -47,7 +47,7 @@ Get duty details: parent roles, privileges granted, and entry points.
 |---|---|---|---|
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name (case-insensitive) |
 | `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list (default 200) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_lookup_privilege`
 
@@ -57,7 +57,7 @@ Get privilege details: entry points with CRUD grants, parent duties, and parent 
 |---|---|---|---|
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name (case-insensitive) |
 | `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list (default 200) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_lookup_user`
 
@@ -67,7 +67,7 @@ Get user profile: roles, company scoping, enabled status, and email.
 |---|---|---|---|
 | `user_id` | string (min 1, max 500) | yes | User ID (case-insensitive) |
 | `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list (default 200) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_role_hierarchy`
 
@@ -78,7 +78,7 @@ Show the sub-role hierarchy for a role (children that inherit from it, or parent
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `direction` | `children` \| `parents` | default `"children"` | Traverse direction |
 | `limit` | integer (≥1, ≤1000) | default `100` | Max related roles (default 100) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_find_users_by_role`
 
@@ -89,7 +89,7 @@ Find all users assigned to a role, optionally filtered to a specific company.
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `company_id` | string (min 1, max 500) | no | Filter to users scoped to this company |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_find_roles_by_duty`
 
@@ -100,7 +100,7 @@ Find all roles that contain a specific duty.
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name |
 | `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list (default 100) |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_find_roles_by_privilege`
 
@@ -111,7 +111,7 @@ Find all roles that grant a privilege (via the duty chain or directly).
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name |
 | `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list (default 100) |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_company_users`
 
@@ -121,7 +121,7 @@ List all users and their roles for a specific company (legal entity).
 |---|---|---|---|
 | `company_id` | string (min 1, max 500) | yes | Company / legal entity ID (e.g., LADE, TAB) |
 | `limit` | integer (≥1, ≤500) | default `200` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_permission_trace`
 
@@ -132,7 +132,7 @@ Trace the full permission chain for a role: role -> duties -> privileges -> entr
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `object_name` | string (min 1, max 500) | no | Filter to entry points targeting this object |
 | `limit` | integer (≥1, ≤500) | default `500` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_compare_roles`
 
@@ -143,7 +143,7 @@ Compare two roles side by side: shared vs unique duties and privileges.
 | `role1` | string (min 1, max 500) | yes | First role name |
 | `role2` | string (min 1, max 500) | yes | Second role name |
 | `list_limit` | integer (≥1, ≤2000) | default `50` | Max names per list (default 50); counts stay exact |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_effective_permissions`
 
@@ -155,7 +155,7 @@ Compute the NET effective permissions for a user or role, resolving sub-roles an
 | `role_name` | string (min 1, max 500) | no | Role name (provide this OR user_id) |
 | `object_name` | string (min 1, max 500) | no | Filter to entry points for this object |
 | `limit` | integer (≥1, ≤500) | default `200` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_search`
 
@@ -168,7 +168,7 @@ Full-text search across roles, duties, privileges, and users. Scope with `module
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results |
 | `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_stats`
 
@@ -177,7 +177,7 @@ Security database statistics: role, user and company counts, scanned models by o
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `include_model_versions` | boolean | default `false` | true: per-model build versions (Descriptor provenance) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_raw_sql`
 
@@ -186,7 +186,7 @@ Execute a raw SQL query against the security database. READ-ONLY, 500-row limit.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `sql` | string (min 1, max 50000) | yes | SQL SELECT query |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_licence_assessment`
 
@@ -196,7 +196,7 @@ Assess the minimum required D365 licence tier for one or all users based on thei
 |---|---|---|---|
 | `user_id` | string (min 1, max 500) | no | Assess a single user (omit for all enabled users) |
 | `limit` | integer (≥1, ≤500) | default `500` | Max users to return |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_what_if`
 
@@ -207,7 +207,7 @@ Simulate adding or removing roles from a user. Returns the projected licence tie
 | `user_id` | string (min 1, max 500) | yes | User ID to simulate changes for |
 | `add_roles` | array<string (min 1, max 500)> | default `[]` | Role names to add |
 | `remove_roles` | array<string (min 1, max 500)> | default `[]` | Role names to remove |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_object_access`
 
@@ -217,5 +217,5 @@ Reverse permission chain: given an object name (menu item, form, table), find ev
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name to trace (e.g., VendInvoiceJournal, CustTable) |
 | `limit` | integer (≥1, ≤500) | default `200` | Max access paths to return |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 

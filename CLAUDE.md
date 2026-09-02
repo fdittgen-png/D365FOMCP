@@ -62,10 +62,10 @@ Every MCP tool in this project MUST follow these rules. Authoritative reference:
 1. **Tool registration:** `server.registerTool(name, { description, inputSchema, outputSchema?, annotations }, handler)`. Never the deprecated `server.tool()` overload.
 2. **Annotations:** every tool sets `annotations: READ_ONLY_DB_ANNOTATIONS` (`readOnlyHint: true`, `idempotentHint: true`, `openWorldHint: false`). Hosts use these to suppress approval prompts.
 3. **Heading:** every response opens with an H2 (`## <Tool context>`). H1 is reserved for stand-alone documents (Task Recorder output is the only exception in this repo). Bold-text fake headers like `**References TO**` are forbidden. The TOON default text channel (rule #5) keeps this H2 context line and renders the body as TOON beneath it.
-4. **Freshness banner — NOT YET IMPLEMENTED (verified 2026-09-02):** the intended rule is to prepend `_<service> snapshot: <ISO date>_` to data responses via a `freshnessBanner(db, service)` helper in `shared.js`, never to `emptyResult` / `notFoundResult` / `errorResult` (those are meta-responses). No such helper exists in `shared.js` — confirmed by searching the full patch history of every branch (`git log -p --all -S freshnessBanner -- src/azure/shared.js` returns nothing) — and no KB/XRef/Sec tool response currently carries a snapshot-date banner. The identically-named function in `src/azure/wiki-storage.js:207` is unrelated: Wiki-service-only, different signature, no `db`/`service` params. `test/response-format.test.js` does not check for this rule either, so nothing currently enforces it. Tracked in issue #86, which needs the base banner built as a prerequisite before its per-model age refinement can build on it.
+4. **Freshness banner (shipped 2026-09-02, #86 base):** every DATA response of a snapshot-backed tool carries `_<Service> snapshot: <YYYY-MM-DD>_` (`_KB snapshot: 2026-08-14_`, `_XRef …_`, `_Sec …_`) on the line **directly after the H2 heading** — not before it, so rule #3 (the response opens with H2) still holds. It is attached **centrally**, not per handler: `registerServiceTools` in `tool-sets.js` wraps every registered handler with `withFreshnessBanner(result, db, service)` from `shared.js`, which calls `freshnessBanner(db, service)` (build date read once per DB handle via `readBuildDate` — tool-guards imports the same function; `''` when the snapshot is undatable, never throws). Handlers do not call it. Never on the three meta-responses: `emptyResult` / `notFoundResult` / `errorResult` stamp `_meta: { kind: 'empty' | 'not-found' | 'error' }` (part of the MCP Result type, survives the wire) and the wrapper skips any result with `_meta.kind`, any `isError`, and anything without `structuredContent`. Also skipped: live tools (`openWorldHint: true` — `d365_custom_fields` rows come from an environment now, not from a build) and db-less servers (Task Recorder). The banner goes into the `summary` text channel too (rule #5). What #86 still wants on top: per-model age (`indexed_at` in `model_versions`), an age qualifier, and the `partial_build` / `stale_search_models` caveat after a delta merge. Enforced by `test/freshness.test.js`. The identically-named function in `src/azure/wiki-storage.js` is unrelated (Wiki service, different signature).
 5. **Typed-first, ADAPTIVE text channel:** any tool with an `outputSchema` builds the typed JSON object FIRST, then renders a Markdown fallback from that typed object, and returns both via `structuredResult(typed, markdownText, format)`. The text channel **defaults to `'auto'`: whichever of TOON or Markdown is smaller for that particular response.** Neither wins universally — measured on the production KB, TOON is smaller on nested payloads (`d365_get_entity_sources` 4,448 vs 5,216 tk) and *larger* on wide flat ones (`d365_lookup_table` 9,725 vs 6,772 tk, +44%, because TOON repeats a long key header). Across six real calls: TOON 21,731 / Markdown 19,653 / adaptive **18,677**. `'toon'` and `'markdown'` pin the encoding; use `'markdown'` when the text is quoted verbatim into a document. Add the shared `format: formatTextParam` to a data tool's `inputSchema` and pass the `format` arg **straight through** — never normalise it in the handler (`const fmt = format === 'markdown' ? 'markdown' : 'toon'` silently pins every default call; that bug shipped once). `structuredResult` is the choke point and treats anything that is not literally `'markdown'` or `'toon'` — including `undefined` from the test mock server — as adaptive. `structuredContent` is always the typed JSON regardless of `format`. KB / XRef / Sec data tools follow this; document/prose tools (Task Recorder, Wiki) pin `format` to `'markdown'`. Never build Markdown directly from DB rows.
 
-   **Open, needs a decision:** every response ships the payload **twice** — TOON/Markdown in `content[0].text` *and* JSON in `structuredContent`. Measured across six calls that is 35,927 tk of JSON + 21,731 tk of text = **1.60× the JSON alone**. Run 4 of the cost measurement found the claude.ai connector bills `structuredContent` and ignores the text channel, which would make the text channel pure wire waste for the primary client — but MCP recommends the dual send for clients without structured-output support, so reducing the text channel to a heading plus a summary is an architecture change, not a tuning one.
+   **Text-channel policy (W4, #108) — mechanism shipped, default unchanged.** Every response ships the payload **twice** — TOON/Markdown in `content[0].text` *and* JSON in `structuredContent` — and the dual send was measured at **1.3–2× the JSON alone** (20 calls, 2026-09-02: `structuredContent` is the larger channel every time; 1.3–1.6× on flat tables, ~2× on nested payloads; across six KB calls 35,927 tk JSON + 21,731 tk text = 1.60×). Run 4 found the claude.ai connector bills `structuredContent` and discards the text. `structuredResult` therefore reads the request context's `textChannel` (`src/azure/request-context.js`): **`full`** (default) is today's behaviour, byte-identical; **`summary`** makes `content[0].text` the H2 line plus one line `_Payload in structuredContent (N keys, M bytes)._` and nothing else, ≤ 300 B, `structuredContent` untouched, rule #3 still holds. Switch per request with `?text=summary` on the connector URL, the `X-MCP-Text-Channel: summary` header, or `MCP_TEXT_CHANNEL=summary` in the environment; stdio sessions additionally consult `CLIENT_TEXT_CHANNEL_POLICY` (`clientInfo.name` → channel), which is **deliberately empty**. `emptyResult` / `notFoundResult` / `errorResult` are text-only meta-responses and are never summarised. **The default stays `full` until #108's step 1 — measuring which channel Claude Code (stdio) and the claude.ai connector each bill, Run-4 method — is recorded on the issue; only a client measured to discard the text goes into the policy table.**
 6. **Empty vs not-found:** `emptyResult(context)` for valid-but-zero-row results (sets no `isError`). `notFoundResult(type, name, suggestions)` for "the target object does not exist" (sets `isError: true`). The two-channel error model: success paths and tool-level failures are distinct.
 7. **Errors:** `errorResult(category, hint, details?)` with one of five categories (`not-found`, `invalid-input`, `db-error`, `parse-error`, `internal`). Never forward raw `err.message` to the caller — `details` is logged server-side, not echoed.
 8. **Truncation:** `truncationNote(kind, shown, hardMax?)` distinguishes `'user'` (caller's `limit`), `'cap'` (tool default with overridable max), `'hard'` (safety ceiling). Raw-SQL tools always use `'hard'`. **On a paginated tool (rule #15) the cut is resumable, so the note is `pageNote()` from `pagination.js` — "pass `cursor` to continue" — never "raise `limit`", which re-pays the head of the list.**
@@ -170,9 +170,14 @@ that registers exactly what each entry point registers (`src/azure/tool-sets.js`
 against all four local stdio servers through the SDK `Client`: identical to the byte.
 (The earlier "114,932 B, verified live" figure was the test's own three-set sum;
 the KB server also ships `isv-kb-tools` + `custom-fields-tools`, XRef ships
-`isv-xref-tools`, and Task Recorder was never counted.)
+`isv-xref-tools`, and Task Recorder was never counted.) **Since W5.B (#109) every
+tool also carries a `title`**, derived on the registration path
+(`deriveToolTitle` in `tool-sets.js`: `d365_lookup_table` → "Lookup table") — a
+deliberate **+1,455 B (~364 tk, 0.9%)** measured off the transport, so the
+current full list is **157,244 B (~39,311 tk)**: KB 69,642 · XRef 37,039 · Sec
+37,276 · Task Recorder 13,287.
 
-Composition, four servers, on the wire:
+Composition, four servers, on the wire (before titles; `title` adds 1,397 B, 0.9%):
 
 | Field | Bytes | Share |
 |---|---:|---:|
@@ -207,23 +212,51 @@ Composition, four servers, on the wire:
   on every run, and fails on a ceiling breach, a tool-count change, any shared
   parameter wasting >4,000 B, or an entry point that registers a tool set
   outside `src/azure/tool-sets.js` (the one list both the servers and the test
-  use). Raising a ceiling is a normal, deliberate act; doing it unnoticed is what
-  this prevents. Current (≤2% headroom): kb 69,113 → 70,400 B · xref 36,596 →
-  37,300 B · sec 36,837 → 37,500 B · taskrecorder 13,243 → 13,500 B.
+  use). It also prints the `core` figure for all four servers and asserts every
+  tool carries a `title`. Raising a ceiling is a normal, deliberate act; doing it
+  unnoticed is what this prevents. Current (≤2% headroom, moved by exactly the
+  measured title delta): kb 69,642 → 70,929 B · xref 37,039 → 37,743 B · sec
+  37,276 → 37,939 B · taskrecorder 13,287 → 13,544 B.
+- **MCP resources (W5.B, #109 part B)** — `src/azure/resources.js`, registered
+  on the registration path for every server: `d365://snapshot` (service,
+  `build_date`, `schema_version`, `model_count`, `tool_count` after the profile,
+  `isv_scanned`) and, on the three snapshot-backed servers, `d365://modules` (the
+  `model_versions` list that `d365_list_modules` ships per call — 37 KB by
+  default). JSON, small, never a protocol error (a failed read returns an
+  `{error}` document). **`d365://sql-templates` is deliberately not exposed**:
+  the query behind `d365_sql_template` is inline in `kb-tools.js`, and
+  duplicating it would be the drift the single-source rules exist to prevent —
+  lift it into a shared function first. **Still gated on #109's spike:** whether
+  the claude.ai connector and Claude Code surface resources to the model at all;
+  the resources cost nothing on `tools/list`, so shipping the mechanism ahead of
+  the spike is free.
 - **`test/response-size-golden.test.js`** is the variable-cost gate: the ten
   concept-§3.1 calls with default args against a wide synthetic fixture, both
   channels within ±10% of `test/fixtures/response-size-baseline.json`.
   `GOLDEN_UPDATE=1` re-baselines — deliberately, in the diff.
-- **`MCP_TOOL_PROFILE=core`** registers 30 of 58 tools — 155,789 → 107,113 B
-  (~38,947 → ~26,778 tk, **−31%**, ~$0.24 over a 40-turn session). Off by
-  default. It filters only what passes through `installToolGuards`
-  (`registerKbTools` / `registerXrefTools` / `registerSecTools`): the ISV,
-  custom-fields and Task Recorder sets are untouched, which is why the two
-  largest KB tools (`d365_isv_lookup` 10.7 KB, `d365_isv_extension_points`
-  7.9 KB) survive the profile — a W2 (#106) item. The list in `CORE_TOOLS` is
-  hand-picked, not measured — tune it from real usage. A test asserts every name
-  in it still exists, because renaming a tool would otherwise shrink the profile
-  silently (it caught two wrong names on the first run).
+- **Tool profile `core` is a PER-REQUEST preference (W2, #106)**, resolved once
+  per request in `src/azure/request-context.js` and carried on an
+  `AsyncLocalStorage` store: `?profile=core` on the connector URL > the
+  `X-MCP-Tool-Profile` header > `MCP_TOOL_PROFILE` env > `full`. Unknown values
+  fall through, never error. The same deployment serves the full list to one
+  client and `core` to another; the resolved preferences are logged once per
+  request (`console.info`, App Insights) so `CORE_TOOLS` can be tuned from what
+  clients actually ask for. Stdio servers resolve once from env at startup.
+  Measured 2026-09-02 off the transport: **23 of 58 tools — 155,789 → 77,539 B
+  (~38,947 → ~19,385 tk, −50.2%)**; KB 69,113 → 31,308 (−54.7%), XRef 36,596 →
+  14,596 (−60.1%), Sec 36,837 → 18,392 (−50.1%). The filter is applied on the
+  registration path in `tool-sets.js` (`registerServiceTools` →
+  `withRegistrationPolicy`), so it reaches EVERY set — ISV and custom-fields
+  included; it used to sit in `installToolGuards`, which only three sets call,
+  and the two largest KB tools (`d365_isv_lookup` 10.7 KB,
+  `d365_isv_extension_points` 7.9 KB) survived it. **A profile that would leave
+  a server with zero tools falls back to `full`** (`effectiveProfile`): the SDK
+  installs no `tools/list` handler for an empty server and the client gets
+  `-32601` — Task Recorder has no `CORE_TOOLS` member and is that server today.
+  `CORE_TOOLS` stays in `tool-guards.js`, hand-picked, not measured. A test
+  asserts every name in it still exists across all four servers, because
+  renaming a tool would otherwise shrink the profile silently (it caught two
+  wrong names on the first run).
 
 **Guardrails are opt-in and armed at the MCP entry points** (`src/local/*.js`,
 `src/functions/*.js` set `MCP_TOOL_GUARDS=on`), not defaulted on in the library —

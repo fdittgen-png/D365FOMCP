@@ -13,6 +13,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerAllXrefTools } from '../azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
+import { resolvePreferences, setProcessRequestContext } from '../azure/request-context.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
 // MCP entry point — rather than defaulting on inside the tool library, where a
@@ -37,6 +38,12 @@ db.pragma('cache_size = -50000');
 db.pragma('mmap_size = 3221225472');
 
 const server = new McpServer(serverInfo('xref'), serverOptions('xref'));
+
+// Client preferences (W2 #106 / W4 #108) — one client per stdio process; see mcp-server-kb.js.
+setProcessRequestContext(resolvePreferences({ env: process.env }));
+server.server.oninitialized = () => {
+  setProcessRequestContext(resolvePreferences({ env: process.env, clientInfo: server.server.getClientVersion() }));
+};
 
 // xref + isv-xref — the set is defined ONCE in tool-sets.js so the tools/list
 // budget test measures exactly what this server registers.
