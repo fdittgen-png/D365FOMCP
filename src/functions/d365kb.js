@@ -9,12 +9,11 @@ import { app } from '@azure/functions';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getKbDb } from '../azure/shared.js';
-import { registerKbTools } from '../azure/kb-tools.js';
-import { registerIsvKbTools } from '../azure/isv-kb-tools.js';
-import { registerCustomFieldTools } from '../azure/custom-fields-tools.js';
+import { registerAllKbTools } from '../azure/tool-sets.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
+import { preferencesFromHttpRequest, runWithRequestContext, describePreferences } from '../azure/request-context.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
 // MCP entry point — rather than defaulting on inside the tool library, where a
@@ -25,9 +24,8 @@ process.env.MCP_TOOL_GUARDS ??= 'on';
 
 function createKbServer(baseUrl) {
   const server = new McpServer(serverInfo('kb', { baseUrl }), serverOptions('kb'));
-  registerKbTools(server, getKbDb());
-  registerIsvKbTools(server, getKbDb());
-  registerCustomFieldTools(server, getKbDb());
+  // kb + isv-kb + custom-fields, defined once in tool-sets.js (budget test).
+  registerAllKbTools(server, getKbDb());
   return server;
 }
 
@@ -45,34 +43,44 @@ app.http('d365kb', {
     const denied = authorizeMcpRequest(request);
     if (denied) return denied;
 
+    // Per-request client preferences (W2 #106 / W4 #108): `?profile=core`,
+    // `?text=summary`, or the X-MCP-Tool-Profile / X-MCP-Text-Channel headers,
+    // env as the fallback. Resolved ONCE here; registration and structuredResult
+    // read them off the async context. Logged so CORE_TOOLS can be tuned from
+    // what clients actually ask for (App Insights trace).
+    const prefs = preferencesFromHttpRequest(request);
+    console.info(`d365kb request ${describePreferences(prefs)}`);
+
     try {
-      const server = createKbServer(requestBaseUrl(request));
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        enableJsonResponse: true,
+      return await runWithRequestContext(prefs, async () => {
+        const server = createKbServer(requestBaseUrl(request));
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          enableJsonResponse: true,
+        });
+        await server.connect(transport);
+
+        // Parse body for POST, pass as parsedBody option
+        let options;
+        if (request.method === 'POST') {
+          const sizeRejection = validateRequestSize(request);
+          if (sizeRejection) return sizeRejection;
+          const parsedBody = await request.json();
+          options = { parsedBody };
+        }
+
+        const response = await transport.handleRequest(request, options);
+
+        if (!response || !(response instanceof Response)) {
+          return { status: 204 };
+        }
+
+        const responseBody = await response.text();
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseBody,
+        };
       });
-      await server.connect(transport);
-
-      // Parse body for POST, pass as parsedBody option
-      let options;
-      if (request.method === 'POST') {
-        const sizeRejection = validateRequestSize(request);
-        if (sizeRejection) return sizeRejection;
-        const parsedBody = await request.json();
-        options = { parsedBody };
-      }
-
-      const response = await transport.handleRequest(request, options);
-
-      if (!response || !(response instanceof Response)) {
-        return { status: 204 };
-      }
-
-      const responseBody = await response.text();
-      return {
-        status: response.status,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: responseBody,
-      };
     } catch (err) {
       context.error('d365kb MCP error:', err);
       return {

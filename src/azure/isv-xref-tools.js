@@ -44,7 +44,7 @@ export function registerIsvXrefTools(server, db) {
     'xref_isv_find_usages',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find where sealed (binary-only) ISV models reference a standard D365FO object — the cross-references that are missing from the main XRef database for every model that ships no X++ source. Use alongside xref_find_usages before changing or deprecating any object: the main tool cannot see ISV callers at all, so its answer is incomplete for anything a third-party model touches.',
+      description: 'Where sealed (binary-only) ISV models reference a standard D365FO object — cross-references the main XRef database lacks for every model without X++ source. Use with xref_find_usages before changing or deprecating an object: the main tool cannot see ISV callers.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object to find ISV references to, e.g. "CustTable", "SalesFormLetter". Matched against the reference target path.'),
         object_type: z.enum(['Tables', 'Classes', 'Forms', 'Enums', 'Edts', 'Queries', 'Views', 'any'])
@@ -52,7 +52,7 @@ export function registerIsvXrefTools(server, db) {
           .describe('Restrict to one AOT path segment. "any" matches the name wherever it appears as a target.'),
         modules: z.array(z.string().min(1).max(100)).max(20).optional().describe('Restrict to specific sealed ISV models.'),
         kind: z.string().min(1).max(50).optional().describe('Reference kind: TypeReference, MethodCall, Attribute, ClassExtended, MethodOverride, Property.'),
-        limit: z.number().int().min(1).max(USAGE_HARD_MAX).optional().default(100).describe(`Max usage rows returned (default 100, hard max ${USAGE_HARD_MAX}). The module summary always covers every match.`),
+        limit: z.number().int().min(1).max(USAGE_HARD_MAX).optional().default(100).describe(`Max usage rows returned. The module summary always covers every match.`),
         format: formatTextParam,
       },
       outputSchema: xrefIsvFindUsagesOutput.shape,

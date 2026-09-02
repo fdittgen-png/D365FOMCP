@@ -1,0 +1,24 @@
+{
+  "service": "kb",
+  "note": "Token-discipline dimension: for three questions, the tool sequence a disciplined agent should use and a ceiling on the summed structuredContent bytes (measured x 1.5). The runner sums the bytes of the recorded calls and fails on a breach or a different sequence. Evals here measure filters/limits/batching, not tool choice.",
+  "pairs": {
+    "3": {
+      "lever": "fields_like + limit on d365_get_entity_sources instead of paging 325 fields; d365_check_field_exists instead of d365_lookup_table (22 KB) to confirm the target field",
+      "expected_tools": ["d365_get_entity_sources", "d365_check_field_exists"],
+      "measured_bytes": 2957,
+      "max_structured_bytes": 4436
+    },
+    "5": {
+      "lever": "filter on d365_get_class_methods (SalesFormLetter_Invoice has ~55 methods) and d365_get_method_source for the one method, never include_source",
+      "expected_tools": ["d365_get_class_methods", "d365_get_method_source"],
+      "measured_bytes": 679,
+      "max_structured_bytes": 1019
+    },
+    "7": {
+      "lever": "limit:1 on d365_find_referencing_tables — the count key is exact regardless of limit; graph traverse at depth 1 only",
+      "expected_tools": ["d365_find_referencing_tables", "d365_graph_traverse"],
+      "measured_bytes": 938,
+      "max_structured_bytes": 1407
+    }
+  }
+}

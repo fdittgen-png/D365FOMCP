@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  D365FO Task Recorder MCP (d365taskrecorder) — evaluation set, mcp-builder format.
+  The service has no database: every question is about the two checked-in recordings
+  test/fixtures/taskrec-sample.axtr ("recording A") and test/fixtures/test.axtr ("recording B"),
+  passed base64-encoded as `file_content` to taskrecorder_to_markdown. Only the markdown tool is
+  used: taskrecorder_to_document writes an .mhtml file to disk even with return_inline, so it is
+  not read-only. Verified 2026-09-02; calls in taskrecorder.answers.md / taskrecorder.calls.json.
+-->
+<evaluation>
+   <qa_pair>
+      <question>Convert both fixture recordings, test/fixtures/taskrec-sample.axtr (recording A) and test/fixtures/test.axtr (recording B), to markdown. How many user actions do the two recordings contain in total? Answer with the number.</question>
+      <answer>4</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Using recordings A (test/fixtures/taskrec-sample.axtr) and B (test/fixtures/test.axtr): which form (AOT name) is visited in recording B but not in recording A? Answer with the form's AOT name.</question>
+      <answer>ElectronicMessagesForm</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Of the two fixture recordings test/fixtures/taskrec-sample.axtr and test/fixtures/test.axtr, exactly one contains a navigation step that opens a menu item. Which file is it, and which menu item does the step open? Answer as filename,menu-item with no spaces.</question>
+      <answer>taskrec-sample.axtr,DefaultDashboard</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>The BPM package inside each fixture recording lists the tables behind the visited form ("Data Sources"). How many more tables does test/fixtures/test.axtr list than test/fixtures/taskrec-sample.axtr? Answer with the number.</question>
+      <answer>4</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>One of the two fixture recordings (test/fixtures/taskrec-sample.axtr, test/fixtures/test.axtr) has a step acting on a null control. Name that file, and give the AOT control name (the bracketed identifier) of the hyperlink step in the OTHER recording. Answer as filename,control with no spaces.</question>
+      <answer>taskrec-sample.axtr,ElectronicMessagesGrid_MessageStatus_StatusId</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Across both fixture recordings (test/fixtures/taskrec-sample.axtr and test/fixtures/test.axtr), which distinct command action types occur? Answer with the type names sorted alphabetically, comma-separated, no spaces.</question>
+      <answer>ExecuteHyperlink,MarkActiveRow,RequestClose</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>How many distinct privileges (AOT names) appear in the BPM security-role tables of the two fixture recordings test/fixtures/taskrec-sample.axtr and test/fixtures/test.axtr combined? Answer with the number.</question>
+      <answer>5</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>In test/fixtures/taskrec-sample.axtr, which privilege (AOT name) appears with Full control in the BPM security-role table, and how many Full-control rows does the table of test/fixtures/test.axtr contain? Answer as privilege,count with no spaces.</question>
+      <answer>SysAADClientTableMaintain,5</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Do the two fixture recordings test/fixtures/taskrec-sample.axtr and test/fixtures/test.axtr share the same recording name? Do they share the same canonical ID? Answer as name,id where each is True or False, no spaces.</question>
+      <answer>True,False</answer>
+   </qa_pair>
+   <qa_pair>
+      <question>Exactly one step across the two fixture recordings (test/fixtures/taskrec-sample.axtr, test/fixtures/test.axtr) carries a list/grid context. Which file, which step number, and which grid? Answer as filename,step,grid with no spaces.</question>
+      <answer>test.axtr,2,ElectronicMessagesGrid</answer>
+   </qa_pair>
+</evaluation>

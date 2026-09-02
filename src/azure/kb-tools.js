@@ -32,6 +32,8 @@ import { installToolGuards } from './tool-guards.js';
 import { z } from 'zod';
 import { isCustomFieldName } from './custom-fields.js';
 import { hasIsvData } from './isv-schema.js';
+import { registerEffectiveSchemaTools, queryTableFields } from './effective-schema-tools.js';
+import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 import {
   resolveCustomFieldChecks,
   customFieldsForTable,
@@ -83,6 +85,7 @@ export function registerKbTools(server, db) {
   // (d365_lookup_table) would trade round-trips for a token bomb, so it is not
   // batched at all.
   const ENUM_BATCH_MAX = 10;
+  const SEARCH_BATCH_MAX = 5;
   // Tier 2 of the code path. 10 bodies at the measured ~13-17 line median is a
   // few thousand tokens — a sane ceiling for one turn, and well under the point
   // where pulling the whole class would have been cheaper.
@@ -130,6 +133,8 @@ export function registerKbTools(server, db) {
   }
 
   // ── 1. d365_lookup_table ──────────────────────────────────────────────────
+  const FIELD_LIMIT_DEFAULT = 200;
+  const FIELD_LIMIT_MAX = 2000;
   server.registerTool(
     'd365_lookup_table',
     {
@@ -139,15 +144,26 @@ export function registerKbTools(server, db) {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'),
         fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive). Use on wide tables instead of pulling every field.'),
         custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
-        include_custom_fields: z.boolean().optional().default(false).describe('Additionally read UI custom fields (the `_Custom` suffix) LIVE from the configured D365 environment. These exist in no build snapshot, so they are returned in a SEPARATE ui_custom_fields block — never mixed into `fields`. Off by default: it makes a network call.'),
+        field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT).describe(`Max fields to list; field_count is always the whole table.`),
+        include_provenance: z.boolean().optional().default(false).describe('Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension.'),
+        include_custom_fields: z.boolean().optional().default(false).describe('Also read UI custom fields (`_Custom` suffix) LIVE from the configured environment into a separate ui_custom_fields block. Off by default: makes a network call.'),
         environment: z.string().min(1).max(100).optional().describe('Environment key for include_custom_fields. Defaults to the source marked default.'),
         format: formatTextParam,
       },
       outputSchema: d365LookupTableOutput.shape,
     },
-    async ({ table_name, fields_like, custom_only, include_custom_fields, environment, format }) => {
+    async ({ table_name, fields_like, custom_only, field_limit, include_provenance, include_custom_fields, environment, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
+      // Defensive default - the test mock server bypasses Zod (contract rule #13).
+      const fieldLimit = Number.isInteger(field_limit) && field_limit > 0
+        ? Math.min(field_limit, FIELD_LIMIT_MAX) : FIELD_LIMIT_DEFAULT;
+      // Provenance is decided per RESPONSE, never per row (rule #14, #107.4):
+      // custom_only -> every row is an extension, emit it; include_provenance
+      // -> emit everywhere; otherwise nowhere. Same policy as
+      // d365_get_entity_sources; the header still carries the customisation
+      // summary (custom_field_count, customization_modules) in every case.
+      const emitProvenance = include_provenance === true || custom_only === true;
 
       const customizedCol = tablesHaveCustomization ? 'is_customized' : '0 AS is_customized';
       const tbl = q(
@@ -173,15 +189,10 @@ export function registerKbTools(server, db) {
       // two sides never drift.
       let fieldRows = [];
       try {
-        // is_extension / source_module are projected as constants on older DBs
-        // so downstream code can rely on the keys existing regardless.
-        const extCols = fieldsHaveCustomization
-          ? 'is_extension, source_module'
-          : '0 AS is_extension, NULL AS source_module';
-        fieldRows = q(
-          `SELECT field_name, field_type, edt, enum_type, label, mandatory, ${extCols}
-           FROM fields WHERE table_name = ? COLLATE NOCASE ORDER BY field_name`, [row.table_name]
-        );
+        // Shared with d365_effective_schema (issue #85): is_extension /
+        // source_module are projected as constants on older DBs so downstream
+        // code can rely on the keys existing regardless.
+        fieldRows = queryTableFields(q, row.table_name, fieldsHaveCustomization);
       } catch (err) {
         console.error('[kb-tools:d365_lookup_table fields]', err);
       }
@@ -193,11 +204,14 @@ export function registerKbTools(server, db) {
         ? fields_like.trim().toLowerCase()
         : null;
       const customFieldsOnly = custom_only === true;
-      const shownFieldRows = (fieldsLikeTerm || customFieldsOnly)
+      const matchedFieldRows = (fieldsLikeTerm || customFieldsOnly)
         ? fieldRows.filter(f =>
           (!fieldsLikeTerm || String(f.field_name).toLowerCase().includes(fieldsLikeTerm))
           && (!customFieldsOnly || Boolean(f.is_extension)))
         : fieldRows;
+      // #107.3: a 300-field table shipped 60 KB by default. The cap applies
+      // after the filters; field_count / fields_matched stay whole-table.
+      const shownFieldRows = matchedFieldRows.slice(0, fieldLimit);
 
       const idxRows = q(
         `SELECT index_name, is_unique, is_clustered, fields_json FROM indexes_tbl WHERE table_name = ? COLLATE NOCASE`, [row.table_name]
@@ -234,7 +248,9 @@ export function registerKbTools(server, db) {
         clustered_index: row.clustered_index ?? null,
         replacement_key: row.replacement_key ?? null,
         field_count: fieldRows.length,
+        fields_matched: matchedFieldRows.length,
         fields_shown: shownFieldRows.length,
+        fields_truncated: matchedFieldRows.length > shownFieldRows.length,
         is_customized: Boolean(row.is_customized),
         custom_field_count: fieldRows.filter(f => f.is_extension).length,
         customization_modules: [...new Set(
@@ -247,8 +263,10 @@ export function registerKbTools(server, db) {
           enum_type: f.enum_type ?? null,
           label: f.label ? resolve(f.label) : null,
           mandatory: toNum(f.mandatory),
-          is_extension: Boolean(f.is_extension),
-          source_module: f.source_module ?? null,
+          ...(emitProvenance ? {
+            is_extension: Boolean(f.is_extension),
+            source_module: f.source_module ?? null,
+          } : {}),
         })),
         indexes: idxRows.map(i => ({
           name: i.index_name,
@@ -294,11 +312,18 @@ export function registerKbTools(server, db) {
           Enum: f.enum_type ?? '',
           Label: f.label ?? '-',
           Mand: f.mandatory ?? '',
-          Custom: f.is_extension ? (f.source_module || '✓') : '',
+          ...(emitProvenance ? { Custom: f.is_extension ? (f.source_module || '✓') : '' } : {}),
         })),
-        ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand', 'Custom'],
+        emitProvenance
+          ? ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand', 'Custom']
+          : ['Field', 'Type', 'EDT', 'Enum', 'Label', 'Mand'],
       );
-      out += '\n\n';
+      if (typed.fields_truncated) {
+        out += truncationNote('cap', typed.fields_shown, FIELD_LIMIT_MAX);
+        out += `_${typed.fields_matched} fields match. Narrow with \`fields_like\` / \`custom_only\`, or raise \`field_limit\`._\n\n`;
+      } else {
+        out += '\n\n';
+      }
 
       out += '## Indexes\n';
       if (typed.indexes.length > 0) {
@@ -480,24 +505,51 @@ export function registerKbTools(server, db) {
     'd365_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities). Use for discovery queries like "find tables related to inventory" or "classes that handle product release". Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see d365_list_modules for the scanned build versions).',
+      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities) for discovery, e.g. "tables related to inventory". Scope with `modules` to specific models (see d365_list_modules).',
       inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query (keywords)'),
+      query: z.string().min(1).max(1000).optional().describe('Search query (keywords). Use this or `queries`.'),
+      queries: z.array(z.string().min(1).max(1000)).min(1).max(SEARCH_BATCH_MAX).optional()
+        .describe(`Run several searches in one call (max ${SEARCH_BATCH_MAX}); object_type / modules / limit apply to each.`),
       object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
       modules: modulesFilterParam,
-      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20)'),
+      limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
+      cursor: cursorParam,
       format: formatTextParam,
     },
       outputSchema: d365SearchOutput.shape,
     },
-    async ({ query: searchQuery, object_type, modules, limit, format }) => {
+    async ({ query: singleQuery, queries, object_type, modules, limit, cursor, format }) => {
       const lim = Number.isInteger(limit) && limit > 0 ? limit : 20;
       const moduleFilter = sanitizeModulesFilter(modules);
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
+
+      // Batching (issue #83): singular and plural are unioned and deduped, the
+      // caller's order is preserved, and the shared filters are hoisted into
+      // the envelope — they are what the batch is scoped by.
+      const requested = [...new Set([
+        ...(Array.isArray(queries) ? queries : []),
+        ...(singleQuery ? [singleQuery] : []),
+      ].map(s => String(s).trim()).filter(Boolean))];
+      if (!requested.length) return errorResult('invalid-input', 'Provide `query` or `queries`.');
+      const batchMode = Array.isArray(queries) && queries.length > 0;
+      if (batchMode && page.offset > 0) {
+        return errorResult('invalid-input', '`cursor` pages a single `query`; run a batch without it.');
+      }
+      // Defensive cap: Zod's .max() is bypassed by the test mock server (rule #13).
+      const searches = requested.slice(0, SEARCH_BATCH_MAX);
+
+      /** One search -> { typed, has_more, error }. `typed` is exactly the
+       *  pre-batching single payload; `error` is an errorResult to return as-is.
+       *  Fetches limit+1 rows (probe) so has_more is exact; rowid order is the
+       *  order the un-ordered query always returned, now made explicit so
+       *  OFFSET is stable. */
+      const runSearch = (searchQuery, offset = 0) => {
       // issue #42: gate the wildcard LIKE scan on pattern length before the DB.
       const pv = validateLikePattern(searchQuery);
-      if (pv) return patternErrorResult(pv);
+      if (pv) return { error: patternErrorResult(pv) };
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
-      if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
+      if (!terms.length) return { error: errorResult('invalid-input', 'Provide at least one search term.') };
 
       // Issue #17: FTS5 MATCH first (10-50x faster on the ~1 GB KB), same
       // pattern as sec_search. Falls back to LIKE when the DB predates
@@ -519,8 +571,8 @@ export function registerKbTools(server, db) {
           ftsSql += ` AND s.module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
           ftsParams.push(...moduleFilter);
         }
-        ftsSql += ` LIMIT ?`;
-        ftsParams.push(lim);
+        ftsSql += ` ORDER BY s.rowid LIMIT ? OFFSET ?`;
+        ftsParams.push(probeLimit(lim), offset);
         rows = q(ftsSql, ftsParams);
       } catch {
         // kb_search_fts missing — LIKE scan over kb_search.
@@ -546,55 +598,93 @@ export function registerKbTools(server, db) {
           likeParams.push(...moduleFilter);
         }
 
-        sql += ` LIMIT ?`;
-        likeParams.push(lim);
+        sql += ` ORDER BY rowid LIMIT ? OFFSET ?`;
+        likeParams.push(probeLimit(lim), offset);
 
         try {
           rows = q(sql, likeParams);
         } catch (err) {
-          return errorResult('db-error', 'Try a shorter or more specific search term.', err);
+          return { error: errorResult('db-error', 'Try a shorter or more specific search term.', err) };
         }
       }
 
-      if (!rows || rows.length === 0) {
-        return emptyResult(`matches for "${searchQuery}"`, {
+      const pageRows = takePage(rows, lim);
+      rows = pageRows.rows;
+      return {
+        has_more: pageRows.has_more,
+        typed: {
           query: searchQuery,
           object_type: object_type ?? null,
           modules: moduleFilter.length ? moduleFilter : null,
           limit: lim,
-          result_count: 0,
-          truncated: false,
-          results: [],
-        });
-      }
-
-      const typed = {
-        query: searchQuery,
-        object_type: object_type ?? null,
-        modules: moduleFilter.length ? moduleFilter : null,
-        limit: lim,
-        result_count: rows.length,
-        truncated: rows.length >= lim,
-        results: rows.map(r => ({
-          object_type: r.object_type ?? null,
-          object_name: r.object_name,
-          module_id: r.module_id ?? null,
-          // Rule #12: center the snippet on the first matching term instead
-          // of blindly taking the first 120 chars (matches beyond position
-          // 120 used to be invisible in the context column).
-          context: r.content != null ? contextAround(r.content, terms[0], 60) : null,
-        })),
+          result_count: rows.length,
+          truncated: pageRows.has_more,
+          results: rows.map(r => ({
+            object_type: r.object_type ?? null,
+            object_name: r.object_name,
+            module_id: r.module_id ?? null,
+            // Rule #12: center the snippet on the first matching term instead
+            // of blindly taking the first 120 chars (matches beyond position
+            // 120 used to be invisible in the context column).
+            context: r.content != null ? contextAround(r.content, terms[0], 60) : null,
+          })),
+        },
+      };
       };
 
-      let out = `## Search Results: "${typed.query}"\n\n`;
-      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
-      out += formatMarkdownTable(typed.results.map(r => ({
+      const renderRows = (results) => formatMarkdownTable(results.map(r => ({
         object_type: r.object_type ?? '',
         object_name: r.object_name,
         module_id: r.module_id ?? '',
         context: r.context ?? '',
       })));
-      if (typed.truncated) out += truncationNote('user', lim);
+
+      if (!batchMode) {
+        const { typed, has_more, error } = runSearch(searches[0], page.offset);
+        if (error) return error;
+        // Page envelope (#109): has_more always, next_cursor only when true.
+        Object.assign(typed, pageMeta(null, page.offset, typed.result_count, lim, has_more));
+        if (typed.result_count === 0) {
+          return emptyResult(`matches for "${typed.query}"`, typed);
+        }
+        // Exactly the pre-batching payload plus the page keys: no batch keys at all.
+        let out = `## Search Results: "${typed.query}"\n\n`;
+        if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
+        out += renderRows(typed.results);
+        if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
+        return structuredResult(typed, out, format);
+      }
+
+      // Batch mode: the shared scope is carried once in the envelope, each
+      // query carries only what differs. A query with zero hits is data
+      // (result_count 0), not a failure — there is no "not found" for a search.
+      const perQuery = [];
+      for (const sq of searches) {
+        const { typed, error } = runSearch(sq);
+        if (error) return error;
+        perQuery.push({
+          query: typed.query,
+          result_count: typed.result_count,
+          truncated: typed.truncated,
+          results: typed.results,
+        });
+      }
+      const typed = {
+        object_type: object_type ?? null,
+        modules: moduleFilter.length ? moduleFilter : null,
+        limit: lim,
+        requested_count: searches.length,
+        queries: perQuery,
+      };
+
+      let out = `## Search Results (${typed.requested_count} queries)\n\n`;
+      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
+      for (const p of perQuery) {
+        out += `### "${p.query}" (${p.result_count})\n`;
+        out += p.result_count ? renderRows(p.results) : '_No matches._';
+        out += p.truncated ? truncationNote('user', lim) + '\n' : '\n\n';
+      }
+      if (requested.length > searches.length) out += truncationNote('cap', searches.length, SEARCH_BATCH_MAX);
       return structuredResult(typed, out, format);
     }
   );
@@ -604,11 +694,11 @@ export function registerKbTools(server, db) {
     'd365_get_enum',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get all values for a D365FO enum with their numeric values. Essential for correct enum usage in SQL and X++. Pass `enum_names` to resolve up to 10 enums in one call instead of one call each.',
+      description: 'All values of a D365FO enum with their numeric values — essential for correct SQL and X++. `enum_names` resolves up to 10 enums in one call.',
       inputSchema: {
         enum_name: z.string().min(1).max(500).optional().describe('Enum name (e.g. StatusIssue, InventTransType). Use this or `enum_names`.'),
         enum_names: z.array(z.string().min(1).max(500)).min(1).max(ENUM_BATCH_MAX).optional()
-          .describe(`Resolve several enums in one call (max ${ENUM_BATCH_MAX}). Prefer this over repeated single calls — the response envelope is paid once. Names that do not exist come back in \`not_found\` rather than failing the call.`),
+          .describe(`Several enums in one call (max ${ENUM_BATCH_MAX}); unknown names come back in \`not_found\`.`),
         format: formatTextParam,
       },
       outputSchema: d365GetEnumOutput.shape,
@@ -729,7 +819,7 @@ export function registerKbTools(server, db) {
     'd365_check_field_exists',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Verify if fields exist on a D365FO table. Returns existence status and suggests corrections for non-existent fields. Use BEFORE generating SQL to prevent hallucinated column names. Pass `tables` to check several tables in one call instead of one call each — the usual case when validating a multi-table join.',
+      description: 'Verify that fields exist on a D365FO table; suggests corrections for wrong names. Use BEFORE generating SQL. Pass `tables` to check several tables in one call (the usual case for a multi-table join).',
       inputSchema: {
         table_name: z.string().min(1).max(500).optional().describe('Table name. Use this with `field_names`, or use `tables`.'),
         field_names: z.array(z.string().min(1).max(500)).optional().describe('Array of field names to check on `table_name`.'),
@@ -737,7 +827,7 @@ export function registerKbTools(server, db) {
           table_name: z.string().min(1).max(500),
           field_names: z.array(z.string().min(1).max(500)).min(1),
         })).min(1).max(FIELD_CHECK_BATCH_MAX).optional()
-          .describe(`Check several tables in one call (max ${FIELD_CHECK_BATCH_MAX}). A table that does not exist comes back with found=false rather than failing the whole call.`),
+          .describe(`Several tables in one call (max ${FIELD_CHECK_BATCH_MAX}); a missing table comes back with found=false.`),
         format: formatTextParam,
       },
       outputSchema: d365CheckFieldExistsOutput.shape,
@@ -977,20 +1067,23 @@ export function registerKbTools(server, db) {
     'd365_get_class_methods',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get method signatures for a D365FO class, table, or data entity. TIER 1 of the two-tier code path: by default this returns signatures plus each body\'s line count (`source_lines`) and NO source. Read the signatures, then pull only the bodies you actually need with `d365_get_method_source` (which takes several method names in one call). `include_source: true` is TIER 2 for a whole class and is roughly 6x this response - measured 12,309 vs 1,939 tokens on BankStatementImportBatch, 123,427 vs 21,023 on InventMovement - so use it on at most one class per investigation.',
+      description: 'Method signatures of a class, table or data entity — TIER 1: signatures plus each body\'s line count (`source_lines`), no source. Then pull only the bodies you need with `d365_get_method_source`. `include_source: true` is ~6x this response; use it on at most one class per investigation.',
       inputSchema: {
         name: z.string().min(1).max(500).describe('Class, table, or data entity name'),
         filter: z.string().min(1).max(500).optional().describe('Optional filter on method name (LIKE pattern). Cheapest way to narrow a wide class.'),
-        include_source: z.boolean().optional().default(false).describe('Return the full X++ body of EVERY method. Default false. ~6x the signature listing; prefer d365_get_method_source for specific methods.'),
-        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results (default 100)'),
+        include_source: z.boolean().optional().default(false).describe('Full X++ body of EVERY method (~6x the signature listing); prefer d365_get_method_source for specific methods.'),
+        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: d365GetClassMethodsOutput.shape,
     },
-    async ({ name, filter, include_source, limit, format }) => {
+    async ({ name, filter, include_source, limit, cursor, format }) => {
       // Defensive defaults (mock server bypasses Zod)
       include_source = include_source === true;
       limit = Number.isInteger(limit) && limit > 0 ? limit : 100;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
 
       const n = name.trim();
 
@@ -1010,11 +1103,12 @@ export function registerKbTools(server, db) {
         sql += ` AND method_name LIKE ? COLLATE NOCASE`;
         params.push(`%${filter}%`);
       }
-      sql += ` ORDER BY is_static DESC, method_name LIMIT ?`;
-      params.push(limit);
+      // (owner, method_name) is the PK, so this order is stable under OFFSET.
+      sql += ` ORDER BY is_static DESC, method_name LIMIT ? OFFSET ?`;
+      params.push(probeLimit(limit), page.offset);
 
-      const result = q(sql, params);
-      if (!result || result.length === 0) {
+      const { rows: result, has_more } = takePage(q(sql, params) || [], limit);
+      if (result.length === 0) {
         return emptyResult(`methods on "${n}"`, {
           owner_name: n,
           owner_type: '',
@@ -1025,6 +1119,7 @@ export function registerKbTools(server, db) {
           method_count: 0,
           methods: [],
           truncated: false,
+          has_more: false,
         });
       }
 
@@ -1069,7 +1164,8 @@ export function registerKbTools(server, db) {
         ...(include_source ? {} : {
           source_lines_total: result.reduce((a, r) => a + (toNum(r.source_lines) ?? 0), 0),
         }),
-        truncated: result.length >= limit,
+        truncated: has_more,
+        ...pageMeta(null, page.offset, result.length, limit, has_more),
       };
 
       // Markdown fallback rendered from the typed object.
@@ -1103,7 +1199,7 @@ export function registerKbTools(server, db) {
         out += `\n\n_Signatures only. \`Lines\` is each body's length — pull the few you need with \`d365_get_method_source\` (\`method_names\` takes several in one call). \`include_source: true\` returns all ${typed.source_lines_total} lines of X++ at roughly 6x this response._`;
       }
 
-      if (typed.truncated) out += truncationNote('user', limit);
+      if (typed.has_more) out += pageNote(typed.method_count, page.offset, typed.next_cursor);
 
       return structuredResult(typed, out, format);
     }
@@ -1114,12 +1210,12 @@ export function registerKbTools(server, db) {
     'd365_get_method_source',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get the full X++ source code for specific methods on a class, table, or data entity. TIER 2 of the two-tier code path: list signatures with `d365_get_class_methods` first (it reports each body\'s `source_lines`), then pull only the bodies you need here. THE RULE, from measurement: **one method -> `method_name`; two or more -> `method_names`.** A batch of 4 is smaller than 4 single calls (1,070 vs 1,092 tokens) AND costs one turn instead of four; at 10 methods it is 2,756 vs 2,855 tokens and 1 turn instead of 10. Only at n=1 does the single form win (140 vs 157 tokens, no round trip to save).',
+      description: 'Full X++ source of specific methods on a class, table or data entity — TIER 2 after `d365_get_class_methods`. One method -> `method_name`; two or more -> `method_names` (a batch of 4 is smaller than 4 single calls and costs one turn instead of four).',
       inputSchema: {
       owner_name: z.string().min(1).max(500).describe('Class, table, or data entity name'),
-      method_name: z.string().min(1).max(500).optional().describe('Method name. Use this for EXACTLY ONE method; for two or more use `method_names`, which is cheaper on both tokens and turns.'),
+      method_name: z.string().min(1).max(500).optional().describe('Method name — for exactly one method; otherwise use `method_names`.'),
       method_names: z.array(z.string().min(1).max(500)).min(1).max(METHOD_SOURCE_BATCH_MAX).optional()
-        .describe(`Fetch several methods on the same owner in one call (max ${METHOD_SOURCE_BATCH_MAX}). USE THIS whenever you want two or more bodies - it is smaller than the equivalent single calls (the owner is carried once, not per method) and costs one turn instead of N. Names that do not exist come back in \`not_found\` rather than failing the call.`),
+        .describe(`Several methods on the same owner in one call (max ${METHOD_SOURCE_BATCH_MAX}) — cheaper than single calls (owner carried once); unknown names come back in \`not_found\`.`),
       format: formatTextParam,
     },
       outputSchema: d365GetMethodSourceOutput.shape,
@@ -1247,7 +1343,7 @@ export function registerKbTools(server, db) {
       description: 'Find all tables that have foreign key relationships TO a given table. Useful for impact analysis.',
       inputSchema: {
         table_name: z.string().min(1).max(500).describe('Target table name'),
-        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max referencing relations to return (default 200, max 1000)'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max referencing relations to return'),
         format: formatTextParam,
       },
       outputSchema: d365FindReferencingTablesOutput.shape,
@@ -1330,8 +1426,8 @@ export function registerKbTools(server, db) {
       description: 'Get a summary of a D365FO module/package: object counts and key tables/classes.',
       inputSchema: {
       module_name: z.string().min(1).max(500).describe('Module name (e.g. ApplicationSuite, EngineeringChangeManagement)'),
-      table_limit: z.number().int().min(1).max(200).default(20).describe('Max Key Tables rows (default 20, max 200)'),
-      class_limit: z.number().int().min(1).max(200).default(15).describe('Max Key Classes rows (default 15, max 200)'),
+      table_limit: z.number().int().min(1).max(200).default(20).describe('Max Key Tables rows'),
+      class_limit: z.number().int().min(1).max(200).default(15).describe('Max Key Classes rows'),
       format: formatTextParam,
     },
       outputSchema: d365GetModuleSummaryOutput.shape,
@@ -1453,23 +1549,26 @@ export function registerKbTools(server, db) {
     'd365_get_entity_sources',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get the data source chain and fields of a D365FO data entity. Resolves the AOT name (EcoResReleasedProductV2Entity), the OData public name (ReleasedProductV2) and the OData collection (ReleasedProductsV2) alike. Every field carries its owning model, so `custom_only: true` returns just the customisation surface; `fields_like`, `computed_only` and `limit` narrow a wide entity further. Method signatures are OMITTED by default - `method_count` is always returned, pass `include_methods: true` when the entity code path matters.',
+      description: 'Data source chain and fields of a data entity, by AOT name, OData public name or collection name. Every field carries its model: `custom_only` returns the customisation surface; `fields_like` / `computed_only` / `limit` narrow it. Methods omitted unless `include_methods: true` (`method_count` always present).',
       inputSchema: {
         entity_name: z.string().min(1).max(500).describe('Data entity name: AOT name, OData public name, or OData collection name'),
         include_methods: z.boolean().optional().default(false).describe('Include entity method signatures (postLoad, validate*, OData actions). Default false - method_count is always returned.'),
         fields_like: z.string().min(1).max(200).optional().describe('Only fields whose name contains this text (case-insensitive)'),
         custom_only: z.boolean().optional().default(false).describe('Only fields added by a non-Microsoft model or by a table extension - the customisation surface'),
         computed_only: z.boolean().optional().default(false).describe('Only computed/virtual fields (no backing data field)'),
-        include_provenance: z.boolean().optional().default(false).describe('Emit source_module/is_extension on EVERY field. Default false - the pair is emitted only for extension fields, where it carries information; on a standard Microsoft field it repeats the entity\'s own module and cost ~27% of this response.'),
-        limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return (default 500, max 1000)'),
+        include_provenance: z.boolean().optional().default(false).describe('Emit source_module/is_extension on EVERY field (default: only on extension fields — on standard fields it repeats the entity\'s module, ~27% of the response).'),
+        limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: d365GetEntitySourcesOutput.shape,
     },
-    async ({ entity_name, include_methods, fields_like, custom_only, computed_only, include_provenance, limit, format }) => {
+    async ({ entity_name, include_methods, fields_like, custom_only, computed_only, include_provenance, limit, cursor, format }) => {
       const en = entity_name.trim();
       // Defensive defaults - the test mock server bypasses Zod (contract rule #13).
       const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 500;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const wantMethods = include_methods === true;
       const customOnly = custom_only === true;
       const computedOnly = computed_only === true;
@@ -1588,7 +1687,9 @@ export function registerKbTools(server, db) {
       // Filtering still runs on the full internal rows, so what comes back is
       // unaffected by what is emitted.
       const emitProvenance = wantProvenance || customOnly;
-      const shownFields = matched.slice(0, lim).map(f => (emitProvenance
+      // Page over the filtered rows (#109): the list is already in memory and
+      // ordered by field_name, so the cursor is a plain offset into `matched`.
+      const shownFields = matched.slice(page.offset, page.offset + lim).map(f => (emitProvenance
         ? f
         : { field_name: f.field_name, data_field: f.data_field, data_source: f.data_source, is_mandatory: f.is_mandatory }));
 
@@ -1639,6 +1740,7 @@ export function registerKbTools(server, db) {
           signature: m.signature ?? null,
           is_static: Boolean(m.is_static),
         })),
+        ...pageMeta(null, page.offset, shownFields.length, lim, page.offset + shownFields.length < matched.length),
       };
 
       const activeFilters = [
@@ -1670,8 +1772,8 @@ export function registerKbTools(server, db) {
           })),
           ['Field', 'DataField', 'DataSource', 'Model', 'Mand'],
         );
-        if (typed.fields_matched > shownFields.length) {
-          out += truncationNote('cap', shownFields.length, 1000);
+        if (typed.has_more) {
+          out += pageNote(shownFields.length, page.offset, typed.next_cursor);
         }
       } else {
         out += '_No fields match the filter._';
@@ -1805,20 +1907,17 @@ export function registerKbTools(server, db) {
     'd365_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a raw SQL query against the D365FO knowledge base. Use for ad-hoc queries not covered by other tools. READ-ONLY, limited to 500 rows. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema (real table names - there is no kb_ prefix except kb_search/kb_metadata): tables(table_name, module_id, table_group, field_count, is_customized, ...), fields(table_name, field_name, field_type, edt, enum_type, mandatory, label, source_module, is_extension), enums(enum_name, ...) + enum_values(enum_name, value_name, value), classes(class_name, module_id, ...), methods(owner_type, owner_name, method_name, signature, source_code, is_static), relations(source_table, related_table, relation_name, constraints_json, relationship_type), data_entities(entity_name, public_name, public_collection, primary_table, ...), entity_fields(entity_name, field_name, data_field, data_source), modules(module_id, table_count, ...), model_versions(model_name, module_id, publisher, layer, origin, version), labels(label_id, text), kb_search(object_type, object_name, content). Query sqlite_master for the authoritative list if in doubt. Text channel: see the shared `format` parameter.',
+      description: 'Raw READ-ONLY SQL against the KB (500-row cap), for what no other tool covers. Tables: tables, fields, enums, enum_values, classes, methods, relations, data_entities, entity_fields, modules, model_versions, labels, kb_search (no kb_ prefix otherwise). Columns: PRAGMA table_info(<table>) or d365_sql_template.',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query to execute'),
-        format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),
+        // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
+        // .default('toon') here pinned TOON and defeated the adaptive default.
+        format: formatTextParam,
       },
       outputSchema: rawSqlOutput.shape,
     },
     async ({ sql: rawSql, format }) => {
       const SAFETY_CAP = 500;
-      // Pass the caller's choice through verbatim. Collapsing everything
-      // non-markdown to 'toon' here used to be harmless (structuredResult read
-      // any non-markdown value as TOON) but now PINS the encoding and defeats
-      // the adaptive default. structuredResult is the choke point — rule #5.
-      const fmt = format;
       const trimmed = rawSql.trim();
 
       // Strip SQL comments (block and line) BEFORE any keyword scanning, so a
@@ -1852,10 +1951,10 @@ export function registerKbTools(server, db) {
           rows,
         };
         // Both renderings are built; structuredResult picks the smaller unless
-        // the caller pinned one.
+        // the caller pinned one. `format` goes through untouched — rule #5.
         let md = formatMarkdownTable(rows);
         if (truncated) md += truncationNote('hard', SAFETY_CAP);
-        return structuredResult(typed, md, fmt);
+        return structuredResult(typed, md, format);
       }
 
       // PRAGMA queries are passed through verbatim — wrapping a PRAGMA in an
@@ -2010,13 +2109,13 @@ export function registerKbTools(server, db) {
     'd365_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List D365FO modules/packages with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher). The Level-0 directory of the knowledge base. Filter with `origin` / `layer` / `publisher` to see only the customisation surface - `origin: "custom"` returns a handful of models instead of ~170 - and set `include_counts: false` for a bare model list.',
+      description: 'List modules/packages with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher) — the Level-0 directory of the KB. `origin: "custom"` returns a handful of models instead of ~170; `include_counts: false` for a bare list.',
       inputSchema: {
         origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
         layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
         publisher: z.string().min(1).max(200).optional().describe('Only models whose publisher contains this text (case-insensitive)'),
         include_counts: z.boolean().optional().default(true).describe('Include table/class/enum/entity/form counts. Set false for a bare model list.'),
-        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return (default 200, max 500)'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return'),
         format: formatTextParam,
       },
       outputSchema: d365ListModulesOutput.shape,
@@ -2200,4 +2299,9 @@ export function registerKbTools(server, db) {
       return structuredResult(typed, out, format);
     }
   );
+
+  // ── 18. d365_effective_schema (issue #85) — own module, registered here so
+  // tool-sets.js and every entry point stay untouched. `server` is already the
+  // guarded proxy (installToolGuards is idempotent either way).
+  registerEffectiveSchemaTools(server, db);
 }

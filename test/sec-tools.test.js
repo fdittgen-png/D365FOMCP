@@ -526,8 +526,17 @@ describe('sec_stats', () => {
     assert.doesNotMatch(buildInfoSection, /^\|/m);
   });
 
-  it('reports the scanned model build versions', async () => {
+  it('reports the scanned-model count by origin and OMITS the per-model list by default (#107.2)', async () => {
     const full = await callToolFull('sec_stats', {});
+    assert.equal(full.structuredContent.model_count, 2);
+    assert.deepEqual(full.structuredContent.models_by_origin, { microsoft: 1, isv: 0, custom: 1 });
+    assert.ok(!('model_versions' in full.structuredContent), 'the 37 KB list is opt-in; the key is absent, not []');
+    assert.match(full.content[0].text, /Scanned Models \| 2 \(microsoft 1, isv 0, custom 1\)/);
+    assertSdkOutputContract('sec_stats', full);
+  });
+
+  it('reports the scanned model build versions with include_model_versions', async () => {
+    const full = await callToolFull('sec_stats', { include_model_versions: true });
     const iext = full.structuredContent.model_versions.find(m => m.model_name === 'iExtension');
     assert.equal(iext.version, '10.0.32.7');
     assert.equal(iext.origin, 'custom');
@@ -1413,5 +1422,166 @@ describe('sec tools tolerate a DB without rdep.resource_type', () => {
     const result = await legacyHandlers['sec_object_access'].handler({ object_name: 'VendInvoiceHeaderEntity' });
     assert.notEqual(result.isError, true, result.content?.[0]?.text);
     assert.ok(result.structuredContent);
+  });
+});
+
+// ── W3 (#107.1): sec_lookup_role / sec_role_hierarchy / sec_compare_roles are summaries by default ──
+describe('W3 summary-by-default on the wide-role tools', () => {
+  let wide;
+  const call = (name, args) => wide[name].handler(args);
+
+  before(async () => {
+    const wdb = new Database(':memory:');
+    wdb.pragma('journal_mode = OFF');
+    wdb.exec(`
+      CREATE TABLE roles (role_id TEXT PRIMARY KEY, role_name TEXT NOT NULL, module_id TEXT, label TEXT, description TEXT,
+        license_type TEXT, permission_type TEXT DEFAULT 'Grant', is_profile INTEGER DEFAULT 0, source TEXT DEFAULT 'test');
+      CREATE TABLE role_subroles (parent_role_id TEXT, child_role_id TEXT, is_transitive INTEGER DEFAULT 0, PRIMARY KEY (parent_role_id, child_role_id));
+      CREATE TABLE duties (duty_id TEXT PRIMARY KEY, duty_name TEXT, module_id TEXT, description TEXT);
+      CREATE TABLE role_duties (role_id TEXT, duty_id TEXT, permission_type TEXT DEFAULT 'Grant', PRIMARY KEY (role_id, duty_id));
+      CREATE TABLE privileges (privilege_name TEXT PRIMARY KEY, module_id TEXT, label TEXT);
+      CREATE TABLE duty_privileges (duty_id TEXT, privilege_name TEXT, PRIMARY KEY (duty_id, privilege_name));
+      CREATE TABLE privilege_entry_points (privilege_name TEXT, entry_point_name TEXT, object_type TEXT, object_name TEXT,
+        grant_read TEXT, grant_create TEXT, grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT,
+        PRIMARY KEY (privilege_name, entry_point_name));
+      CREATE TABLE role_direct_privileges (role_id TEXT, privilege_name TEXT, PRIMARY KEY (role_id, privilege_name));
+      CREATE TABLE role_direct_entity_permissions (role_id TEXT, entity_name TEXT, resource_type TEXT, grant_read TEXT, grant_create TEXT,
+        grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT, PRIMARY KEY (role_id, entity_name));
+      CREATE TABLE users (user_id TEXT PRIMARY KEY, person_name TEXT, email TEXT, enabled INTEGER DEFAULT 1, default_company TEXT);
+      CREATE TABLE user_roles (user_id TEXT, role_id TEXT, PRIMARY KEY (user_id, role_id));
+      CREATE TABLE sec_metadata (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO sec_metadata VALUES ('build_date', '2026-09-01');
+      INSERT INTO roles (role_id, role_name, license_type) VALUES ('W1', 'Wide role', 'Enterprise'), ('W2', 'Other wide role', 'Activity');
+    `);
+    const pad = (n) => String(n).padStart(3, '0');
+    const d = wdb.prepare('INSERT INTO duties (duty_id, duty_name) VALUES (?, ?)');
+    const rd = wdb.prepare('INSERT INTO role_duties VALUES (?, ?, ?)');
+    const rp = wdb.prepare('INSERT INTO role_direct_privileges VALUES (?, ?)');
+    const rs = wdb.prepare('INSERT INTO role_subroles VALUES (?, ?, 0)');
+    const rr = wdb.prepare('INSERT INTO roles (role_id, role_name) VALUES (?, ?)');
+    const pe = wdb.prepare('INSERT INTO role_direct_entity_permissions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    for (let i = 1; i <= 60; i++) {
+      d.run(`WideDuty${pad(i)}`, `Wide duty ${i}`);
+      rd.run('W1', `WideDuty${pad(i)}`, 'Grant');
+      if (i <= 55) rd.run('W2', `WideDuty${pad(i)}`, 'Grant');   // 55 shared, 5 only in W1
+    }
+    for (let i = 1; i <= 70; i++) rp.run('W1', `WidePriv${pad(i)}`);
+    // grant_read on every row, grant_create on some, the other four on none.
+    for (let i = 1; i <= 120; i++) pe.run('W1', `WideEntity${pad(i)}`, 'DataEntity', 'Allow', i % 4 === 0 ? 'Allow' : null, null, null, null, null);
+    for (let i = 1; i <= 7; i++) { rr.run(`WC${i}`, `Wide child ${i}`); rs.run('W1', `WC${i}`); }
+
+    const { registerSecTools } = await import('../src/azure/sec-tools.js');
+    const mockServer = createMockServer();
+    registerSecTools(mockServer, wdb);
+    wide = mockServer.handlers;
+  });
+
+  it('sec_lookup_role: default is a summary — first 50 of each list, exact counts, truncated flags', async () => {
+    const r = await call('sec_lookup_role', { role_name: 'Wide role', format: 'markdown' });
+    const t = r.structuredContent;
+    assert.equal(t.duty_count, 60);
+    assert.equal(t.duties.length, 50);
+    assert.equal(t.duties_truncated, true);
+    assert.equal(t.direct_privilege_count, 70);
+    assert.equal(t.direct_privileges.length, 50);
+    assert.equal(t.direct_privileges_truncated, true);
+    assert.equal(t.direct_entity_permission_count, 120);
+    assert.equal(t.direct_entity_permissions.length, 50);
+    assert.equal(t.direct_entity_permissions_truncated, true);
+    assert.equal(t.sub_roles.length, 7, 'sub-roles are small and stay complete');
+    assert.match(r.content[0].text, /include_entity_permissions/);
+    assert.doesNotThrow(() => z.object(wide['sec_lookup_role'].outputSchema).parse(t));
+  });
+
+  it('sec_lookup_role: grant columns are decided per response — null on every row means omitted on every row (rule #14)', async () => {
+    const r = await call('sec_lookup_role', { role_name: 'Wide role' });
+    const rows = r.structuredContent.direct_entity_permissions;
+    const keySets = new Set(rows.map(x => Object.keys(x).sort().join(',')));
+    assert.equal(keySets.size, 1, 'every row carries the same keys');
+    assert.deepEqual([...keySets][0].split(','), ['entity_name', 'grant_create', 'grant_read']);
+    assert.ok(rows.some(x => x.grant_create === null), 'a live column keeps explicit nulls where it is null');
+  });
+
+  it('sec_lookup_role: include_entity_permissions returns the complete lists', async () => {
+    const r = await call('sec_lookup_role', { role_name: 'Wide role', include_entity_permissions: true });
+    const t = r.structuredContent;
+    assert.equal(t.direct_entity_permissions.length, 120);
+    assert.equal(t.duties.length, 60);
+    assert.equal(t.direct_privileges.length, 70);
+    assert.equal(t.direct_entity_permissions_truncated, false);
+    assert.equal(t.duties_truncated, false);
+  });
+
+  it('sec_lookup_role: entity_permission_limit is honoured and clamped', async () => {
+    const r = await call('sec_lookup_role', { role_name: 'Wide role', entity_permission_limit: 10 });
+    assert.equal(r.structuredContent.direct_entity_permissions.length, 10);
+    assert.equal(r.structuredContent.direct_entity_permission_count, 120);
+    const bad = await call('sec_lookup_role', { role_name: 'Wide role', entity_permission_limit: -3 });
+    assert.equal(bad.structuredContent.direct_entity_permissions.length, 50, 'defensive default applies without Zod');
+  });
+
+  it('sec_role_hierarchy: limit caps the entries and result_count stays exact', async () => {
+    const r = await call('sec_role_hierarchy', { role_name: 'Wide role', direction: 'children', limit: 3, format: 'markdown' });
+    assert.equal(r.structuredContent.result_count, 7);
+    assert.equal(r.structuredContent.entries.length, 3);
+    assert.equal(r.structuredContent.truncated, true);
+    assert.match(r.content[0].text, /Showing first 3/);
+    const full = await call('sec_role_hierarchy', { role_name: 'Wide role' });
+    assert.equal(full.structuredContent.entries.length, 7);
+    assert.equal(full.structuredContent.truncated, false);
+  });
+
+  it('sec_compare_roles: lists are capped at list_limit with exact counts', async () => {
+    const r = await call('sec_compare_roles', { role1: 'Wide role', role2: 'Other wide role' });
+    const t = r.structuredContent;
+    assert.equal(t.duties_shared_count, 55);
+    assert.equal(t.duties_shared.length, 50);
+    assert.equal(t.duties_only_1_count, 5);
+    assert.equal(t.duties_only_1.length, 5);
+    assert.equal(t.truncated, true);
+    assert.doesNotThrow(() => z.object(wide['sec_compare_roles'].outputSchema).parse(t));
+    const wideList = await call('sec_compare_roles', { role1: 'Wide role', role2: 'Other wide role', list_limit: 100 });
+    assert.equal(wideList.structuredContent.duties_shared.length, 55);
+    assert.equal(wideList.structuredContent.truncated, false);
+  });
+
+  // #107.6 — the remaining lookup / find tools cap their lists and keep exact counts.
+  it('sec_lookup_duty: limit caps roles and privileges; counts stay exact', async () => {
+    // WideDuty001 is in W1 and W2 (2 roles) — cap at 1 to prove the cut.
+    const r = await call('sec_lookup_duty', { duty_name: 'WideDuty001', limit: 1, format: 'markdown' });
+    const t = r.structuredContent;
+    assert.equal(t.role_count, 2);
+    assert.equal(t.roles.length, 1);
+    assert.equal(t.truncated, true);
+    assert.match(r.content[0].text, /Roles containing this duty \(2\)/);
+    assert.match(r.content[0].text, /Showing first 1 results/);
+    assert.doesNotThrow(() => z.object(wide['sec_lookup_duty'].outputSchema).parse(t));
+    const full = await call('sec_lookup_duty', { duty_name: 'WideDuty001' });
+    assert.equal(full.structuredContent.truncated, false);
+    assert.equal(full.structuredContent.roles.length, 2);
+  });
+
+  it('sec_find_roles_by_duty: limit caps the list; result_count is the exact total', async () => {
+    const r = await call('sec_find_roles_by_duty', { duty_name: 'WideDuty001', limit: 1, format: 'markdown' });
+    const t = r.structuredContent;
+    assert.equal(t.result_count, 2);
+    assert.equal(t.roles.length, 1);
+    assert.equal(t.truncated, true);
+    assert.match(r.content[0].text, /more available — pass `cursor:/);
+    const dflt = await call('sec_find_roles_by_duty', { duty_name: 'WideDuty001' });
+    assert.equal(dflt.structuredContent.roles.length, 2);
+    assert.equal(dflt.structuredContent.truncated, false);
+  });
+
+  it('sec_lookup_privilege / sec_lookup_user / sec_find_roles_by_privilege: uncut lists report truncated=false and validate', async () => {
+    const r = await wide['sec_lookup_privilege'].handler({ privilege_name: 'WidePriv001' });
+    // WidePriv001 is a direct privilege with no privileges-table row: not found is the honest answer here.
+    assert.equal(r.isError, true);
+    const u = await call('sec_lookup_user', { user_id: 'nobody' });
+    assert.equal(u.isError, true);
+    const p = await call('sec_find_roles_by_privilege', { privilege_name: 'WidePriv001' });
+    assert.equal(p.structuredContent.truncated, false);
+    assert.equal(p.structuredContent.direct_count, 1);
+    assert.doesNotThrow(() => z.object(wide['sec_find_roles_by_privilege'].outputSchema).parse(p.structuredContent));
   });
 });

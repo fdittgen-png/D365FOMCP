@@ -8,7 +8,7 @@ Security configuration snapshot (AOT roles/duties/privileges + user/role assignm
 
 | Tool | One-line purpose |
 |---|---|
-| `sec_lookup_role` | Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges. |
+| `sec_lookup_role` | Get security role details: description, license type, Grant/Deny, sub-roles, duties, direct privileges and entity permissions. |
 | `sec_lookup_duty` | Get duty details: parent roles, privileges granted, and entry points. |
 | `sec_lookup_privilege` | Get privilege details: entry points with CRUD grants, parent duties, and parent roles. |
 | `sec_lookup_user` | Get user profile: roles, company scoping, enabled status, and email. |
@@ -19,22 +19,25 @@ Security configuration snapshot (AOT roles/duties/privileges + user/role assignm
 | `sec_company_users` | List all users and their roles for a specific company (legal entity). |
 | `sec_permission_trace` | Trace the full permission chain for a role: role -> duties -> privileges -> entry points with CRUD. |
 | `sec_compare_roles` | Compare two roles side by side: shared vs unique duties and privileges. |
-| `sec_effective_permissions` | Compute the NET effective permissions for a user or role, resolving sub-roles and applying Deny-over-Grant (Deny wins). |
-| `sec_search` | Full-text search across roles, duties, privileges, and users. |
-| `sec_stats` | Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML p |
-| `sec_raw_sql` | Execute a raw SQL query against the security database. |
+| `sec_effective_permissions` | NET effective permissions for a user or role: sub-roles resolved, Deny-over-Grant applied. |
+| `sec_search` | Full-text search across roles, duties, privileges and users. |
+| `sec_stats` | Security database statistics: role, user and company counts, scanned models by origin. |
+| `sec_raw_sql` | Raw READ-ONLY SQL against the security database (500-row cap). |
 | `sec_licence_assessment` | Assess the minimum required D365 licence tier for one or all users based on their assigned security roles. |
 | `sec_what_if` | Simulate adding or removing roles from a user. |
-| `sec_object_access` | Reverse permission chain: given an object name (menu item, form, table), find every privilege, duty, role and user whose access touches it — including Deny path |
+| `sec_object_access` | Reverse permission chain for an object (menu item, form, table): every privilege, duty, role and user whose access touches it, including Deny paths (⛔ — they RE |
 
 ## `sec_lookup_role`
 
-Get complete security role details: description, license type, Grant/Deny, sub-roles, duties, and direct privileges.
+Get security role details: description, license type, Grant/Deny, sub-roles, duties, direct privileges and entity permissions. Summary by default: first 50 per list + exact counts.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `role_name` | string (min 1, max 500) | yes | Role name (case-insensitive) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `role_name` | string (min 1, max 500) | no | Role name (case-insensitive). Use this or `role_names`. |
+| `role_names` | array<string (min 1, max 500)> | no | Several roles in one call (max 10); the summary options apply to each. Unknown names come back in `not_found`. |
+| `include_entity_permissions` | boolean | default `false` | true: complete lists (can exceed 400 KB on wide roles) |
+| `entity_permission_limit` | integer (≥1, ≤5000) | default `50` | Max entity permissions in the summary view |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_lookup_duty`
 
@@ -43,7 +46,8 @@ Get duty details: parent roles, privileges granted, and entry points.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name (case-insensitive) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_lookup_privilege`
 
@@ -52,7 +56,8 @@ Get privilege details: entry points with CRUD grants, parent duties, and parent 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name (case-insensitive) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_lookup_user`
 
@@ -61,7 +66,8 @@ Get user profile: roles, company scoping, enabled status, and email.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `user_id` | string (min 1, max 500) | yes | User ID (case-insensitive) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤2000) | default `200` | Max rows per list |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_role_hierarchy`
 
@@ -71,7 +77,8 @@ Show the sub-role hierarchy for a role (children that inherit from it, or parent
 |---|---|---|---|
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `direction` | `children` \| `parents` | default `"children"` | Traverse direction |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤1000) | default `100` | Max related roles |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_find_users_by_role`
 
@@ -82,7 +89,7 @@ Find all users assigned to a role, optionally filtered to a specific company.
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `company_id` | string (min 1, max 500) | no | Filter to users scoped to this company |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_find_roles_by_duty`
 
@@ -91,7 +98,9 @@ Find all roles that contain a specific duty.
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_find_roles_by_privilege`
 
@@ -100,7 +109,9 @@ Find all roles that grant a privilege (via the duty chain or directly).
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_company_users`
 
@@ -110,7 +121,7 @@ List all users and their roles for a specific company (legal entity).
 |---|---|---|---|
 | `company_id` | string (min 1, max 500) | yes | Company / legal entity ID (e.g., LADE, TAB) |
 | `limit` | integer (≥1, ≤500) | default `200` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_permission_trace`
 
@@ -121,7 +132,7 @@ Trace the full permission chain for a role: role -> duties -> privileges -> entr
 | `role_name` | string (min 1, max 500) | yes | Role name |
 | `object_name` | string (min 1, max 500) | no | Filter to entry points targeting this object |
 | `limit` | integer (≥1, ≤500) | default `500` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_compare_roles`
 
@@ -131,11 +142,12 @@ Compare two roles side by side: shared vs unique duties and privileges.
 |---|---|---|---|
 | `role1` | string (min 1, max 500) | yes | First role name |
 | `role2` | string (min 1, max 500) | yes | Second role name |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `list_limit` | integer (≥1, ≤2000) | default `50` | Max names per list; counts stay exact |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_effective_permissions`
 
-Compute the NET effective permissions for a user or role, resolving sub-roles and applying Deny-over-Grant (Deny wins). Returns one row per object with the effective verdict on all six access levels (Read/Create/Update/Delete/Correct/Invoke) and a status: granted (control enabled) · partial (some ops denied → control likely greyed) · denied (blocked). An object ABSENT from the result means no grant at all (control hidden). Consumes duty chains, direct privileges and direct entity permissions. Use to answer "can this user actually use this button, and if not why?".
+NET effective permissions for a user or role: sub-roles resolved, Deny-over-Grant applied. One row per object with the verdict on Read/Create/Update/Delete/Correct/Invoke and a status: granted · partial (control likely greyed) · denied. An object absent from the result has no grant at all (hidden).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -143,11 +155,11 @@ Compute the NET effective permissions for a user or role, resolving sub-roles an
 | `role_name` | string (min 1, max 500) | no | Role name (provide this OR user_id) |
 | `object_name` | string (min 1, max 500) | no | Filter to entry points for this object |
 | `limit` | integer (≥1, ≤500) | default `200` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_search`
 
-Full-text search across roles, duties, privileges, and users. Scope with `modules` to search only security objects from specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see sec_stats for the scanned build versions). Note: users carry no module and are excluded when the filter is set.
+Full-text search across roles, duties, privileges and users. Scope with `modules` to specific models (see sec_stats); users carry no module and are excluded when the filter is set.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -155,24 +167,26 @@ Full-text search across roles, duties, privileges, and users. Scope with `module
 | `object_type` | `role` \| `duty` \| `privilege` \| `user` | no | Filter: role, duty, privilege, user |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_stats`
 
-Get summary statistics for the security database: role counts, user counts, company count, etc., plus the build version of every scanned model (Descriptor XML provenance: version, layer, origin microsoft/isv/custom).
+Security database statistics: role, user and company counts, scanned models by origin. include_model_versions=true lists each model with its build version.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `include_model_versions` | boolean | default `false` | true: per-model build versions (Descriptor provenance) |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_raw_sql`
 
-Execute a raw SQL query against the security database. READ-ONLY, 500-row limit. Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Schema: roles(role_id, role_name, label, description, module_id, license_type, permission_type, source), duties(duty_id, duty_name, module_id, description), privileges(privilege_name, module_id, label), role_duties(role_id, duty_id, permission_type), role_direct_privileges(role_id, privilege_name), duty_privileges(duty_id, privilege_name), privilege_entry_points(privilege_name, entry_point_name, object_type, object_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke), users(user_id, person_name, email, enabled, default_company), user_roles(user_id, role_id), user_role_companies(user_id, role_id, company_id), role_subroles(parent_role_id, child_role_id, is_transitive), role_direct_entity_permissions(role_id, entity_name, grant_read, grant_create, grant_update, grant_delete, grant_correct, grant_invoke). Text channel: see the shared `format` parameter.
+Raw READ-ONLY SQL against the security database (500-row cap). Tables: roles, duties, privileges, role_duties, role_direct_privileges, duty_privileges, privilege_entry_points, users, user_roles, user_role_companies, role_subroles, role_direct_entity_permissions. Columns: PRAGMA table_info(<table>).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `sql` | string (min 1, max 50000) | yes | SQL SELECT query |
-| `format` | `markdown` \| `toon` | default `"toon"` | Text-channel rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_licence_assessment`
 
@@ -182,7 +196,7 @@ Assess the minimum required D365 licence tier for one or all users based on thei
 |---|---|---|---|
 | `user_id` | string (min 1, max 500) | no | Assess a single user (omit for all enabled users) |
 | `limit` | integer (≥1, ≤500) | default `500` | Max users to return |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_what_if`
 
@@ -193,15 +207,15 @@ Simulate adding or removing roles from a user. Returns the projected licence tie
 | `user_id` | string (min 1, max 500) | yes | User ID to simulate changes for |
 | `add_roles` | array<string (min 1, max 500)> | default `[]` | Role names to add |
 | `remove_roles` | array<string (min 1, max 500)> | default `[]` | Role names to remove |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `sec_object_access`
 
-Reverse permission chain: given an object name (menu item, form, table), find every privilege, duty, role and user whose access touches it — including Deny paths (⛔, which REMOVE access and override grants) and direct entity permissions. Surfaces all six access levels (Read/Create/Update/Delete/Correct/Invoke; Invoke governs action buttons). Use to answer "who can — or is blocked from — this object/button?".
+Reverse permission chain for an object (menu item, form, table): every privilege, duty, role and user whose access touches it, including Deny paths (⛔ — they REMOVE access) and direct entity permissions, on all six access levels (Invoke governs action buttons).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name to trace (e.g., VendInvoiceJournal, CustTable) |
 | `limit` | integer (≥1, ≤500) | default `200` | Max access paths to return |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 

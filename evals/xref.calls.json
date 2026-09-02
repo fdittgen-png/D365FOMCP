@@ -1,0 +1,96 @@
+{
+  "service": "xref",
+  "note": "Recorded tool calls that reproduce each <qa_pair> answer in xref.xml, in order. `expr` is JavaScript over r (structuredContent per call) and text (text channel per call); it must evaluate to the <answer> string. Replayed by scripts/run-evals.mjs.",
+  "pairs": [
+    {
+      "id": 1,
+      "title": "SalesFormLetter_Invoice: ancestor depth + parent's direct subclasses",
+      "calls": [
+        { "tool": "xref_class_hierarchy", "arguments": { "class_name": "SalesFormLetter_Invoice", "direction": "parents", "limit": 10 } },
+        { "tool": "xref_class_hierarchy", "arguments": { "class_name": "SalesFormLetter", "direction": "subclasses", "limit": 100 } }
+      ],
+      "expr": "(p => r[1].class_name === p.class_name ? (r[0].entries.filter(e => e.depth > 0).length + ',' + r[1].entries.filter(e => e.depth === 1).length) : 'parent mismatch')(r[0].entries.find(e => e.depth === 1))"
+    },
+    {
+      "id": 2,
+      "title": "CoC extension of CustGroup: module and its dependency count",
+      "calls": [
+        { "tool": "xref_find_extensions", "arguments": { "object_name": "CustGroup", "limit": 5 } },
+        { "tool": "xref_cross_module_deps", "arguments": { "module_name": "SubscriptionBilling", "direction": "depends_on", "limit": 100 } }
+      ],
+      "expr": "r[0].coc_classes.length === 1 && r[0].coc_classes[0].module === r[1].module_name && !r[1].truncated ? r[1].module_name + ',' + r[1].result_count : 'mismatch'"
+    },
+    {
+      "id": 3,
+      "title": "CustGroup.find(): distinct caller modules",
+      "calls": [
+        { "tool": "xref_object_summary", "arguments": { "object_name": "CustGroup" } },
+        { "tool": "xref_find_method_callers", "arguments": { "object_name": "CustGroup", "method_name": "find", "limit": 500 } }
+      ],
+      "expr": "r[0].methods.includes('find') && !r[1].truncated ? new Set(r[1].callers.map(c => c.module)).size : 'truncated'"
+    },
+    {
+      "id": 4,
+      "title": "documentStatus override: declaring ancestor",
+      "calls": [
+        { "tool": "xref_method_references", "arguments": { "object_name": "SalesFormLetter_Invoice", "method_name": "documentStatus", "limit": 10 } },
+        { "tool": "xref_class_hierarchy", "arguments": { "class_name": "SalesFormLetter_Invoice", "direction": "parents", "limit": 10 } }
+      ],
+      "expr": "(c => r[1].entries.some(e => e.depth > 0 && e.class_name === c) ? c : 'not an ancestor')(r[0].references.find(x => x.kind === 'Override').path.split('/')[2])"
+    },
+    {
+      "id": 5,
+      "title": "CustGroup impact: Call count and AdvancedQualityManagement share",
+      "calls": [
+        { "tool": "xref_object_summary", "arguments": { "object_name": "CustGroup" } },
+        { "tool": "xref_impact_analysis", "arguments": { "object_name": "CustGroup", "limit": 1 } }
+      ],
+      "expr": "r[1].by_kind.Call + ',' + (r[1].by_module.AdvancedQualityManagement ?? 0)"
+    },
+    {
+      "id": 6,
+      "title": "Sealed ISV model referencing CustGroup most",
+      "calls": [
+        { "tool": "xref_find_references", "arguments": { "object_name": "CustGroup", "limit": 1, "include_isv": true } },
+        { "tool": "xref_isv_find_usages", "arguments": { "object_name": "CustGroup", "limit": 1 } }
+      ],
+      "expr": "r[0].isv.module_summary[0].module === r[1].module_summary[0].module ? r[1].module_summary[0].module : 'tools disagree'"
+    },
+    {
+      "id": 7,
+      "title": "CreditManagement tables and the CredManCreditLimit* subset",
+      "calls": [
+        { "tool": "xref_module_objects", "arguments": { "module_name": "CreditManagement", "object_type": "Tables", "limit": 500 } },
+        { "tool": "xref_search_names", "arguments": { "pattern": "/Tables/CredManCreditLimit%", "object_type": "Tables", "limit": 100 } }
+      ],
+      "expr": "!r[0].truncated && !r[1].truncated ? r[0].result_count + ',' + r[1].result_count : 'truncated'"
+    },
+    {
+      "id": 8,
+      "title": "SubscriptionBilling: inbound dependents and top outbound dependency",
+      "calls": [
+        { "tool": "xref_cross_module_deps", "arguments": { "module_name": "SubscriptionBilling", "direction": "depended_by", "limit": 100 } },
+        { "tool": "xref_cross_module_deps", "arguments": { "module_name": "SubscriptionBilling", "direction": "depends_on", "limit": 1 } }
+      ],
+      "expr": "!r[0].truncated ? r[0].result_count + ',' + r[1].modules[0].module : 'truncated'"
+    },
+    {
+      "id": 9,
+      "title": "Country-suffixed direct subclasses of SalesFormLetter",
+      "calls": [
+        { "tool": "xref_class_hierarchy", "arguments": { "class_name": "SalesFormLetter", "direction": "subclasses", "limit": 100 } },
+        { "tool": "xref_object_summary", "arguments": { "object_names": ["SalesFormLetter_Invoice4Paym_RU", "SalesFormLetter_ShippingBill_IN"] } }
+      ],
+      "expr": "(names => names.length === r[1].objects.length && names.every(n => r[1].objects.some(o => o.object_path === '/Classes/' + n)) ? names.length + ',' + [...new Set(r[1].objects.map(o => o.module))].join('+') : 'set mismatch')(r[0].entries.filter(e => e.depth === 1 && /_[A-Z]{2}$/.test(e.class_name)).map(e => e.class_name))"
+    },
+    {
+      "id": 10,
+      "title": "SalesStatus vs PurchStatus: which has sealed-ISV references",
+      "calls": [
+        { "tool": "xref_find_references", "arguments": { "objects": ["SalesStatus", "PurchStatus"], "limit": 1, "include_isv": true } },
+        { "tool": "xref_isv_find_usages", "arguments": { "object_name": "SalesStatus", "limit": 1 } }
+      ],
+      "expr": "(hits => hits.length === 1 && r[1].object_name === hits[0].target_path.split('/').pop() && r[1].usage_count >= hits[0].isv.reference_count ? hits[0].target_path.split('/').pop() + ',' + hits[0].isv.reference_count : 'mismatch')(r[0].objects.filter(o => o.isv.reference_count > 0))"
+    }
+  ]
+}

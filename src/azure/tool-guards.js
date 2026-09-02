@@ -23,7 +23,14 @@
  *    response would be its own kind of waste.
  *
  * Both are off with `MCP_TOOL_GUARDS=off`.
+ *
+ * This module also OWNS the `core` tool profile list (`CORE_TOOLS`) and the
+ * `toolInProfile()` predicate; the filter is APPLIED in tool-sets.js so it
+ * reaches every tool set, not only the three that install guards.
  */
+
+import { getRequestContext } from './request-context.js';
+import { readBuildDate } from './shared.js';
 
 /* ── Loop detection ───────────────────────────────────────────────────────── */
 
@@ -99,6 +106,7 @@ export function loopResult(toolName, repeats) {
     // No structuredContent: this is a meta-response, like errorResult. A client
     // validating structuredContent against the tool's outputSchema must not be
     // handed a payload that is not one (see feedback_error_responses_no_structuredcontent).
+    _meta: { kind: 'loop' },
   };
 }
 
@@ -111,24 +119,9 @@ function staleDays() {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_STALE_DAYS;
 }
 
-/**
- * Read the snapshot build date from whichever metadata table this service has.
- * Returns null when the DB predates build-date capture, or on any error — a
- * staleness check must never be the reason a tool call fails.
- */
-export function readBuildDate(db) {
-  if (!db || typeof db.prepare !== 'function') return null;
-  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata']) {
-    try {
-      const row = db.prepare(`SELECT value FROM ${table} WHERE key = 'build_date'`).get();
-      if (row?.value) {
-        const d = new Date(row.value);
-        if (!Number.isNaN(d.getTime())) return d;
-      }
-    } catch { /* table absent on this service — try the next */ }
-  }
-  return null;
-}
+// The build-date reader lives in shared.js since the freshness banner (rule #4)
+// needs it too; re-exported so existing importers keep working.
+export { readBuildDate };
 
 /**
  * One-shot staleness note, or '' when the snapshot is fresh / undatable.
@@ -182,13 +175,27 @@ export const CORE_TOOLS = new Set([
   'sec_effective_permissions', 'sec_lookup_role', 'sec_permission_trace', 'sec_stats',
 ]);
 
+/**
+ * The profile of the CURRENT request (W2, #106): `?profile=` / `X-MCP-Tool-Profile`
+ * / `MCP_TOOL_PROFILE`, resolved once per request in request-context.js. Outside
+ * a request (tests, scripts, stdio startup) it is the env-only resolution, so
+ * `MCP_TOOL_PROFILE=core` keeps working exactly as before.
+ */
 export function activeProfile() {
-  return String(process.env.MCP_TOOL_PROFILE ?? '').toLowerCase() === 'core' ? 'core' : 'full';
+  return getRequestContext().profile;
 }
 
-/** True when this tool should be registered under the active profile. */
-export function toolInProfile(name) {
-  return activeProfile() === 'full' || CORE_TOOLS.has(name);
+/**
+ * True when this tool should be registered under `profile`.
+ *
+ * The filter itself is applied in ONE place — `registerServiceTools()` in
+ * tool-sets.js — so that every tool set is subject to it. It used to live in
+ * `installToolGuards`, which only kb-tools / xref-tools / sec-tools call, so the
+ * ISV, custom-fields and Task Recorder sets slipped past `core` and the two
+ * largest KB tools (`d365_isv_lookup`, `d365_isv_extension_points`) survived it.
+ */
+export function toolInProfile(name, profile = activeProfile()) {
+  return profile !== 'core' || CORE_TOOLS.has(name);
 }
 
 /* ── Installation ─────────────────────────────────────────────────────────── */
@@ -205,18 +212,10 @@ const GUARDED = Symbol.for('d365fo.mcp.toolGuardsInstalled');
 export function installToolGuards(server, { service = 'snapshot', db = null } = {}) {
   if (!server || typeof server.registerTool !== 'function') return server;
 
-  // The profile filter is independent of the guards: it trims the tool list and
-  // is useful even where loop detection is not wanted, so it must not be gated
-  // behind MCP_TOOL_GUARDS.
-  if (!guardsEnabled()) {
-    if (activeProfile() === 'full') return server;
-    const filtered = Object.create(server);
-    filtered[GUARDED] = true;
-    filtered.registerTool = (name, config, handler) => {
-      if (toolInProfile(name)) server.registerTool(name, config, handler);
-    };
-    return server[GUARDED] ? server : filtered;
-  }
+  // The tool PROFILE is not applied here any more. It is a registration-path
+  // concern that must reach every tool set, not only the three that install
+  // guards — see registerServiceTools() in tool-sets.js and toolInProfile().
+  if (!guardsEnabled()) return server;
 
   // IDEMPOTENT. The KB server takes both registerKbTools() and
   // registerIsvKbTools(), and the XRef server likewise — each installs guards on
@@ -229,7 +228,6 @@ export function installToolGuards(server, { service = 'snapshot', db = null } = 
   const wrapped = Object.create(server);
   wrapped[GUARDED] = true;
   wrapped.registerTool = (name, config, handler) => {
-    if (!toolInProfile(name)) return;
     return server.registerTool(name, config, async (...args) => {
     const { loop, repeats } = recordCall(callKey(name, args[0]));
     if (loop) return loopResult(name, repeats);

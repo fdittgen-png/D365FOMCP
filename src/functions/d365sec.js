@@ -9,7 +9,8 @@ import { app } from '@azure/functions';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { getSecDb, query } from '../azure/shared.js';
-import { registerSecTools } from '../azure/sec-tools.js';
+import { registerAllSecTools } from '../azure/tool-sets.js';
+import { preferencesFromHttpRequest, runWithRequestContext, describePreferences } from '../azure/request-context.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
 import { serverInfo, serverOptions, healthInfo, requestBaseUrl } from '../azure/server-metadata.js';
@@ -23,7 +24,7 @@ process.env.MCP_TOOL_GUARDS ??= 'on';
 
 function createSecServer(baseUrl) {
   const server = new McpServer(serverInfo('sec', { baseUrl }), serverOptions('sec'));
-  registerSecTools(server, getSecDb());
+  registerAllSecTools(server, getSecDb());
   return server;
 }
 
@@ -47,33 +48,39 @@ app.http('d365sec', {
     const denied = authorizeMcpRequest(request);
     if (denied) return denied;
 
+    // Per-request client preferences (W2 #106 / W4 #108) — see d365kb.js.
+    const prefs = preferencesFromHttpRequest(request);
+    console.info(`d365sec request ${describePreferences(prefs)}`);
+
     try {
-      const server = createSecServer(requestBaseUrl(request));
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        enableJsonResponse: true,
+      return await runWithRequestContext(prefs, async () => {
+        const server = createSecServer(requestBaseUrl(request));
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          enableJsonResponse: true,
+        });
+        await server.connect(transport);
+
+        let options;
+        if (request.method === 'POST') {
+          const sizeRejection = validateRequestSize(request);
+          if (sizeRejection) return sizeRejection;
+          const parsedBody = await request.json();
+          options = { parsedBody };
+        }
+
+        const response = await transport.handleRequest(request, options);
+
+        if (!response || !(response instanceof Response)) {
+          return { status: 204 };
+        }
+
+        const responseBody = await response.text();
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseBody,
+        };
       });
-      await server.connect(transport);
-
-      let options;
-      if (request.method === 'POST') {
-        const sizeRejection = validateRequestSize(request);
-        if (sizeRejection) return sizeRejection;
-        const parsedBody = await request.json();
-        options = { parsedBody };
-      }
-
-      const response = await transport.handleRequest(request, options);
-
-      if (!response || !(response instanceof Response)) {
-        return { status: 204 };
-      }
-
-      const responseBody = await response.text();
-      return {
-        status: response.status,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: responseBody,
-      };
     } catch (err) {
       context.error('d365sec MCP error:', err);
       return {

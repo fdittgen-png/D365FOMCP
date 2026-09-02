@@ -1,0 +1,96 @@
+{
+  "service": "sec",
+  "note": "Recorded tool calls that reproduce each <qa_pair> answer in sec.xml, in order. Roles/duties/privileges/entry points only — no user tool is ever called (test/evals-format.test.js enforces it). `expr` is JavaScript over r (structuredContent per call); it must evaluate to the <answer> string.",
+  "pairs": [
+    {
+      "id": 1,
+      "title": "CustGroupMaintain: its one duty and the roles reaching it",
+      "calls": [
+        { "tool": "sec_lookup_privilege", "arguments": { "privilege_name": "CustGroupMaintain", "limit": 1 } },
+        { "tool": "sec_find_roles_by_privilege", "arguments": { "privilege_name": "CustGroupMaintain", "limit": 50 } }
+      ],
+      "expr": "r[0].parent_duty_count === 1 && !r[1].truncated && r[1].via_chain.every(x => x.duty_id === r[0].parent_duties[0].duty_id) ? r[0].parent_duties[0].duty_id + ',' + r[1].via_chain_count : 'mismatch'"
+    },
+    {
+      "id": 2,
+      "title": "AR manager: privilege granting Delete on CustGroup",
+      "calls": [
+        { "tool": "sec_search", "arguments": { "query": "receivable manager", "object_type": "role", "limit": 5 } },
+        { "tool": "sec_permission_trace", "arguments": { "role_name": "Accounts receivable manager", "object_name": "CustGroup", "limit": 100 } }
+      ],
+      "expr": "r[0].results.some(x => x.object_name === r[1].role_name) && !r[1].truncated ? [...new Set(r[1].rows.filter(x => x.object_name === 'CustGroup' && x.object_type === 'MenuItemDisplay' && x.grant_delete === 'Allow').map(x => x.priv_name))].join(',') : 'mismatch'"
+    },
+    {
+      "id": 3,
+      "title": "Shared duties: AR manager vs Collections manager",
+      "calls": [
+        { "tool": "sec_search", "arguments": { "query": "collections manager", "object_type": "role", "limit": 5 } },
+        { "tool": "sec_compare_roles", "arguments": { "role1": "Accounts receivable manager", "role2": "Collections manager", "list_limit": 1 } }
+      ],
+      "expr": "r[0].results.some(x => x.object_name === r[1].role2) ? r[1].duties_shared_count : 'role not found'"
+    },
+    {
+      "id": 4,
+      "title": "CustCustomerProcessEnable: privilege count and CustGroupMaintain entry points",
+      "calls": [
+        { "tool": "sec_lookup_duty", "arguments": { "duty_name": "CustCustomerProcessEnable", "limit": 20 } },
+        { "tool": "sec_lookup_privilege", "arguments": { "privilege_name": "CustGroupMaintain", "limit": 5 } }
+      ],
+      "expr": "r[0].privileges.some(p => p.privilege_name === r[1].privilege_name) ? r[0].privilege_count + ',' + r[1].entry_point_count : 'privilege not in duty'"
+    },
+    {
+      "id": 5,
+      "title": "Accounting manager: Update on CustGroup menu item?",
+      "calls": [
+        { "tool": "sec_search", "arguments": { "query": "accounting manager", "object_type": "role", "limit": 5 } },
+        { "tool": "sec_effective_permissions", "arguments": { "role_name": "Accounting manager", "object_name": "CustGroup", "limit": 50 } }
+      ],
+      "expr": "(rows => rows.length > 0 && !r[1].truncated ? (rows.some(x => x.grant_update === 'Allow') ? 'True' : 'False') : 'no rows')(r[1].permissions.filter(x => x.object_name === 'CustGroup' && x.object_type === 'MenuItemDisplay'))"
+    },
+    {
+      "id": 6,
+      "title": "Roles with the duty but without CustGroupView",
+      "calls": [
+        { "tool": "sec_find_roles_by_duty", "arguments": { "duty_name": "CustCustomerProcessEnable", "limit": 50 } },
+        { "tool": "sec_find_roles_by_privilege", "arguments": { "privilege_name": "CustGroupView", "limit": 50 } }
+      ],
+      "expr": "!r[0].truncated && !r[1].truncated ? r[0].roles.filter(x => !r[1].via_chain.some(v => v.role_name === x.role_name)).length : 'truncated'"
+    },
+    {
+      "id": 7,
+      "title": "Collections manager: licence type and stored role_id",
+      "calls": [
+        { "tool": "sec_search", "arguments": { "query": "collections manager", "object_type": "role", "limit": 5 } },
+        { "tool": "sec_lookup_role", "arguments": { "role_name": "Collections manager" } }
+      ],
+      "expr": "r[1].license_type + ',' + r[1].role_id"
+    },
+    {
+      "id": 8,
+      "title": "Second-largest security model and its *manager* roles",
+      "calls": [
+        { "tool": "sec_stats", "arguments": {} },
+        { "tool": "sec_search", "arguments": { "query": "manager", "object_type": "role", "modules": ["PersonnelManagement"], "limit": 50 } }
+      ],
+      "expr": "(m => m === r[1].modules?.[0] && !r[1].truncated ? m + ',' + r[1].result_count : 'module mismatch')(JSON.parse(r[0].build_info.find(b => b.key === 'security_modules').value)[1].module)"
+    },
+    {
+      "id": 9,
+      "title": "TaxSalesTaxTransactionStatusInquire: roles and privileges",
+      "calls": [
+        { "tool": "sec_lookup_duty", "arguments": { "duty_name": "TaxSalesTaxTransactionStatusInquire", "limit": 1 } },
+        { "tool": "sec_find_roles_by_duty", "arguments": { "duty_name": "TaxSalesTaxTransactionStatusInquire", "limit": 100 } }
+      ],
+      "expr": "!r[1].truncated && r[1].result_count === r[0].role_count ? r[1].result_count + ',' + r[0].privilege_count : 'tools disagree'"
+    },
+    {
+      "id": 10,
+      "title": "Sales manager on ElectronicMessages: source and Create",
+      "calls": [
+        { "tool": "sec_search", "arguments": { "query": "sales manager", "object_type": "role", "limit": 5 } },
+        { "tool": "sec_effective_permissions", "arguments": { "role_name": "Sales manager", "object_name": "ElectronicMessages", "limit": 50 } }
+      ],
+      "expr": "(rows => rows.length > 0 ? [...new Set(rows.map(x => x.source))].join('+') + ',' + (rows.some(x => x.grant_create === 'Allow') ? 'True' : 'False') : 'no rows')(r[1].permissions.filter(x => x.object_name === 'ElectronicMessages' && x.object_type === 'MenuItemDisplay'))"
+    }
+  ]
+}

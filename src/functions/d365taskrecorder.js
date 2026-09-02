@@ -15,7 +15,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { registerTaskRecorderTools } from '../azure/taskrecorder-tools.js';
+import { registerAllTaskRecorderTools } from '../azure/tool-sets.js';
+import { preferencesFromHttpRequest, runWithRequestContext, describePreferences } from '../azure/request-context.js';
 import { parseTaskRecording } from '../azure/taskrecorder-parser.js';
 import { validateRequestSize } from '../azure/request-size.js';
 import { authorizeMcpRequest } from '../azure/mcp-auth.js';
@@ -72,7 +73,7 @@ try {
 
 function createTaskRecorderServer(baseUrl) {
   const server = new McpServer(serverInfo('taskrecorder', { baseUrl }), serverOptions('taskrecorder'));
-  registerTaskRecorderTools(server);
+  registerAllTaskRecorderTools(server);
   return server;
 }
 
@@ -92,31 +93,37 @@ app.http('d365taskrecorder', {
     const denied = authorizeMcpRequest(request);
     if (denied) return denied;
 
+    // Per-request client preferences (W2 #106 / W4 #108) — see d365kb.js.
+    const prefs = preferencesFromHttpRequest(request);
+    console.info(`d365taskrecorder request ${describePreferences(prefs)}`);
+
     try {
-      const server = createTaskRecorderServer(requestBaseUrl(request));
-      const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
-      await server.connect(transport);
+      return await runWithRequestContext(prefs, async () => {
+        const server = createTaskRecorderServer(requestBaseUrl(request));
+        const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
+        await server.connect(transport);
 
-      let options;
-      if (request.method === 'POST') {
-        const sizeRejection = validateRequestSize(request);
-        if (sizeRejection) return sizeRejection;
-        const parsedBody = await request.json();
-        options = { parsedBody };
-      }
+        let options;
+        if (request.method === 'POST') {
+          const sizeRejection = validateRequestSize(request);
+          if (sizeRejection) return sizeRejection;
+          const parsedBody = await request.json();
+          options = { parsedBody };
+        }
 
-      const response = await transport.handleRequest(request, options);
+        const response = await transport.handleRequest(request, options);
 
-      if (!response || !(response instanceof Response)) {
-        return { status: 204 };
-      }
+        if (!response || !(response instanceof Response)) {
+          return { status: 204 };
+        }
 
-      const responseBody = await response.text();
-      return {
-        status: response.status,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: responseBody,
-      };
+        const responseBody = await response.text();
+        return {
+          status: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseBody,
+        };
+      });
     } catch (err) {
       context.error('d365taskrecorder MCP error:', err);
       return {

@@ -436,11 +436,11 @@ describe('d365_search', () => {
     assert.match(result, /No matches for "xyznonexistent" found/);
   });
 
-  it('respects limit and emits user-kind truncation note', async () => {
+  it('respects limit and emits a resumable page note (#109)', async () => {
     const result = await callTool('d365_search', { query: 'Table', limit: 1 });
-    // P1-02 contract: user-requested limit → user-kind note
-    assert.match(result, /Showing first 1 results \(caller/);
-    assert.match(result, /Pass a higher `limit`/);
+    // W5 contract: a cut list is resumable — the note carries the cursor, not "raise limit".
+    assert.match(result, /Showing 1 results; more available/);
+    assert.match(result, /pass `cursor: "[A-Za-z0-9_-]+"` to continue/);
   });
 
   it('P2-05: non-empty response opens with self-identifying search heading', async () => {
@@ -623,10 +623,10 @@ describe('d365_get_class_methods', () => {
     assert.ok(!result.includes('this.post()'));
   });
 
-  it('respects limit and emits user-kind truncation note when methods exceed the cap', async () => {
+  it('respects limit and emits a resumable page note when methods exceed the cap (#109)', async () => {
     const result = await callTool('d365_get_class_methods', { name: 'SalesFormLetter', include_source: false, limit: 2 });
-    // P1-02 contract: user-requested limit → user-kind note
-    assert.match(result, /Showing first 2 results \(caller/);
+    assert.match(result, /Showing 2 results; more available/);
+    assert.match(result, /pass `cursor:/);
   });
 
   it('filters by method name', async () => {
@@ -1970,9 +1970,13 @@ describe('d365_lookup_table — customization provenance', () => {
 
   after(() => { if (customDb) customDb.close(); });
 
-  it('flags the table as customized and lists the contributing module', async () => {
-    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ table_name: 'CustTable', format: 'markdown' });
-    const res = await customTools['d365_lookup_table'].handler(validated);
+  const call = async (args) => {
+    const validated = z.object(customTools['d365_lookup_table'].schema).parse({ format: 'markdown', ...args });
+    return customTools['d365_lookup_table'].handler(validated);
+  };
+
+  it('flags the table as customized and lists the contributing module; include_provenance puts the pair on every row', async () => {
+    const res = await call({ table_name: 'CustTable', include_provenance: true });
     const t = res.structuredContent;
     assert.equal(t.is_customized, true);
     assert.equal(t.custom_field_count, 1);
@@ -1984,6 +1988,30 @@ describe('d365_lookup_table — customization provenance', () => {
     assert.equal(base.is_extension, false);
     // Markdown surfaces the customization too.
     assert.match(res.content[0].text, /Customized: 1 custom field/);
+    assert.match(res.content[0].text, /\| Custom \|/);
+  });
+
+  it('default omits is_extension/source_module on EVERY row; the header summary still says the table is customized (#107.4)', async () => {
+    const res = await call({ table_name: 'CustTable' });
+    const t = res.structuredContent;
+    assert.equal(t.is_customized, true);
+    assert.deepEqual(t.customization_modules, ['iExtension']);
+    for (const f of t.fields) {
+      assert.ok(!('is_extension' in f), `${f.name}: is_extension must be absent by default`);
+      assert.ok(!('source_module' in f), `${f.name}: source_module must be absent by default`);
+    }
+    assert.doesNotMatch(res.content[0].text, /\| Custom \|/);
+    // The absent keys must validate: optional, not nullable.
+    const { d365LookupTableOutput } = await import('../src/azure/output-schemas.js');
+    assert.doesNotThrow(() => d365LookupTableOutput.parse(t));
+  });
+
+  it('custom_only emits the pair on every row (all rows are extensions, so it distinguishes)', async () => {
+    const res = await call({ table_name: 'CustTable', custom_only: true });
+    const t = res.structuredContent;
+    assert.equal(t.fields.length, 1);
+    assert.equal(t.fields[0].is_extension, true);
+    assert.equal(t.fields[0].source_module, 'iExtension');
   });
 });
 
@@ -2210,7 +2238,8 @@ describe('response shaping — d365_get_entity_sources', () => {
     assert.equal(t.fields_matched, 4);
     assert.equal(t.fields_returned, 2);
     assert.equal(t.entity_fields.length, 2);
-    assert.match(res.content[0].text, /Showing first 2 results/);
+    assert.equal(t.has_more, true);
+    assert.match(res.content[0].text, /Showing 2 results; more available/);
   });
 
   it('a non-matching filter explains the two field classes that live in no model', async () => {
@@ -2362,5 +2391,27 @@ describe('response shaping — d365_lookup_table field narrowing', () => {
   it('fields_like narrows by substring, case-insensitively', async () => {
     const res = await call({ table_name: 'InventTable', fields_like: 'ITEM' });
     assert.deepEqual(res.structuredContent.fields.map(f => f.name), ['ItemId']);
+  });
+
+  it('field_limit caps the list after the filters; field_count / fields_matched stay whole-table (#107.3)', async () => {
+    const res = await call({ table_name: 'InventTable', field_limit: 2 });
+    const t = res.structuredContent;
+    assert.equal(t.field_count, 3);
+    assert.equal(t.fields_matched, 3);
+    assert.equal(t.fields_shown, 2);
+    assert.equal(t.fields_truncated, true);
+    assert.equal(t.fields.length, 2);
+    assert.match(res.content[0].text, /Showing first 2 results \(default cap, max 2000\)/);
+    assert.match(res.content[0].text, /raise `field_limit`/);
+    // The default and an untruncated call carry the flag as false, not absent.
+    const full = await call({ table_name: 'InventTable' });
+    assert.equal(full.structuredContent.fields_truncated, false);
+    assert.equal(full.structuredContent.fields_matched, 3);
+  });
+
+  it('field_limit: a negative value falls back to the default without Zod (rule #13)', async () => {
+    const res = await tools['d365_lookup_table'].handler({ table_name: 'InventTable', field_limit: -5, format: 'markdown' });
+    assert.equal(res.structuredContent.fields.length, 3);
+    assert.equal(res.structuredContent.fields_truncated, false);
   });
 });

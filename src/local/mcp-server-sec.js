@@ -14,8 +14,9 @@ import { createRequire } from 'module';
 import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { registerSecTools } from '../azure/sec-tools.js';
+import { registerAllSecTools } from '../azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
+import { resolvePreferences, setProcessRequestContext } from '../azure/request-context.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
 // MCP entry point — rather than defaulting on inside the tool library, where a
@@ -47,7 +48,13 @@ db.pragma('mmap_size = 67108864');
 
 const server = new McpServer(serverInfo('sec'), serverOptions('sec'));
 
-registerSecTools(server, db);
+// Client preferences (W2 #106 / W4 #108) — one client per stdio process; see mcp-server-kb.js.
+setProcessRequestContext(resolvePreferences({ env: process.env }));
+server.server.oninitialized = () => {
+  setProcessRequestContext(resolvePreferences({ env: process.env, clientInfo: server.server.getClientVersion() }));
+};
+
+registerAllSecTools(server, db);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });

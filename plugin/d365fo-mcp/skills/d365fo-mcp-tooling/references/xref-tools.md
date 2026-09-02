@@ -8,35 +8,37 @@ Compiler cross-reference snapshot: who calls, reads, writes, extends, implements
 
 | Tool | One-line purpose |
 |---|---|
-| `xref_find_references` | Find all objects that reference a given D365FO object (who calls/reads/extends it). |
+| `xref_find_references` | Objects that reference a given D365FO object ("Used By" / "Find All References"). |
 | `xref_find_usages` | Find all objects that a given D365FO object references (what it calls/reads/extends). |
 | `xref_find_method_callers` | Find all callers of a specific method on a class or table. |
 | `xref_class_hierarchy` | Find the full class inheritance hierarchy — all subclasses (recursive) or the parent chain of a given class. |
 | `xref_interface_implementors` | Find all classes that implement a given interface, including indirect implementors through inheritance. |
-| `xref_search_names` | Search for D365FO objects by name pattern in the cross-reference database. |
+| `xref_search_names` | Search objects by name pattern in the cross-reference database when only part of the name is known. |
 | `xref_method_references` | Find all outgoing references from a specific method — what objects/methods/types does it call or use. |
 | `xref_module_objects` | List all top-level objects (classes, tables, forms, etc.) in a given D365FO module from the cross-reference database. |
 | `xref_cross_module_deps` | Analyze cross-module dependencies: which modules does a given module depend on (or which modules depend on it). |
 | `xref_raw_sql` | Execute a read-only SQL query against the XRef SQLite database. |
 | `xref_impact_analysis` | Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. |
-| `xref_list_modules` | List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin micro |
-| `xref_object_summary` | Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. |
+| `xref_list_modules` | List XRef modules with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots). |
+| `xref_object_summary` | Compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, module. |
 | `xref_find_extensions` | Find all Chain of Command (CoC) extension classes and table/form extensions for a D365FO object. |
 | `xref_find_field_usages` | Find all code locations that read or write a specific field on a D365FO table. |
 | `xref_find_event_handlers` | Find all event handlers and delegates for a D365FO object or method. |
-| `xref_isv_find_usages` | Find where sealed (binary-only) ISV models reference a standard D365FO object — the cross-references that are missing from the main XRef database for every mode |
+| `xref_isv_find_usages` | Where sealed (binary-only) ISV models reference a standard D365FO object — cross-references the main XRef database lacks for every model without X++ source. |
 
 ## `xref_find_references`
 
-Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch.
+Objects that reference a given D365FO object ("Used By" / "Find All References"). Set `include_isv` to add per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot — do that before changing or deprecating anything a third-party model may touch.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
-| `object_name` | string (min 1, max 500) | yes | Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter") |
+| `object_name` | string (min 1, max 500) | no | Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`. |
+| `objects` | array<string (min 1, max 500)> | no | Several objects in one call (max 10); kind / limit / include_isv apply to each. Unresolvable names come back in `not_found`. |
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind. Default: All |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `include_isv` | boolean | default `false` | Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `include_isv` | boolean | default `false` | Add a per-model count of references from sealed ISV models (`xref_isv_find_usages` for call sites). |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_find_usages`
 
@@ -46,8 +48,9 @@ Find all objects that a given D365FO object references (what it calls/reads/exte
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name or full path |
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_find_method_callers`
 
@@ -57,8 +60,8 @@ Find all callers of a specific method on a class or table. Returns source locati
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Class or table name (e.g. "SalesFormLetter") |
 | `method_name` | string (min 1, max 500) | yes | Method name (e.g. "construct", "run") |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_class_hierarchy`
 
@@ -68,8 +71,8 @@ Find the full class inheritance hierarchy — all subclasses (recursive) or the 
 |---|---|---|---|
 | `class_name` | string (min 1, max 500) | yes | Class name (e.g. "SalesFormLetter", "FormLetterServiceController") |
 | `direction` | `subclasses` \| `parents` | default `"subclasses"` | "subclasses" = who extends this (default), "parents" = what does this extend |
-| `limit` | integer (≥1, ≤1000) | default `200` | Max entries to return (default 200, max 1000). Framework base classes have thousands of subclasses. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤1000) | default `200` | Max entries to return. Framework base classes have thousands of subclasses. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_interface_implementors`
 
@@ -78,20 +81,20 @@ Find all classes that implement a given interface, including indirect implemento
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `interface_name` | string (min 1, max 500) | yes | Interface name (e.g. "SysRunnable", "SysPackable") |
-| `limit` | integer (≥1, ≤1000) | default `200` | Max implementors to return (default 200, max 1000). Framework interfaces have thousands. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤1000) | default `200` | Max implementors to return. Framework interfaces have thousands. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_search_names`
 
-Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see xref_list_modules for the scanned build versions).
+Search objects by name pattern in the cross-reference database when only part of the name is known. Scope with `modules` to specific models (see xref_list_modules).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `pattern` | string (min 1, max 500) | yes | Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%). |
 | `object_type` | `All` \| `Classes` \| `Tables` \| `Forms` \| `Enums` \| `DataEntityViews` \| `Edts` \| `Views` \| `Maps` \| `Labels` | default `"All"` | Filter by object type |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
-| `limit` | integer (≥1, ≤500) | default `50` | Max results (default 50, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `50` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_method_references`
 
@@ -102,8 +105,8 @@ Find all outgoing references from a specific method — what objects/methods/typ
 | `object_name` | string (min 1, max 500) | yes | Class or table name |
 | `method_name` | string (min 1, max 500) | yes | Method name |
 | `kind` | `All` \| `Call` \| `Read` | default `"All"` | Filter: All, Call (method invocations only), Read (type/field reads only) |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_module_objects`
 
@@ -113,8 +116,8 @@ List all top-level objects (classes, tables, forms, etc.) in a given D365FO modu
 |---|---|---|---|
 | `module_name` | string (min 1, max 500) | yes | Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement") |
 | `object_type` | `All` \| `Classes` \| `Tables` \| `Forms` \| `Enums` \| `DataEntityViews` \| `Edts` \| `Views` | default `"All"` | Filter by object type |
-| `limit` | integer (≥1, ≤500) | default `200` | Max results (default 200, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `200` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_cross_module_deps`
 
@@ -124,18 +127,18 @@ Analyze cross-module dependencies: which modules does a given module depend on (
 |---|---|---|---|
 | `module_name` | string (min 1, max 500) | yes | Module name |
 | `direction` | `depends_on` \| `depended_by` | default `"depends_on"` | "depends_on" = modules this module references, "depended_by" = modules that reference this one |
-| `limit` | integer (≥1, ≤500) | default `50` | Max results (default 50, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `50` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_raw_sql`
 
-Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Text channel: see the shared `format` parameter.
+Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `sql` | string (min 1, max 50000) | yes | SQL SELECT query (no schema prefix needed — use table names directly) |
-| `limit` | integer (≥1, ≤500) | default `100` | Max rows (default 100, max 500) |
-| `format` | `markdown` \| `toon` | default `"toon"` | Text rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max rows |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_impact_analysis`
 
@@ -144,30 +147,30 @@ Analyze the impact of changing a D365FO object: find all direct dependents group
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name or path |
-| `limit` | integer (≥1, ≤500) | default `100` | Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max dependent objects listed. The by_kind / by_module counts always cover the full result set. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_list_modules`
 
-List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface.
+List XRef modules with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots). Filter with `origin` / `layer` / `publisher`.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `origin` | `microsoft` \| `isv` \| `custom` | no | Only models with this build origin. Use "custom" / "isv" for the customisation surface. |
 | `layer` | string (min 1, max 20) | no | Only models on this layer (SYS, SLN, ISV, VAR, USR) |
 | `publisher` | string (min 1, max 200) | no | Only models whose publisher contains this text (case-insensitive) |
-| `limit` | integer (≥1, ≤500) | default `200` | Max modules to return (default 200, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `200` | Max modules to return |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_object_summary`
 
-Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. This is the recommended first call before drilling into an object — pass `object_names` to summarise up to 10 objects in one call instead of one call each.
+Compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, module. The recommended first call before drilling in; `object_names` takes up to 10 objects.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | no | Object name or path. Use this or `object_names`. |
 | `object_names` | array<string (min 1, max 500)> | no | Summarise several objects in one call (max 10). Names that cannot be resolved come back in `not_found` rather than failing the call. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_find_extensions`
 
@@ -177,8 +180,8 @@ Find all Chain of Command (CoC) extension classes and table/form extensions for 
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter") |
 | `object_type` | `All` \| `Classes` \| `Tables` \| `Forms` \| `DataEntityViews` | default `"All"` | Object type to search for extensions. Default: All |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_find_field_usages`
 
@@ -189,8 +192,8 @@ Find all code locations that read or write a specific field on a D365FO table. R
 | `table_name` | string (min 1, max 500) | yes | Table name (e.g. "CustTable", "SalesTable") |
 | `field_name` | string (min 1, max 500) | yes | Field name (e.g. "AccountNum", "InvoiceId") |
 | `kind` | `All` \| `Read` \| `Write` | default `"All"` | Filter: All, Read (field value reads), Write (field assignments). Default: All |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_find_event_handlers`
 
@@ -200,12 +203,12 @@ Find all event handlers and delegates for a D365FO object or method. Discovers [
 |---|---|---|---|
 | `object_name` | string (min 1, max 500) | yes | Class or table name (e.g. "SalesFormLetter", "CustTable") |
 | `method_name` | string (min 1, max 500) | no | Optional: specific method/delegate name to find handlers for |
-| `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤500) | default `100` | Max results |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 
 ## `xref_isv_find_usages`
 
-Find where sealed (binary-only) ISV models reference a standard D365FO object — the cross-references that are missing from the main XRef database for every model that ships no X++ source. Use alongside xref_find_usages before changing or deprecating any object: the main tool cannot see ISV callers at all, so its answer is incomplete for anything a third-party model touches.
+Where sealed (binary-only) ISV models reference a standard D365FO object — cross-references the main XRef database lacks for every model without X++ source. Use with xref_find_usages before changing or deprecating an object: the main tool cannot see ISV callers.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -213,6 +216,6 @@ Find where sealed (binary-only) ISV models reference a standard D365FO object �
 | `object_type` | `Tables` \| `Classes` \| `Forms` \| `Enums` \| `Edts` \| `Queries` \| `Views` \| `any` | default `"any"` | Restrict to one AOT path segment. "any" matches the name wherever it appears as a target. |
 | `modules` | array<string (min 1, max 100)> | no | Restrict to specific sealed ISV models. |
 | `kind` | string (min 1, max 50) | no | Reference kind: TypeReference, MethodCall, Attribute, ClassExtended, MethodOverride, Property. |
-| `limit` | integer (≥1, ≤1000) | default `100` | Max usage rows returned (default 100, hard max 1000). The module summary always covers every match. |
-| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). Use "markdown" only when quoting the text verbatim. |
+| `limit` | integer (≥1, ≤1000) | default `100` | Max usage rows returned. The module summary always covers every match. |
+| `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | auto (default) = smallest; markdown when quoting verbatim. |
 

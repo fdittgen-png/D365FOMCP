@@ -1,0 +1,24 @@
+{
+  "service": "sec",
+  "note": "Token-discipline dimension: for three questions, the tool sequence a disciplined agent should use and a ceiling on the summed structuredContent bytes (measured x 1.5). The runner sums the bytes of the recorded calls and fails on a breach or a different sequence.",
+  "pairs": {
+    "1": {
+      "lever": "sec_lookup_privilege with limit:1 (the counts and parent_duties are exact regardless of limit) + sec_find_roles_by_privilege for the role list; never sec_lookup_role per role (15 KB each)",
+      "expected_tools": ["sec_lookup_privilege", "sec_find_roles_by_privilege"],
+      "measured_bytes": 1422,
+      "max_structured_bytes": 2133
+    },
+    "3": {
+      "lever": "sec_compare_roles with list_limit:1 — the shared/only counts are exact; the lists are what cost. Two sec_lookup_role calls would be ~30 KB for the same number",
+      "expected_tools": ["sec_search", "sec_compare_roles"],
+      "measured_bytes": 1017,
+      "max_structured_bytes": 1526
+    },
+    "8": {
+      "lever": "sec_search with the modules filter scopes the role list to one model instead of paging every role; sec_stats is a fixed ~7 KB",
+      "expected_tools": ["sec_stats", "sec_search"],
+      "measured_bytes": 8549,
+      "max_structured_bytes": 12824
+    }
+  }
+}

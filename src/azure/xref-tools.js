@@ -50,6 +50,7 @@ import {
   rawSqlOutput,
 } from './output-schemas.js';
 import { hasIsvData } from './isv-schema.js';
+import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
 function rowsToObjects(columns, arrayRows) {
@@ -136,6 +137,7 @@ export function registerXrefTools(server, db) {
   // batched body measured +1.6% against eight separate calls; see the note in
   // kb-tools.js. Each summary runs its own aggregate queries, hence a modest cap.
   const SUMMARY_BATCH_MAX = 10;
+  const REFS_BATCH_MAX = 10;
 
   const q = (sql, params = []) => query(db, sql, params);
 
@@ -182,81 +184,166 @@ export function registerXrefTools(server, db) {
     'xref_find_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Find all objects that reference a given D365FO object (who calls/reads/extends it). This is the "Used By" / "Find All References" query. Set `include_isv` to add a summary of references from sealed (binary-only) ISV models, which are absent from this snapshot entirely — do that before changing or deprecating anything a third-party model might touch.',
+      description: 'Objects that reference a given D365FO object ("Used By" / "Find All References"). Set `include_isv` to add per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot — do that before changing or deprecating anything a third-party model may touch.',
       inputSchema: {
-        object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter")'),
+        object_name: z.string().min(1).max(500).optional().describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`.'),
+        objects: z.array(z.string().min(1).max(500)).min(1).max(REFS_BATCH_MAX).optional()
+          .describe(`Several objects in one call (max ${REFS_BATCH_MAX}); kind / limit / include_isv apply to each. Unresolvable names come back in \`not_found\`.`),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind. Default: All'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         include_isv: z.boolean().optional().default(false)
-          .describe('Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites.'),
+          .describe('Add a per-model count of references from sealed ISV models (`xref_isv_find_usages` for call sites).'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: xrefFindReferencesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit, include_isv, format }) => {
+    async ({ object_name, objects, kind, limit: rawLimit, include_isv, cursor, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
-      const _v = validateLikePattern(object_name);
-      if (_v) return patternErrorResult(_v);
-      const resolved = resolveNameId(q, object_name);
-      if (!resolved) return notFoundResult('Object', object_name);
-
-      const { id: targetId, path: targetPath } = resolved;
       const kindFilterLabel = kind || 'All';
-      let kindFilter = '';
-      const params = [targetId];
-
-      if (kindFilterLabel !== 'All') {
-        const kindId = Object.entries(KIND_NAMES).find(([, v]) => v === kindFilterLabel)?.[0];
-        if (kindId) { kindFilter = ' AND r.kind = ?'; params.push(Number(kindId)); }
-      }
-      params.push(limit);
-
-      const result = q(`
-        SELECT n.path AS source, r.kind, r.line, r.col, m.module
-        FROM refs r
-        JOIN names n ON r.source_id = n.id
-        JOIN modules m ON n.module_id = m.id
-        WHERE r.target_id = ? ${kindFilter}
-        ORDER BY m.module, n.path
-        LIMIT ?
-      `, params);
-
       // Defensive default: the test mock server bypasses Zod (contract item 13).
       const wantIsv = include_isv === true;
-      const isvBlock = wantIsv ? isvReferenceSummary(targetPath) : null;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
 
-      const baseTyped = {
-        target_path: targetPath,
-        kind_filter: kindFilterLabel,
-        limit,
-        result_count: result.length,
-        truncated: result.length >= limit,
-        references: result.map(r => ({
-          path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
-        })),
-        isv: isvBlock,
-      };
-      if (!result.length && !(isvBlock && isvBlock.reference_count)) {
-        return emptyResult(`references to "${targetPath}"`, baseTyped);
+      // Batching (issue #83): singular and plural are unioned and deduped in
+      // caller order; kind / limit / include_isv are hoisted into the envelope.
+      const requested = [...new Set([
+        ...(Array.isArray(objects) ? objects : []),
+        ...(object_name ? [object_name] : []),
+      ].map(s => String(s).trim()).filter(Boolean))];
+      if (!requested.length) return errorResult('invalid-input', 'Provide `object_name` or `objects`.');
+      const batchMode = Array.isArray(objects) && objects.length > 0;
+      if (batchMode && page.offset > 0) {
+        return errorResult('invalid-input', '`cursor` pages a single `object_name`; run a batch without it.');
+      }
+      const names = requested.slice(0, REFS_BATCH_MAX);
+      for (const n of names) {
+        const _v = validateLikePattern(n);
+        if (_v) return patternErrorResult(_v);
       }
 
-      let out = `## References to ${targetPath}\n${baseTyped.result_count} result(s)\n\n`;
-      out += formatMarkdownTable(
-        baseTyped.references.map(r => ({ Source: r.path, Kind: r.kind, Line: r.line ?? '', Col: r.col ?? '', Module: r.module ?? '' })),
+      let kindFilter = '';
+      const kindParams = [];
+      if (kindFilterLabel !== 'All') {
+        const kindId = Object.entries(KIND_NAMES).find(([, v]) => v === kindFilterLabel)?.[0];
+        if (kindId) { kindFilter = ' AND r.kind = ?'; kindParams.push(Number(kindId)); }
+      }
+
+      /** References to one resolved object; null when the name does not resolve.
+       *  Fetches limit+1 rows so has_more is exact; line/col complete the ORDER
+       *  BY so OFFSET is stable when one source references the target twice. */
+      const findOne = (name, offset = 0) => {
+        const resolved = resolveNameId(q, name);
+        if (!resolved) return null;
+        const { id: targetId, path: targetPath } = resolved;
+        const { rows: result, has_more } = takePage(q(`
+          SELECT n.path AS source, r.kind, r.line, r.col, m.module
+          FROM refs r
+          JOIN names n ON r.source_id = n.id
+          JOIN modules m ON n.module_id = m.id
+          WHERE r.target_id = ? ${kindFilter}
+          ORDER BY m.module, n.path, r.line, r.col
+          LIMIT ? OFFSET ?
+        `, [targetId, ...kindParams, probeLimit(limit), offset]), limit);
+        return {
+          target_path: targetPath,
+          result_count: result.length,
+          truncated: has_more,
+          has_more,
+          references: result.map(r => ({
+            path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
+          })),
+          isv: wantIsv ? isvReferenceSummary(targetPath) : null,
+        };
+      };
+
+      const renderRefs = (p) => formatMarkdownTable(
+        p.references.map(r => ({ Source: r.path, Kind: r.kind, Line: r.line ?? '', Col: r.col ?? '', Module: r.module ?? '' })),
         ['Source', 'Kind', 'Line', 'Col', 'Module'],
       );
-      if (baseTyped.truncated) out += truncationNote('user', limit);
-      if (isvBlock) {
-        out += `\n### Sealed ISV models (${isvBlock.reference_count})\n\n`;
-        out += isvBlock.reference_count
+      const renderIsv = (isvBlock, heading) => {
+        let s = `\n${heading} Sealed ISV models (${isvBlock.reference_count})\n\n`;
+        s += isvBlock.reference_count
           ? formatMarkdownTable(
             isvBlock.module_summary.map(m => ({ Model: m.module, References: m.reference_count })),
             ['Model', 'References'])
           : '_No sealed ISV model references this object._\n';
-        out += `\n_${isvBlock.note}_\n`;
+        return s;
+      };
+
+      if (!batchMode) {
+        const one = findOne(names[0], page.offset);
+        if (!one) return notFoundResult('Object', names[0]);
+        // Exactly the pre-batching payload plus the page keys — no batch keys.
+        const baseTyped = {
+          target_path: one.target_path,
+          kind_filter: kindFilterLabel,
+          limit,
+          result_count: one.result_count,
+          truncated: one.truncated,
+          references: one.references,
+          isv: one.isv,
+          ...pageMeta(null, page.offset, one.result_count, limit, one.has_more),
+        };
+        const isvBlock = one.isv;
+        if (!one.result_count && !(isvBlock && isvBlock.reference_count)) {
+          return emptyResult(`references to "${one.target_path}"`, baseTyped);
+        }
+
+        let out = `## References to ${one.target_path}\n${baseTyped.result_count} result(s)\n\n`;
+        out += renderRefs(baseTyped);
+        if (baseTyped.has_more) out += pageNote(baseTyped.result_count, page.offset, baseTyped.next_cursor);
+        if (isvBlock) out += renderIsv(isvBlock, '###') + `\n_${isvBlock.note}_\n`;
+        return structuredResult(baseTyped, out, format);
       }
-      return structuredResult(baseTyped, out, format);
+
+      // Batch mode: only batch keys. The ISV note is identical for every object,
+      // so it is hoisted once into `isv_note`; each object's `isv` block keeps
+      // just its counts. Rule #14: the `isv` key is present on every object or
+      // on none (decided by include_isv + whether the DB was ISV-scanned).
+      const found = [];
+      const notFound = [];
+      for (const n of names) {
+        const one = findOne(n);
+        if (!one) { notFound.push(n); continue; }
+        found.push(one);
+      }
+      const emitIsv = wantIsv && found.some(o => o.isv);
+      const isvNote = emitIsv ? (found.find(o => o.isv)?.isv.note ?? null) : null;
+      const typed = {
+        kind_filter: kindFilterLabel,
+        limit,
+        requested_count: names.length,
+        resolved_count: found.length,
+        not_found: notFound,
+        ...(isvNote ? { isv_note: isvNote } : {}),
+        objects: found.map(o => ({
+          target_path: o.target_path,
+          result_count: o.result_count,
+          truncated: o.truncated,
+          references: o.references,
+          ...(emitIsv ? {
+            isv: o.isv
+              ? { reference_count: o.isv.reference_count, module_summary: o.isv.module_summary }
+              : { reference_count: 0, module_summary: [] },
+          } : {}),
+        })),
+      };
+
+      let out = `## References (${typed.resolved_count} of ${typed.requested_count} objects)\n\n`;
+      for (const o of typed.objects) {
+        out += `### ${o.target_path} (${o.result_count})\n`;
+        out += o.result_count ? renderRefs(o) : '_No references._\n';
+        if (o.truncated) out += truncationNote('user', limit);
+        if (o.isv) out += renderIsv(o.isv, '####');
+        out += '\n';
+      }
+      if (isvNote) out += `_${isvNote}_\n\n`;
+      if (notFound.length) out += `**Not found:** ${notFound.join(', ')}\n`;
+      if (requested.length > names.length) out += truncationNote('cap', names.length, REFS_BATCH_MAX);
+      return structuredResult(typed, out, format);
     },
   );
 
@@ -272,13 +359,16 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Object name or full path'),
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: xrefFindUsagesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit, format }) => {
+    async ({ object_name, kind, limit: rawLimit, cursor, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
@@ -293,27 +383,29 @@ export function registerXrefTools(server, db) {
         const kindId = Object.entries(KIND_NAMES).find(([, v]) => v === kindFilterLabel)?.[0];
         if (kindId) { kindFilter = ' AND r.kind = ?'; params.push(Number(kindId)); }
       }
-      params.push(limit);
+      params.push(probeLimit(limit), page.offset);
 
-      const result = q(`
+      // line/col complete the ORDER BY so OFFSET is stable (#109).
+      const { rows: result, has_more } = takePage(q(`
         SELECT n.path AS target, r.kind, r.line, r.col, m.module
         FROM refs r
         JOIN names n ON r.target_id = n.id
         JOIN modules m ON n.module_id = m.id
         WHERE r.source_id = ? ${kindFilter}
-        ORDER BY r.kind, n.path
-        LIMIT ?
-      `, params);
+        ORDER BY r.kind, n.path, r.line, r.col
+        LIMIT ? OFFSET ?
+      `, params), limit);
 
       const typed = {
         source_path: sourcePath,
         kind_filter: kindFilterLabel,
         limit,
         result_count: result.length,
-        truncated: result.length >= limit,
+        truncated: has_more,
         usages: result.map(r => ({
           path: r.target, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
         })),
+        ...pageMeta(null, page.offset, result.length, limit, has_more),
       };
       if (!result.length) return emptyResult(`outgoing references from "${sourcePath}"`, typed);
 
@@ -322,7 +414,7 @@ export function registerXrefTools(server, db) {
         typed.usages.map(r => ({ Target: r.path, Kind: r.kind, Line: r.line ?? '', Col: r.col ?? '', Module: r.module ?? '' })),
         ['Target', 'Kind', 'Line', 'Col', 'Module'],
       );
-      if (typed.truncated) out += truncationNote('user', limit);
+      if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
       return structuredResult(typed, out, format);
     },
   );
@@ -338,7 +430,7 @@ export function registerXrefTools(server, db) {
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter")'),
         method_name: z.string().min(1).max(500).describe('Method name (e.g. "construct", "run")'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindMethodCallersOutput.shape,
@@ -402,7 +494,7 @@ export function registerXrefTools(server, db) {
         class_name: z.string().min(1).max(500).describe('Class name (e.g. "SalesFormLetter", "FormLetterServiceController")'),
         direction: z.enum(['subclasses', 'parents']).default('subclasses')
           .describe('"subclasses" = who extends this (default), "parents" = what does this extend'),
-        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max entries to return (default 200, max 1000). Framework base classes have thousands of subclasses.'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max entries to return. Framework base classes have thousands of subclasses.'),
         format: formatTextParam,
       },
       outputSchema: xrefClassHierarchyOutput.shape,
@@ -485,7 +577,7 @@ export function registerXrefTools(server, db) {
       description: 'Find all classes that implement a given interface, including indirect implementors through inheritance.',
       inputSchema: {
         interface_name: z.string().min(1).max(500).describe('Interface name (e.g. "SysRunnable", "SysPackable")'),
-        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max implementors to return (default 200, max 1000). Framework interfaces have thousands.'),
+        limit: z.number().int().min(1).max(1000).optional().default(200).describe('Max implementors to return. Framework interfaces have thousands.'),
         format: formatTextParam,
       },
       outputSchema: xrefInterfaceImplementorsOutput.shape,
@@ -551,13 +643,13 @@ export function registerXrefTools(server, db) {
     'xref_search_names',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Search for D365FO objects by name pattern in the cross-reference database. Use to discover objects when you only know part of the name. Scope with `modules` to search only specific models (e.g. only iExtension, an ISV model, or the Microsoft application — see xref_list_modules for the scanned build versions).',
+      description: 'Search objects by name pattern in the cross-reference database when only part of the name is known. Scope with `modules` to specific models (see xref_list_modules).',
       inputSchema: {
         pattern: z.string().min(1).max(500).describe('Search pattern (e.g. "SalesInvoice", "CustTrans"). Supports SQL LIKE wildcards (%).'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views', 'Maps', 'Labels'])
           .default('All').describe('Filter by object type'),
         modules: modulesFilterParam,
-        limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
+        limit: z.number().int().min(1).max(500).default(50).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefSearchNamesOutput.shape,
@@ -626,7 +718,7 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Class or table name'),
         method_name: z.string().min(1).max(500).describe('Method name'),
         kind: z.enum(['All', 'Call', 'Read']).default('All').describe('Filter: All, Call (method invocations only), Read (type/field reads only)'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefMethodReferencesOutput.shape,
@@ -697,7 +789,7 @@ export function registerXrefTools(server, db) {
         module_name: z.string().min(1).max(500).describe('Module name (e.g. "ApplicationSuite", "EngineeringChangeManagement")'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'Enums', 'DataEntityViews', 'Edts', 'Views'])
           .default('All').describe('Filter by object type'),
-        limit: z.number().int().min(1).max(500).default(200).describe('Max results (default 200, max 500)'),
+        limit: z.number().int().min(1).max(500).default(200).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefModuleObjectsOutput.shape,
@@ -756,7 +848,7 @@ export function registerXrefTools(server, db) {
         module_name: z.string().min(1).max(500).describe('Module name'),
         direction: z.enum(['depends_on', 'depended_by']).default('depends_on')
           .describe('"depends_on" = modules this module references, "depended_by" = modules that reference this one'),
-        limit: z.number().int().min(1).max(500).default(50).describe('Max results (default 50, max 500)'),
+        limit: z.number().int().min(1).max(500).default(50).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefCrossModuleDepsOutput.shape,
@@ -818,17 +910,18 @@ export function registerXrefTools(server, db) {
     'xref_raw_sql',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider). Returns both a typed JSON payload (structuredContent with row_count, columns, and rows) and a text rendering. Text channel: see the shared `format` parameter.',
+      description: 'Execute a read-only SQL query against the XRef SQLite database. Schema: names(id,path,provider_id,module_id), refs(source_id,target_id,kind,line,col), modules(id,module), providers(id,provider).',
       inputSchema: {
         sql: z.string().min(1).max(50000).describe('SQL SELECT query (no schema prefix needed — use table names directly)'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max rows (default 100, max 500)'),
-        format: z.enum(['markdown', 'toon']).optional().default('toon').describe('Text rendering. "toon" (default, token-efficient) or "markdown" for human-readable tables.'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max rows'),
+        // The SHARED param (rule #5): a private z.enum(['markdown','toon'])
+        // .default('toon') here pinned TOON and defeated the adaptive default.
+        format: formatTextParam,
       },
       outputSchema: rawSqlOutput.shape,
     },
     async ({ sql: userSql, limit: rawLimit, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
-      const fmt = format === 'markdown' ? 'markdown' : 'toon';
       const trimmed = userSql.trim().replace(/;+$/, '');
       if (!/^\s*(SELECT|WITH|PRAGMA)\b/i.test(trimmed)) {
         return errorResult('invalid-input', 'Only SELECT, WITH, and PRAGMA queries are allowed.');
@@ -852,11 +945,11 @@ export function registerXrefTools(server, db) {
         const columns = Object.keys(result[0]);
         const truncated = result.length >= limit;
         const typed = { row_count: result.length, truncated, columns, rows: result };
-        // Markdown is the opt-out; structuredResult renders TOON from `typed`
-        // by default (fmt === 'toon').
+        // structuredResult picks the smaller channel unless the caller pinned
+        // one; `format` goes through untouched — rule #5.
         let md = formatMarkdownTable(result);
         if (truncated) md += truncationNote('user', limit);
-        return structuredResult(typed, md, fmt);
+        return structuredResult(typed, md, format);
       } catch (err) {
         if (err instanceof QueryBudgetExceededError) return timeoutErrorResult(err);
         return errorResult('db-error', 'Check your SQL syntax and table/column names. Only read-only SELECT queries are supported.', err);
@@ -874,7 +967,7 @@ export function registerXrefTools(server, db) {
       description: 'Analyze the impact of changing a D365FO object: find all direct dependents grouped by type and module. Essential before modifying shared classes, tables, or methods. Performs single-level (direct) impact analysis.',
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Object name or path'),
-        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed (default 100, max 500). The by_kind / by_module counts always cover the full result set.'),
+        limit: z.number().int().min(1).max(500).optional().default(100).describe('Max dependent objects listed. The by_kind / by_module counts always cover the full result set.'),
         format: formatTextParam,
       },
       outputSchema: xrefImpactAnalysisOutput.shape,
@@ -947,12 +1040,12 @@ export function registerXrefTools(server, db) {
     'xref_list_modules',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'List D365FO modules in the XRef database with object counts and the build version each was scanned from (Descriptor XML provenance: version, layer, origin microsoft/isv/custom, publisher - null when the XRef build had no metadata roots configured). Filter with `origin` / `layer` / `publisher` to see only the customisation surface.',
+      description: 'List XRef modules with object counts and Descriptor provenance (version, layer, origin microsoft/isv/custom, publisher — null when the XRef build had no metadata roots). Filter with `origin` / `layer` / `publisher`.',
       inputSchema: {
         origin: z.enum(['microsoft', 'isv', 'custom']).optional().describe('Only models with this build origin. Use "custom" / "isv" for the customisation surface.'),
         layer: z.string().min(1).max(20).optional().describe('Only models on this layer (SYS, SLN, ISV, VAR, USR)'),
         publisher: z.string().min(1).max(200).optional().describe('Only models whose publisher contains this text (case-insensitive)'),
-        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return (default 200, max 500)'),
+        limit: z.number().int().min(1).max(500).optional().default(200).describe('Max modules to return'),
         format: formatTextParam,
       },
       outputSchema: xrefListModulesOutput.shape,
@@ -1046,7 +1139,7 @@ export function registerXrefTools(server, db) {
     'xref_object_summary',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: "Get a compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, and module. This is the recommended first call before drilling into an object — pass `object_names` to summarise up to 10 objects in one call instead of one call each.",
+      description: 'Compact summary of an object: incoming vs outgoing reference counts by kind, methods, sub-objects, module. The recommended first call before drilling in; `object_names` takes up to 10 objects.',
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name or path. Use this or `object_names`.'),
         object_names: z.array(z.string().min(1).max(500)).min(1).max(SUMMARY_BATCH_MAX).optional()
@@ -1164,7 +1257,7 @@ export function registerXrefTools(server, db) {
         object_name: z.string().min(1).max(500).describe('Object name (e.g. "SalesTable", "CustTable", "SalesFormLetter")'),
         object_type: z.enum(['All', 'Classes', 'Tables', 'Forms', 'DataEntityViews']).default('All')
           .describe('Object type to search for extensions. Default: All'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindExtensionsOutput.shape,
@@ -1257,7 +1350,7 @@ export function registerXrefTools(server, db) {
         field_name: z.string().min(1).max(500).describe('Field name (e.g. "AccountNum", "InvoiceId")'),
         kind: z.enum(['All', 'Read', 'Write']).default('All')
           .describe('Filter: All, Read (field value reads), Write (field assignments). Default: All'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindFieldUsagesOutput.shape,
@@ -1335,7 +1428,7 @@ export function registerXrefTools(server, db) {
       inputSchema: {
         object_name: z.string().min(1).max(500).describe('Class or table name (e.g. "SalesFormLetter", "CustTable")'),
         method_name: z.string().min(1).max(500).optional().describe('Optional: specific method/delegate name to find handlers for'),
-        limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max results'),
         format: formatTextParam,
       },
       outputSchema: xrefFindEventHandlersOutput.shape,

@@ -1,0 +1,46 @@
+{
+  "_note": "Response sizes (chars) of the ten concept-§3.1 calls with DEFAULT args against the synthetic fixture in test/response-size-golden.test.js. Regenerate deliberately with GOLDEN_UPDATE=1.",
+  "tolerance": 0.1,
+  "calls": {
+    "d365_lookup_table": {
+      "json": 32055,
+      "text": 15855
+    },
+    "d365_search": {
+      "json": 3355,
+      "text": 2247
+    },
+    "d365_get_enum": {
+      "json": 1993,
+      "text": 1109
+    },
+    "d365_get_class_methods": {
+      "json": 11533,
+      "text": 6094
+    },
+    "d365_get_entity_sources": {
+      "json": 25615,
+      "text": 10397
+    },
+    "d365_list_modules": {
+      "json": 30840,
+      "text": 11037
+    },
+    "xref_find_references": {
+      "json": 9632,
+      "text": 5479
+    },
+    "xref_object_summary": {
+      "json": 682,
+      "text": 579
+    },
+    "sec_lookup_role": {
+      "json": 12942,
+      "text": 5298
+    },
+    "sec_stats": {
+      "json": 496,
+      "text": 420
+    }
+  }
+}

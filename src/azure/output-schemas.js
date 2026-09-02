@@ -24,6 +24,22 @@
 
 import { z } from 'zod';
 
+// ── NO `.meta({ id })` in this file (W1, #105 — tried, measured, reverted) ───
+// Zod 4's toJSONSchema (which the SDK calls with no options) extracts a schema
+// registered with `.meta({ id })` into `definitions` and `$ref`s it, so a row
+// shape used in both the single and the batch branch of a tool would ship once
+// instead of twice: measured −3,244 B across the four servers (13 shapes).
+// It is NOT safe: Zod copies the `id` INTO the definition, and AJV — the SDK
+// client's structuredContent validator — throws `NOT SUPPORTED: keyword "id"`
+// at compile time, so every callTool on such a tool fails on an SDK client.
+// tool-sets.js strips it from the wire for the entry points, but a McpServer
+// that registers `registerKbTools()` directly (the integration harness, any
+// library user) is not hooked and would break. A 1.8% saving that turns a bare
+// registration into a client-breaking server is the wrong trade; the budget
+// test compiles the UNHOOKED registration path with the SDK's AJV so a future
+// `.meta({ id })` fails there, not in a client. Re-open only with a hook the
+// register functions themselves install, or an SDK option to pass `reused`.
+
 // ── Shared: model build provenance row ───────────────────────────────────────
 // One scanned model's descriptor data (model_versions table). Shared by
 // d365_get_module_summary, sec_stats, and the list-modules tools. All fields
@@ -31,12 +47,12 @@ import { z } from 'zod';
 // databases built before provenance capture have no rows at all.
 export const modelVersionRowSchema = z.object({
   model_name: z.string(),
-  module_id: z.string().nullable(),
-  display_name: z.string().nullable(),
-  publisher: z.string().nullable(),
-  layer: z.string().nullable(),
-  origin: z.string().nullable(),   // 'microsoft' | 'isv' | 'custom' | 'unknown'
-  version: z.string().nullable(),  // VersionMajor.Minor.Build.Revision
+  module_id: z.string().nullish(),
+  display_name: z.string().nullish(),
+  publisher: z.string().nullish(),
+  layer: z.string().nullish(),
+  origin: z.string().nullish(),   // 'microsoft' | 'isv' | 'custom' | 'unknown'
+  version: z.string().nullish(),  // VersionMajor.Minor.Build.Revision
 });
 
 // ── Issue #87/#90: UI custom fields, read live from an environment ───────────
@@ -54,12 +70,12 @@ export const d365CustomFieldSourceSchema = z.object({
   title: z.string(),
   url: z.string(),
   is_default: z.boolean(),
-  origin: z.string().nullable().describe('Where the registry entry came from: app setting, config file, or env.'),
+  origin: z.string().nullish().describe('Where the registry entry came from: app setting, config file, or env.'),
   cached: z.boolean(),
-  cached_property_count: z.number().nullable(),
-  fetched_at: z.string().nullable(),
-  cache_expires_in_seconds: z.number().nullable(),
-  last_error: z.string().nullable(),
+  cached_property_count: z.number().nullish(),
+  fetched_at: z.string().nullish(),
+  cache_expires_in_seconds: z.number().nullish(),
+  last_error: z.string().nullish(),
 });
 
 /** One custom field as observed in an environment's OData $metadata.
@@ -72,10 +88,10 @@ export const d365CustomFieldSourceSchema = z.object({
 export const d365UiCustomFieldSchema = z.object({
   entity_name: z.string(),
   property_name: z.string(),
-  type: z.string().nullable(),
-  nullable: z.boolean().nullable(),
-  max_length: z.number().nullable(),
-  table_name: z.string().nullable(),
+  type: z.string().nullish(),
+  nullable: z.boolean().nullish(),
+  max_length: z.number().nullish(),
+  table_name: z.string().nullish(),
   attribution: z.enum(['primary-table', 'derived', 'unresolved']),
 });
 
@@ -84,8 +100,8 @@ export const d365UiCustomFieldMatchSchema = z.object({
   environment: z.string(),
   entity_name: z.string(),
   property_name: z.string(),
-  type: z.string().nullable(),
-  max_length: z.number().nullable(),
+  type: z.string().nullish(),
+  max_length: z.number().nullish(),
   fetched_at: z.string(),
 });
 
@@ -97,11 +113,11 @@ export const d365CustomFieldsOutput = z.object({
   cached: z.boolean().nullish(),
   entity_count: z.number().nullish(),
   property_count: z.number().nullish().describe('Custom properties found in the environment.'),
-  shown: z.number().nullish().describe('Rows in `fields` after filters and limit.'),
-  fields: z.array(d365UiCustomFieldSchema).nullish(),
+  shown: z.number().optional().describe('Rows in `fields` after filters and limit.'),
+  fields: z.array(d365UiCustomFieldSchema).optional(),
   // Present when the tool is called with no filter, or when no source is
   // configured: "what can I even query" answered in the same call.
-  sources: z.array(d365CustomFieldSourceSchema).nullish(),
+  sources: z.array(d365CustomFieldSourceSchema).optional(),
   note: z.string().nullish(),
 });
 
@@ -109,15 +125,19 @@ export const d365CustomFieldsOutput = z.object({
 
 export const d365LookupTableFieldSchema = z.object({
   name: z.string(),
-  type: z.string().nullable(),
-  edt: z.string().nullable(),
-  enum_type: z.string().nullable(),
-  label: z.string().nullable(),
-  mandatory: z.number().nullable(),
+  type: z.string().nullish(),
+  edt: z.string().nullish(),
+  enum_type: z.string().nullish(),
+  label: z.string().nullish(),
+  mandatory: z.number().nullish(),
   // Customization provenance (false / null on standard Microsoft fields, and
   // on KB databases built before the customization columns existed).
-  is_extension: z.boolean(),
-  source_module: z.string().nullable(),
+  // OPTIONAL, decided per response (#107.4, rule #14): present on every row
+  // with custom_only / include_provenance, absent on every row otherwise —
+  // the pair cost +3,714 tk on a 284-field entity while repeating the table's
+  // own module. Absent, never null-when-omitted: hence optional, not nullish.
+  is_extension: z.boolean().optional(),
+  source_module: z.string().nullish(),
 });
 
 export const d365LookupTableIndexSchema = z.object({
@@ -127,39 +147,42 @@ export const d365LookupTableIndexSchema = z.object({
   fields: z.array(z.string()),
 });
 
+// One join-field pair, shared by the outgoing and incoming relation rows.
+export const joinFieldPairSchema = z.object({
+  field: z.string().nullish(),
+  related_field: z.string().nullish(),
+});
+
 export const d365LookupTableRelationSchema = z.object({
-  relation_name: z.string().nullable(),
-  related_table: z.string().nullable(),
-  join_fields: z.array(z.object({
-    field: z.string().nullable(),
-    related_field: z.string().nullable(),
-  })),
-  relationship_type: z.string().nullable(),
-  on_delete: z.string().nullable(),
+  relation_name: z.string().nullish(),
+  related_table: z.string().nullish(),
+  join_fields: z.array(joinFieldPairSchema),
+  relationship_type: z.string().nullish(),
+  on_delete: z.string().nullish(),
 });
 
 export const d365LookupTableIncomingRelationSchema = z.object({
-  source_table: z.string().nullable(),
-  relation_name: z.string().nullable(),
-  join_fields: z.array(z.object({
-    field: z.string().nullable(),
-    related_field: z.string().nullable(),
-  })),
+  source_table: z.string().nullish(),
+  relation_name: z.string().nullish(),
+  join_fields: z.array(joinFieldPairSchema),
 });
 
 export const d365LookupTableOutput = z.object({
   table_name: z.string(),
-  module_id: z.string().nullable(),
-  label: z.string().nullable(),
-  table_group: z.string().nullable(),
-  save_per_company: z.number().nullable(),
-  cache_lookup: z.string().nullable(),
-  clustered_index: z.string().nullable(),
-  replacement_key: z.string().nullable(),
+  module_id: z.string().nullish(),
+  label: z.string().nullish(),
+  table_group: z.string().nullish(),
+  save_per_company: z.number().nullish(),
+  cache_lookup: z.string().nullish(),
+  clustered_index: z.string().nullish(),
+  replacement_key: z.string().nullish(),
   field_count: z.number(),
-  // Rows in `fields` after the fields_like / custom_only filters (equals
-  // field_count when neither is passed).
+  // fields_matched = rows after the fields_like / custom_only filters (equals
+  // field_count when neither is passed); fields_shown = rows in `fields` after
+  // field_limit (#107.3); fields_truncated = matched > shown.
+  fields_matched: z.number(),
   fields_shown: z.number(),
+  fields_truncated: z.boolean(),
   // Customization summary: is_customized=true when an AxTableExtension adds
   // fields; custom_field_count counts them; customization_modules lists the
   // models that contributed them.
@@ -174,23 +197,65 @@ export const d365LookupTableOutput = z.object({
   // Issue #90 — present only with include_custom_fields=true. A SEPARATE
   // block: UI custom fields are live environment state and must never be
   // interleaved into `fields`, which means "declared in a scanned model".
-  ui_custom_fields: z.array(d365UiCustomFieldSchema).nullish(),
+  ui_custom_fields: z.array(d365UiCustomFieldSchema).optional(),
   ui_custom_field_environment: z.string().nullish(),
   ui_custom_field_fetched_at: z.string().nullish(),
   ui_custom_field_note: z.string().nullish().describe('Why the live block is absent or partial.'),
+});
+
+// ── d365_effective_schema (issue #85) ────────────────────────────────────────
+// `origin` / `module` / `model_origin` are on EVERY field row (rule #14: they
+// are what distinguishes the rows). The isv_* keys are present together or
+// absent together: absent with include_isv=false or on a pre-ISV database.
+export const d365EffectiveFieldSchema = z.object({
+  name: z.string(),
+  type: z.string().nullish(),
+  edt: z.string().nullish(),
+  enum_type: z.string().nullish(),
+  label: z.string().nullish(),
+  mandatory: z.number().nullish(),
+  origin: z.enum(['base', 'extension']),
+  module: z.string().nullish(),
+  model_origin: z.string().nullish(),
+});
+export const d365EffectiveSchemaOutput = z.object({
+  table_name: z.string(),
+  module_id: z.string().nullish(),
+  model_origin: z.string().nullish(),
+  label: z.string().nullish(),
+  table_group: z.string().nullish(),
+  field_count: z.number(),
+  base_field_count: z.number(),
+  extension_field_count: z.number(),
+  fields_shown: z.number(),
+  fields_truncated: z.boolean(),
+  contributing_models: z.array(z.object({
+    module: z.string().nullish(),
+    origin: z.enum(['base', 'extension']),
+    model_origin: z.string().nullish(),
+    field_count: z.number(),
+  })),
+  fields: z.array(d365EffectiveFieldSchema),
+  indexes: z.array(d365LookupTableIndexSchema),
+  relations: z.array(d365LookupTableRelationSchema),
+  isv_extensions: z.array(z.object({ module: z.string(), extension_name: z.string() })).optional(),
+  isv_delete_actions: z.array(z.object({
+    module: z.string(), target: z.string().nullish(), relation: z.string().nullish(), action: z.string().nullish(),
+  })).optional(),
+  isv_provenance: z.lazy(() => isvProvenanceSchema).optional(),
 });
 
 // ── Pilot 2: d365_get_class_methods ──────────────────────────────────────────
 
 export const d365ClassMethodSchema = z.object({
   method_name: z.string(),
-  signature: z.string().nullable(),
+  signature: z.string().nullish(),
   is_static: z.boolean(),
   // OMITTED entirely on a signature listing (include_source false) rather than
   // emitted as null: measured at 10.7-12.0% of the listing on real classes
   // (2,741 tokens of literal `"source_code":null` on InventMovement's 577
   // methods). Same defect as the include_counts nulling.
-  source_code: z.string().nullable().optional(),
+  source_code: z.string().nullish(),
   // Body line count, present on a signature listing INSTEAD of the dead null —
   // and cheaper than it was. This is the signal that makes the two-tier pattern
   // a decision rather than a guess: the caller can see that a method is 9 lines
@@ -198,11 +263,19 @@ export const d365ClassMethodSchema = z.object({
   source_lines: z.number().int().optional(),
 });
 
+// ── Cursor pagination (issue #109 part A) ────────────────────────────────────
+// Spread into the outputSchema of every paginated list tool: `has_more` is
+// always present on a single-target response, `next_cursor` only when there is
+// a next page (rule #14). `pageShape` is the strict form; `pageShapeOptional`
+// is for tools whose batch mode has no page (d365_search, xref_find_references).
+export const pageShape = { has_more: z.boolean(), next_cursor: z.string().optional() };
+export const pageShapeOptional = { has_more: z.boolean().optional(), next_cursor: z.string().optional() };
+
 export const d365GetClassMethodsOutput = z.object({
   owner_name: z.string(),
   owner_type: z.string(),
-  extends_class: z.string().nullable(),
-  implements_list: z.string().nullable(),
+  extends_class: z.string().nullish(),
+  implements_list: z.string().nullish(),
   is_abstract: z.boolean(),
   include_source: z.boolean(),
   method_count: z.number(),
@@ -211,6 +284,7 @@ export const d365GetClassMethodsOutput = z.object({
   // caller can price `include_source: true` before paying for it.
   source_lines_total: z.number().int().optional(),
   truncated: z.boolean(),
+  ...pageShape,
 });
 
 // ── Pilot 3: xref_impact_analysis ────────────────────────────────────────────
@@ -218,7 +292,7 @@ export const d365GetClassMethodsOutput = z.object({
 export const xrefImpactReferencingObjectSchema = z.object({
   source: z.string(),
   kind: z.string(),
-  module: z.string().nullable(),
+  module: z.string().nullish(),
 });
 
 export const xrefImpactAnalysisOutput = z.object({
@@ -242,8 +316,8 @@ export const xrefImpactAnalysisOutput = z.object({
 
 export const secLookupUserRoleSchema = z.object({
   role_name: z.string(),
-  permission_type: z.string().nullable(),
-  license_type: z.string().nullable(),
+  permission_type: z.string().nullish(),
+  license_type: z.string().nullish(),
   // P4-08: companies the role is scoped to. Empty array = unrestricted ("(all)").
   companies: z.array(z.string()),
 });
@@ -256,21 +330,23 @@ export const secLookupUserCompanyRoleSchema = z.object({
 export const secLookupUserSubRoleSchema = z.object({
   role_name: z.string(),
   parent_role_name: z.string(),
-  permission_type: z.string().nullable(),
+  permission_type: z.string().nullish(),
 });
 
 export const secLookupUserDenyOverrideSchema = z.object({
   role_name: z.string(),
   duty_id: z.string(),
-  duty_name: z.string().nullable(),
+  duty_name: z.string().nullish(),
 });
 
 export const secLookupUserOutput = z.object({
   user_id: z.string(),
-  person_name: z.string().nullable(),
-  email: z.string().nullable(),
+  person_name: z.string().nullish(),
+  email: z.string().nullish(),
   enabled: z.boolean(),
-  default_company: z.string().nullable(),
+  default_company: z.string().nullish(),
+  // true when any of the four lists was cut at `limit`; the *_count keys are exact.
+  truncated: z.boolean(),
   role_count: z.number(),
   roles: z.array(secLookupUserRoleSchema),
   company_scoped_role_count: z.number(),
@@ -290,15 +366,15 @@ export const secLookupUserOutput = z.object({
 // converting to booleans or numbers.
 export const secEffectivePermissionSchema = z.object({
   object_name: z.string(),
-  object_type: z.string().nullable(),
-  grant_read: z.string().nullable(),
-  grant_create: z.string().nullable(),
-  grant_update: z.string().nullable(),
-  grant_delete: z.string().nullable(),
-  grant_correct: z.string().nullable(),
-  grant_invoke: z.string().nullable(),
-  duty_perm: z.string().nullable(),
-  source: z.string().nullable().optional(),
+  object_type: z.string().nullish(),
+  grant_read: z.string().nullish(),
+  grant_create: z.string().nullish(),
+  grant_update: z.string().nullish(),
+  grant_delete: z.string().nullish(),
+  grant_correct: z.string().nullish(),
+  grant_invoke: z.string().nullish(),
+  duty_perm: z.string().nullish(),
+  source: z.string().nullish(),
 });
 
 // Deny-wins resolved view: one row per securable object after applying
@@ -308,13 +384,13 @@ export const secEffectivePermissionSchema = z.object({
 // maps directly to a UI control being enabled / greyed / hidden.
 export const secEffectiveResolvedSchema = z.object({
   object_name: z.string(),
-  object_type: z.string().nullable(),
-  effective_read: z.string().nullable(),
-  effective_create: z.string().nullable(),
-  effective_update: z.string().nullable(),
-  effective_delete: z.string().nullable(),
-  effective_correct: z.string().nullable(),
-  effective_invoke: z.string().nullable(),
+  object_type: z.string().nullish(),
+  effective_read: z.string().nullish(),
+  effective_create: z.string().nullish(),
+  effective_update: z.string().nullish(),
+  effective_delete: z.string().nullish(),
+  effective_correct: z.string().nullish(),
+  effective_invoke: z.string().nullish(),
   status: z.enum(['granted', 'partial', 'denied']),
 });
 
@@ -323,7 +399,7 @@ export const secEffectivePermissionsOutput = z.object({
   subject_id: z.string(),
   subject_label: z.string(),
   role_count: z.number(),
-  object_filter: z.string().nullable(),
+  object_filter: z.string().nullish(),
   entry_point_count: z.number(),
   truncated: z.boolean(),
   permissions: z.array(secEffectivePermissionSchema),
@@ -340,20 +416,20 @@ export const secEffectivePermissionsOutput = z.object({
 
 // d365_get_join_keys — join relationships between two tables
 export const d365GetJoinKeysRelationSchema = z.object({
-  source_table: z.string().nullable(),
-  related_table: z.string().nullable(),
-  relation_name: z.string().nullable(),
-  relationship_type: z.string().nullable(),
+  source_table: z.string().nullish(),
+  related_table: z.string().nullish(),
+  relation_name: z.string().nullish(),
+  relationship_type: z.string().nullish(),
   join_pairs: z.array(z.object({
-    source_field: z.string().nullable(),
-    related_field: z.string().nullable(),
+    source_field: z.string().nullish(),
+    related_field: z.string().nullish(),
   })),
 });
 export const d365GetJoinKeysTrapSchema = z.object({
   trap_type: z.string(),
-  wrong_value: z.string().nullable(),
-  correct_value: z.string().nullable(),
-  explanation: z.string().nullable(),
+  wrong_value: z.string().nullish(),
+  correct_value: z.string().nullish(),
+  explanation: z.string().nullish(),
 });
 export const d365GetJoinKeysOutput = z.object({
   table1: z.string(),
@@ -367,39 +443,51 @@ export const d365GetJoinKeysOutput = z.object({
 
 // d365_search — full-text search results
 export const d365SearchResultSchema = z.object({
-  object_type: z.string().nullable(),
+  object_type: z.string().nullish(),
   object_name: z.string(),
-  module_id: z.string().nullable(),
-  context: z.string().nullable(),
+  module_id: z.string().nullish(),
+  context: z.string().nullish(),
 });
-export const d365SearchOutput = z.object({
+// Single mode: exactly the pre-batching payload. Batch mode (`queries`, issue
+// #83): the shared scope (object_type / modules / limit) is hoisted into the
+// envelope and each entry carries only what differs. The two are disjoint.
+export const d365SearchQueryPayloadSchema = z.object({
   query: z.string(),
-  object_type: z.string().nullable(),
-  modules: z.array(z.string()).nullable(),
-  limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
   results: z.array(d365SearchResultSchema),
+});
+export const d365SearchOutput = z.object({
+  query: z.string().optional(),
+  object_type: z.string().nullish(),
+  modules: z.array(z.string()).nullish(),
+  limit: z.number(),
+  result_count: z.number().optional(),
+  truncated: z.boolean().optional(),
+  results: z.array(d365SearchResultSchema).optional(),
+  ...pageShapeOptional,
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  queries: z.array(d365SearchQueryPayloadSchema).optional().describe('Batch mode only: one entry per query, caller order.'),
 });
 
 // d365_get_enum — enum values
 export const d365EnumValueSchema = z.object({
   name: z.string(),
-  value: z.number().nullable(),
+  value: z.number().nullish(),
   // DELIBERATELY an explicit null, not an omission — the one place the
   // omit-dead-keys rule is wrong. 12.3% of enum values carry no label; omitting
   // the key there saves ~1% of the JSON and costs +107% of the TOON text
   // channel, because ragged rows drop TOON out of its tabular form
   // (`values[8]{name,value,label}:` + one line each) into a per-row key/value
   // list. Omit a key only when it is absent from EVERY row of an array.
-  label: z.string().nullable(),
+  label: z.string().nullish(),
 });
 // One enum's payload. Shared by the single-target fields and the batch array
 // so both channels are guaranteed to carry the identical shape.
 export const d365EnumPayloadSchema = z.object({
   enum_name: z.string(),
-  module_id: z.string().nullable(),
-  label: z.string().nullable(),
+  module_id: z.string().nullish(),
+  label: z.string().nullish(),
   value_count: z.number(),
   values: z.array(d365EnumValueSchema),
   // Present ONLY when true. A parse failure has to be visible and must never be
@@ -414,25 +502,29 @@ export const d365EnumPayloadSchema = z.object({
 // duplicated across the two channels and a single call pays nothing for the
 // feature — measured, after an earlier version that carried both grew the
 // response instead of shrinking it.
+// W1 (#105): a key the handler OMITS in the other mode is `.optional()`, never
+// `.nullish()` — the nullable wrapper is 28 B of `anyOf` per field on every
+// tools/list, and it promised a null the handler never emits. Only module_id /
+// label can genuinely be null.
 export const d365GetEnumOutput = z.object({
-  enum_name: z.string().nullish(),
+  enum_name: z.string().optional(),
   module_id: z.string().nullish(),
   label: z.string().nullish(),
-  value_count: z.number().nullish(),
-  values: z.array(d365EnumValueSchema).nullish(),
-  parse_error: z.boolean().nullish(),
-  requested_count: z.number().nullish().describe('Batch mode only: how many enums were asked for.'),
-  resolved_count: z.number().nullish(),
-  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested names that do not exist. A single-target miss still returns a not-found error.'),
-  enums: z.array(d365EnumPayloadSchema).nullish().describe('Batch mode only: per-enum payloads.'),
+  value_count: z.number().optional(),
+  values: z.array(d365EnumValueSchema).optional(),
+  parse_error: z.boolean().optional(),
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  resolved_count: z.number().optional(),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: names that do not exist.'),
+  enums: z.array(d365EnumPayloadSchema).optional().describe('Batch mode only.'),
 });
 
 // d365_check_field_exists — per-field existence + note
 export const d365CheckFieldResultSchema = z.object({
   field_name: z.string(),
   exists: z.boolean(),
-  correct_name: z.string().nullable(),
-  note: z.string().nullable(),
+  correct_name: z.string().nullish(),
+  note: z.string().nullish(),
   similar: z.array(z.string()),
   // Issue #90 — where the field was found. 'build-metadata' is the scanned
   // snapshot (the historical, implicit meaning of exists=true);
@@ -454,12 +546,12 @@ export const d365CheckFieldTableSchema = z.object({
 
 // Backward-compatible superset — see d365GetEnumOutput for the pattern.
 export const d365CheckFieldExistsOutput = z.object({
-  table_name: z.string().nullish(),
-  check_count: z.number().nullish(),
-  checks: z.array(d365CheckFieldResultSchema).nullish(),
-  requested_count: z.number().nullish().describe('Batch mode only.'),
-  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested tables that do not exist.'),
-  tables: z.array(d365CheckFieldTableSchema).nullish().describe('Batch mode only: per-table results.'),
+  table_name: z.string().optional(),
+  check_count: z.number().optional(),
+  checks: z.array(d365CheckFieldResultSchema).optional(),
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: tables that do not exist.'),
+  tables: z.array(d365CheckFieldTableSchema).optional().describe('Batch mode only.'),
 });
 
 // d365_get_method_source — single method source
@@ -473,35 +565,37 @@ export const d365CheckFieldExistsOutput = z.object({
 // was bigger than the single calls it replaces.
 export const d365MethodSourcePayloadSchema = z.object({
   method_name: z.string(),
-  signature: z.string().nullable(),
+  signature: z.string().nullish(),
   is_static: z.boolean(),
-  source_code: z.string().nullable(),
-  line_count: z.number().int().nullable(),
+  source_code: z.string().nullish(),
+  line_count: z.number().int().nullish(),
 });
 export const d365GetMethodSourceOutput = z.object({
+  // owner_type is null on a batch whose every method missed; owner_name falls
+  // back to the requested name and is never null.
   owner_type: z.string().nullish(),
-  owner_name: z.string().nullish(),
-  method_name: z.string().nullish(),
+  owner_name: z.string().optional(),
+  method_name: z.string().optional(),
   signature: z.string().nullish(),
-  is_static: z.boolean().nullish(),
+  is_static: z.boolean().optional(),
   source_code: z.string().nullish(),
   // Body-relative line count (null when no source). Lets callers cite a line
   // range knowing the upper bound; the rendered Markdown is line-numbered.
   line_count: z.number().int().nullish(),
-  requested_count: z.number().nullish().describe('Batch mode only: how many methods were asked for.'),
-  resolved_count: z.number().nullish(),
-  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested names not on this owner. A single-target miss still returns a not-found error.'),
-  methods: z.array(d365MethodSourcePayloadSchema).nullish().describe('Batch mode only: per-method payloads.'),
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  resolved_count: z.number().optional(),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: names not on this owner.'),
+  methods: z.array(d365MethodSourcePayloadSchema).optional().describe('Batch mode only.'),
 });
 
 // d365_find_referencing_tables — tables referencing this table
 export const d365FindReferencingTableSchema = z.object({
-  source_table: z.string().nullable(),
-  relation_name: z.string().nullable(),
-  relationship_type: z.string().nullable(),
+  source_table: z.string().nullish(),
+  relation_name: z.string().nullish(),
+  relationship_type: z.string().nullish(),
   join_fields: z.array(z.object({
-    field: z.string().nullable(),
-    related_field: z.string().nullable(),
+    field: z.string().nullish(),
+    related_field: z.string().nullish(),
   })),
 });
 export const d365FindReferencingTablesOutput = z.object({
@@ -513,15 +607,15 @@ export const d365FindReferencingTablesOutput = z.object({
 // d365_get_module_summary — module stats + key tables/classes
 export const d365ModuleKeyTableSchema = z.object({
   table_name: z.string(),
-  label: z.string().nullable(),
-  field_count: z.number().nullable(),
-  save_per_company: z.number().nullable(),
-  table_group: z.string().nullable(),
+  label: z.string().nullish(),
+  field_count: z.number().nullish(),
+  save_per_company: z.number().nullish(),
+  table_group: z.string().nullish(),
 });
 export const d365ModuleKeyClassSchema = z.object({
   class_name: z.string(),
-  extends_class: z.string().nullable(),
-  method_count: z.number().nullable(),
+  extends_class: z.string().nullish(),
+  method_count: z.number().nullish(),
 });
 export const d365GetModuleSummaryOutput = z.object({
   module_id: z.string(),
@@ -542,9 +636,9 @@ export const d365GetModuleSummaryOutput = z.object({
 // d365_get_entity_sources — data entity + fields
 export const d365EntityFieldSchema = z.object({
   field_name: z.string(),
-  data_field: z.string().nullable(),
-  data_source: z.string().nullable(),
-  is_mandatory: z.number().nullable(),
+  data_field: z.string().nullish(),
+  data_source: z.string().nullish(),
+  is_mandatory: z.number().nullish(),
   // Model attribution of the backing table field (null when the entity data
   // source is an alias rather than a table, or on pre-attribution KB builds).
   //
@@ -554,19 +648,19 @@ export const d365EntityFieldSchema = z.object({
   // of payload that says nothing a caller cannot read off the entity's own
   // module). Pass `include_provenance: true` to get the pair on every field.
   // A field that IS an extension always carries both.
-  source_module: z.string().nullable().optional(),
-  is_extension: z.boolean().nullable().optional(),
+  source_module: z.string().nullish(),
+  is_extension: z.boolean().nullish(),
 });
 export const d365GetEntitySourcesOutput = z.object({
   entity_name: z.string(),
-  module_id: z.string().nullable(),
-  label: z.string().nullable(),
-  public_name: z.string().nullable(),
-  public_collection: z.string().nullable(),
+  module_id: z.string().nullish(),
+  label: z.string().nullish(),
+  public_name: z.string().nullish(),
+  public_collection: z.string().nullish(),
   is_public: z.boolean(),
-  primary_table: z.string().nullable(),
-  staging_table: z.string().nullable(),
-  config_key: z.string().nullable(),
+  primary_table: z.string().nullish(),
+  staging_table: z.string().nullish(),
+  config_key: z.string().nullish(),
   field_count: z.number(),
   // fields_matched = rows after the fields_like / custom_only / computed_only
   // filters; fields_returned = rows actually in entity_fields (after limit).
@@ -579,21 +673,22 @@ export const d365GetEntitySourcesOutput = z.object({
   method_count: z.number(),
   methods: z.array(z.object({
     method_name: z.string(),
-    signature: z.string().nullable(),
+    signature: z.string().nullish(),
     is_static: z.boolean(),
   })),
+  ...pageShape,
 });
 
 // d365_sql_template — SQL templates
 export const d365SqlTemplateSchema = z.object({
   template_id: z.string(),
   title: z.string(),
-  description: z.string().nullable(),
+  description: z.string().nullish(),
   sql_template: z.string(),
-  tables_used: z.string().nullable(),
+  tables_used: z.string().nullish(),
 });
 export const d365SqlTemplateOutput = z.object({
-  scenario: z.string().nullable(),
+  scenario: z.string().nullish(),
   template_count: z.number(),
   templates: z.array(d365SqlTemplateSchema),
 });
@@ -601,9 +696,9 @@ export const d365SqlTemplateOutput = z.object({
 // d365_hallucination_check — trap list
 export const d365HallucinationTrapSchema = z.object({
   trap_type: z.string(),
-  wrong_value: z.string().nullable(),
-  correct_value: z.string().nullable(),
-  explanation: z.string().nullable(),
+  wrong_value: z.string().nullish(),
+  correct_value: z.string().nullish(),
+  explanation: z.string().nullish(),
 });
 export const d365HallucinationCheckOutput = z.object({
   table_name: z.string(),
@@ -623,14 +718,14 @@ export const rawSqlOutput = z.object({
 // d365_graph_traverse — graph walk results
 export const d365GraphNodeSchema = z.object({
   node: z.string(),
-  node_type: z.string().nullable(),
-  edge: z.string().nullable(),
+  node_type: z.string().nullish(),
+  edge: z.string().nullish(),
   depth: z.number(),
 });
 export const d365GraphTraverseOutput = z.object({
   start_node: z.string(),
   max_depth: z.number(),
-  edge_type: z.string().nullable(),
+  edge_type: z.string().nullish(),
   node_count: z.number(),
   truncated: z.boolean(),
   nodes: z.array(d365GraphNodeSchema),
@@ -654,17 +749,17 @@ export const d365ModuleRowSchema = z.object({
   // Nulling them made the payload BIGGER (measured +5.6%): `"table_count":null`
   // is 18 chars against 15 for `"table_count":8`, and most models have small
   // counts. Omission is what makes the option worth having.
-  table_count: z.number().nullable().optional(),
-  class_count: z.number().nullable().optional(),
-  enum_count: z.number().nullable().optional(),
-  entity_count: z.number().nullable().optional(),
-  form_count: z.number().nullable().optional(),
+  table_count: z.number().nullish(),
+  class_count: z.number().nullish(),
+  enum_count: z.number().nullish(),
+  entity_count: z.number().nullish(),
+  form_count: z.number().nullish(),
   // Build provenance (null on KB databases built before model_versions
   // capture). version joins distinct model versions in the package.
-  version: z.string().nullable(),
-  origin: z.string().nullable(),
-  publisher: z.string().nullable(),
-  layer: z.string().nullable(),
+  version: z.string().nullish(),
+  origin: z.string().nullish(),
+  publisher: z.string().nullish(),
+  layer: z.string().nullish(),
 });
 export const d365ListModulesOutput = z.object({
   // module_count = modules matching the filter; returned_count = rows in
@@ -692,31 +787,49 @@ export const d365ResolveLabelOutput = z.object({
 // Common: a reference row shared by several xref list tools.
 export const xrefRefRowSchema = z.object({
   path: z.string(),
-  kind: z.string().nullable(),
-  line: z.number().nullable(),
-  col: z.number().nullable(),
-  module: z.string().nullable(),
+  kind: z.string().nullish(),
+  line: z.number().nullish(),
+  col: z.number().nullish(),
+  module: z.string().nullish(),
 });
 
 // xref_find_references
-export const xrefFindReferencesOutput = z.object({
+// Sealed-ISV callers (issues #77, #82). Opt-in via `include_isv`, and kept in
+// its own block so ISV rows are never interleaved with the main results — the
+// two have different fidelity and must stay distinguishable.
+export const xrefIsvModuleSummarySchema = z.array(z.object({
+  module: z.string(),
+  reference_count: z.number(),
+}));
+// Batch mode (`objects`, issue #83): kind_filter / limit / isv note are hoisted
+// into the envelope; each object carries only what differs. Single mode is
+// exactly the pre-batching payload. The two are disjoint.
+export const xrefFindReferencesObjectSchema = z.object({
   target_path: z.string(),
-  kind_filter: z.string(),
-  limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
   references: z.array(xrefRefRowSchema),
-  // Sealed-ISV callers (issues #77, #82). Opt-in via `include_isv`, and kept in
-  // its own block so ISV rows are never interleaved with the main results — the
-  // two have different fidelity and must stay distinguishable.
+  // Present on every object or on none (rule #14), only with include_isv.
+  isv: z.object({ reference_count: z.number(), module_summary: xrefIsvModuleSummarySchema }).optional(),
+});
+export const xrefFindReferencesOutput = z.object({
+  target_path: z.string().optional(),
+  kind_filter: z.string(),
+  limit: z.number(),
+  result_count: z.number().optional(),
+  truncated: z.boolean().optional(),
+  references: z.array(xrefRefRowSchema).optional(),
   isv: z.object({
     reference_count: z.number(),
-    module_summary: z.array(z.object({
-      module: z.string(),
-      reference_count: z.number(),
-    })),
+    module_summary: xrefIsvModuleSummarySchema,
     note: z.string(),
   }).nullish(),
+  ...pageShapeOptional,
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  resolved_count: z.number().optional(),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: names that did not resolve.'),
+  isv_note: z.string().optional().describe('Batch mode only: the ISV provenance note, carried once.'),
+  objects: z.array(xrefFindReferencesObjectSchema).optional().describe('Batch mode only, caller order.'),
 });
 
 // xref_find_usages
@@ -727,6 +840,7 @@ export const xrefFindUsagesOutput = z.object({
   result_count: z.number(),
   truncated: z.boolean(),
   usages: z.array(xrefRefRowSchema),
+  ...pageShape,
 });
 
 // xref_find_method_callers
@@ -739,9 +853,9 @@ export const xrefFindMethodCallersOutput = z.object({
   truncated: z.boolean(),
   callers: z.array(z.object({
     path: z.string(),
-    line: z.number().nullable(),
-    col: z.number().nullable(),
-    module: z.string().nullable(),
+    line: z.number().nullish(),
+    col: z.number().nullish(),
+    module: z.string().nullish(),
   })),
 });
 
@@ -782,12 +896,12 @@ export const xrefInterfaceImplementorsOutput = z.object({
 // xref_search_names
 export const xrefSearchNameRowSchema = z.object({
   path: z.string(),
-  module: z.string().nullable(),
+  module: z.string().nullish(),
 });
 export const xrefSearchNamesOutput = z.object({
   pattern: z.string(),
   object_type: z.string(),
-  modules: z.array(z.string()).nullable(),
+  modules: z.array(z.string()).nullish(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
@@ -797,9 +911,9 @@ export const xrefSearchNamesOutput = z.object({
 // xref_method_references
 export const xrefMethodReferenceRowSchema = z.object({
   path: z.string(),
-  kind: z.string().nullable(),
-  line: z.number().nullable(),
-  col: z.number().nullable(),
+  kind: z.string().nullish(),
+  line: z.number().nullish(),
+  col: z.number().nullish(),
 });
 export const xrefMethodReferencesOutput = z.object({
   source_path: z.string(),
@@ -815,7 +929,7 @@ export const xrefMethodReferencesOutput = z.object({
 // xref_module_objects
 export const xrefModuleObjectSchema = z.object({
   path: z.string(),
-  provider: z.string().nullable(),
+  provider: z.string().nullish(),
 });
 export const xrefModuleObjectsOutput = z.object({
   module_name: z.string(),
@@ -846,10 +960,10 @@ export const xrefListModuleRowSchema = z.object({
   object_count: z.number(),
   // Build provenance from Descriptor XMLs (null when the XRef DB was built
   // without XREF_PACKAGES_PATHS / KB_PACKAGES_PATHS, or predates capture).
-  version: z.string().nullable(),
-  origin: z.string().nullable(),
-  publisher: z.string().nullable(),
-  layer: z.string().nullable(),
+  version: z.string().nullish(),
+  origin: z.string().nullish(),
+  publisher: z.string().nullish(),
+  layer: z.string().nullish(),
 });
 export const xrefListModulesOutput = z.object({
   // module_count = modules matching the filter; returned_count = rows in
@@ -866,7 +980,7 @@ export const xrefObjectSummaryKindCountSchema = z.object({
 });
 export const xrefObjectSummaryPayloadSchema = z.object({
   object_path: z.string(),
-  module: z.string().nullable(),
+  module: z.string().nullish(),
   sub_object_count: z.number(),
   methods: z.array(z.string()),
   incoming_total: z.number(),
@@ -879,23 +993,23 @@ export const xrefObjectSummaryPayloadSchema = z.object({
 // the recommended first call before drilling into an object, so batching it
 // removes the most common source of repeated round-trips.
 export const xrefObjectSummaryOutput = z.object({
-  object_path: z.string().nullish(),
+  object_path: z.string().optional(),
   module: z.string().nullish(),
-  sub_object_count: z.number().nullish(),
-  methods: z.array(z.string()).nullish(),
-  incoming_total: z.number().nullish(),
-  outgoing_total: z.number().nullish(),
-  incoming_by_kind: z.array(xrefObjectSummaryKindCountSchema).nullish(),
-  outgoing_by_kind: z.array(xrefObjectSummaryKindCountSchema).nullish(),
-  requested_count: z.number().nullish().describe('Batch mode only.'),
-  not_found: z.array(z.string()).nullish().describe('Batch mode only: requested names that could not be resolved.'),
-  objects: z.array(xrefObjectSummaryPayloadSchema).nullish().describe('Batch mode only: per-object summaries.'),
+  sub_object_count: z.number().optional(),
+  methods: z.array(z.string()).optional(),
+  incoming_total: z.number().optional(),
+  outgoing_total: z.number().optional(),
+  incoming_by_kind: z.array(xrefObjectSummaryKindCountSchema).optional(),
+  outgoing_by_kind: z.array(xrefObjectSummaryKindCountSchema).optional(),
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: names that could not be resolved.'),
+  objects: z.array(xrefObjectSummaryPayloadSchema).optional().describe('Batch mode only.'),
 });
 
 // xref_find_extensions
 export const xrefExtensionRowSchema = z.object({
   path: z.string(),
-  module: z.string().nullable(),
+  module: z.string().nullish(),
 });
 export const xrefFindExtensionsOutput = z.object({
   object_name: z.string(),
@@ -914,9 +1028,9 @@ export const xrefFindExtensionsOutput = z.object({
 export const xrefFieldUsageRowSchema = z.object({
   source: z.string(),
   kind: z.string(),
-  line: z.number().nullable(),
-  col: z.number().nullable(),
-  module: z.string().nullable(),
+  line: z.number().nullish(),
+  col: z.number().nullish(),
+  module: z.string().nullish(),
 });
 export const xrefFindFieldUsagesOutput = z.object({
   table_name: z.string(),
@@ -933,12 +1047,12 @@ export const xrefFindFieldUsagesOutput = z.object({
 // xref_find_event_handlers
 export const xrefEventHandlerRowSchema = z.object({
   path: z.string(),
-  module: z.string().nullable(),
+  module: z.string().nullish(),
 });
 export const xrefFindEventHandlersOutput = z.object({
   object_name: z.string(),
-  method_name: z.string().nullable(),
-  object_path: z.string().nullable(),
+  method_name: z.string().nullish(),
+  object_path: z.string().nullish(),
   limit: z.number(),
   delegate_methods: z.array(z.string()),
   subscribers: z.array(xrefEventHandlerRowSchema),
@@ -954,52 +1068,75 @@ export const xrefFindEventHandlersOutput = z.object({
 // sec_lookup_role
 export const secLookupRoleSubRoleSchema = z.object({
   role_name: z.string(),
-  is_transitive: z.number().nullable(),
+  is_transitive: z.number().nullish(),
 });
 export const secLookupRoleDutySchema = z.object({
   duty_id: z.string(),
-  duty_name: z.string().nullable(),
-  permission_type: z.string().nullable(),
+  duty_name: z.string().nullish(),
+  permission_type: z.string().nullish(),
 });
+// A grant column is emitted on every row of a response or on none (rule #14):
+// it is omitted only when it is null on EVERY row of that response. Hence
+// nullish — present-null must be nullable, absent must be optional.
 export const secLookupRoleDirectEntityPermissionSchema = z.object({
   entity_name: z.string(),
-  grant_read: z.string().nullable(),
-  grant_create: z.string().nullable(),
-  grant_update: z.string().nullable(),
-  grant_delete: z.string().nullable(),
-  grant_correct: z.string().nullable(),
-  grant_invoke: z.string().nullable(),
+  grant_read: z.string().nullish(),
+  grant_create: z.string().nullish(),
+  grant_update: z.string().nullish(),
+  grant_delete: z.string().nullish(),
+  grant_correct: z.string().nullish(),
+  grant_invoke: z.string().nullish(),
 });
-export const secLookupRoleOutput = z.object({
+// Summary by default (W3 #107.1): each list is capped, and `*_count` holds the
+// real total so the array length is never mistaken for it.
+export const secLookupRolePayloadSchema = z.object({
   role_id: z.string(),
   role_name: z.string(),
-  module_id: z.string().nullable(),
-  label: z.string().nullable(),
-  description: z.string().nullable(),
-  license_type: z.string().nullable(),
-  permission_type: z.string().nullable(),
-  source: z.string().nullable(),
+  module_id: z.string().nullish(),
+  label: z.string().nullish(),
+  description: z.string().nullish(),
+  license_type: z.string().nullish(),
+  permission_type: z.string().nullish(),
+  source: z.string().nullish(),
   sub_roles: z.array(secLookupRoleSubRoleSchema),
   duties: z.array(secLookupRoleDutySchema),
+  duty_count: z.number(),
+  duties_truncated: z.boolean(),
   direct_privileges: z.array(z.string()),
+  direct_privilege_count: z.number(),
+  direct_privileges_truncated: z.boolean(),
   direct_entity_permissions: z.array(secLookupRoleDirectEntityPermissionSchema),
+  direct_entity_permission_count: z.number(),
+  direct_entity_permissions_truncated: z.boolean(),
   assigned_user_count: z.number(),
+});
+// Single-target: exactly the payload above. Batch (`role_names`, issue #83):
+// only the batch keys — the two shapes are disjoint.
+export const secLookupRoleOutput = secLookupRolePayloadSchema.partial().extend({
+  requested_count: z.number().optional().describe('Batch mode only.'),
+  resolved_count: z.number().optional(),
+  not_found: z.array(z.string()).optional().describe('Batch mode only: unknown role names.'),
+  roles: z.array(secLookupRolePayloadSchema).optional().describe('Batch mode only, caller order.'),
 });
 
 // sec_lookup_duty
 export const secLookupDutyRoleSchema = z.object({
   role_name: z.string(),
-  permission_type: z.string().nullable(),
+  permission_type: z.string().nullish(),
 });
 export const secLookupDutyPrivilegeSchema = z.object({
   privilege_name: z.string(),
-  label: z.string().nullable(),
+  label: z.string().nullish(),
 });
 export const secLookupDutyOutput = z.object({
   duty_id: z.string(),
-  duty_name: z.string().nullable(),
-  module_id: z.string().nullable(),
-  description: z.string().nullable(),
+  duty_name: z.string().nullish(),
+  module_id: z.string().nullish(),
+  description: z.string().nullish(),
+  // Exact totals; each list holds at most `limit` rows (#107.6).
+  role_count: z.number(),
+  privilege_count: z.number(),
+  truncated: z.boolean(),
   roles: z.array(secLookupDutyRoleSchema),
   privileges: z.array(secLookupDutyPrivilegeSchema),
 });
@@ -1007,54 +1144,61 @@ export const secLookupDutyOutput = z.object({
 // sec_lookup_privilege
 export const secLookupPrivilegeEntryPointSchema = z.object({
   entry_point_name: z.string(),
-  object_type: z.string().nullable(),
-  object_name: z.string().nullable(),
-  grant_read: z.string().nullable(),
-  grant_create: z.string().nullable(),
-  grant_update: z.string().nullable(),
-  grant_delete: z.string().nullable(),
-  grant_correct: z.string().nullable(),
-  grant_invoke: z.string().nullable(),
+  object_type: z.string().nullish(),
+  object_name: z.string().nullish(),
+  grant_read: z.string().nullish(),
+  grant_create: z.string().nullish(),
+  grant_update: z.string().nullish(),
+  grant_delete: z.string().nullish(),
+  grant_correct: z.string().nullish(),
+  grant_invoke: z.string().nullish(),
 });
 export const secLookupPrivilegeDutySchema = z.object({
   duty_id: z.string(),
-  duty_name: z.string().nullable(),
+  duty_name: z.string().nullish(),
 });
 export const secLookupPrivilegeOutput = z.object({
   privilege_name: z.string(),
-  module_id: z.string().nullable(),
-  label: z.string().nullable(),
+  module_id: z.string().nullish(),
+  label: z.string().nullish(),
+  // Exact totals; each list holds at most `limit` rows (#107.6).
+  entry_point_count: z.number(),
+  parent_duty_count: z.number(),
+  granting_role_count: z.number(),
+  truncated: z.boolean(),
   entry_points: z.array(secLookupPrivilegeEntryPointSchema),
   parent_duties: z.array(secLookupPrivilegeDutySchema),
   granting_roles: z.array(z.object({
     role_name: z.string(),
-    permission_type: z.string().nullable(),
+    permission_type: z.string().nullish(),
   })),
 });
 
 // sec_role_hierarchy
 export const secRoleHierarchyEntrySchema = z.object({
   role_name: z.string(),
-  is_transitive: z.number().nullable(),
+  is_transitive: z.number().nullish(),
 });
 export const secRoleHierarchyOutput = z.object({
   role_name: z.string(),
   direction: z.enum(['children', 'parents']),
+  // Total number of related roles; `entries` holds at most `limit` of them.
   result_count: z.number(),
+  truncated: z.boolean(),
   entries: z.array(secRoleHierarchyEntrySchema),
 });
 
 // sec_find_users_by_role
 export const secUserRowSchema = z.object({
   user_id: z.string(),
-  person_name: z.string().nullable(),
-  email: z.string().nullable(),
-  enabled: z.number().nullable(),
-  company_id: z.string().nullable(),
+  person_name: z.string().nullish(),
+  email: z.string().nullish(),
+  enabled: z.number().nullish(),
+  company_id: z.string().nullish(),
 });
 export const secFindUsersByRoleOutput = z.object({
   role_name: z.string(),
-  company_id: z.string().nullable(),
+  company_id: z.string().nullish(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
@@ -1065,20 +1209,22 @@ export const secFindUsersByRoleOutput = z.object({
 // sec_find_roles_by_duty
 export const secFindRolesByDutyRowSchema = z.object({
   role_name: z.string(),
-  permission_type: z.string().nullable(),
-  license_type: z.string().nullable(),
-  duty_permission: z.string().nullable(),
+  permission_type: z.string().nullish(),
+  license_type: z.string().nullish(),
+  duty_permission: z.string().nullish(),
 });
 export const secFindRolesByDutyOutput = z.object({
   duty_id: z.string(),
   result_count: z.number(),
+  truncated: z.boolean(),
   roles: z.array(secFindRolesByDutyRowSchema),
+  ...pageShape,
 });
 
 // sec_find_roles_by_privilege
 export const secFindRolesByPrivilegeViaChainRowSchema = z.object({
   role_name: z.string(),
-  permission_type: z.string().nullable(),
+  permission_type: z.string().nullish(),
   duty_id: z.string(),
 });
 export const secFindRolesByPrivilegeDirectRowSchema = z.object({
@@ -1088,17 +1234,19 @@ export const secFindRolesByPrivilegeOutput = z.object({
   privilege_name: z.string(),
   via_chain_count: z.number(),
   direct_count: z.number(),
+  truncated: z.boolean(),
   via_chain: z.array(secFindRolesByPrivilegeViaChainRowSchema),
   direct: z.array(secFindRolesByPrivilegeDirectRowSchema),
+  ...pageShape,
 });
 
 // sec_company_users
 export const secCompanyUserRowSchema = z.object({
   user_id: z.string(),
-  person_name: z.string().nullable(),
-  email: z.string().nullable(),
+  person_name: z.string().nullish(),
+  email: z.string().nullish(),
   role_name: z.string(),
-  permission_type: z.string().nullable(),
+  permission_type: z.string().nullish(),
 });
 export const secCompanyUsersOutput = z.object({
   company_id: z.string(),
@@ -1110,21 +1258,21 @@ export const secCompanyUsersOutput = z.object({
 
 // sec_permission_trace
 export const secPermissionTraceRowSchema = z.object({
-  permission_type: z.string().nullable(),
-  duty_id: z.string().nullable(),
+  permission_type: z.string().nullish(),
+  duty_id: z.string().nullish(),
   priv_name: z.string(),
-  object_type: z.string().nullable(),
-  object_name: z.string().nullable(),
-  grant_read: z.string().nullable(),
-  grant_create: z.string().nullable(),
-  grant_update: z.string().nullable(),
-  grant_delete: z.string().nullable(),
-  grant_correct: z.string().nullable(),
-  grant_invoke: z.string().nullable(),
+  object_type: z.string().nullish(),
+  object_name: z.string().nullish(),
+  grant_read: z.string().nullish(),
+  grant_create: z.string().nullish(),
+  grant_update: z.string().nullish(),
+  grant_delete: z.string().nullish(),
+  grant_correct: z.string().nullish(),
+  grant_invoke: z.string().nullish(),
 });
 export const secPermissionTraceOutput = z.object({
   role_name: z.string(),
-  object_name: z.string().nullable(),
+  object_name: z.string().nullish(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
@@ -1134,16 +1282,26 @@ export const secPermissionTraceOutput = z.object({
 });
 
 // sec_compare_roles
+// Each of the six lists is capped at `list_limit`; the `*_count` keys hold the
+// full sizes and `truncated` says whether any list was cut.
 export const secCompareRolesOutput = z.object({
   role1: z.string(),
   role2: z.string(),
+  list_limit: z.number(),
+  truncated: z.boolean(),
   duties_total_1: z.number(),
   duties_total_2: z.number(),
+  duties_shared_count: z.number(),
+  duties_only_1_count: z.number(),
+  duties_only_2_count: z.number(),
   duties_shared: z.array(z.string()),
   duties_only_1: z.array(z.string()),
   duties_only_2: z.array(z.string()),
   direct_privs_total_1: z.number(),
   direct_privs_total_2: z.number(),
+  direct_privs_shared_count: z.number(),
+  direct_privs_only_1_count: z.number(),
+  direct_privs_only_2_count: z.number(),
   direct_privs_shared: z.array(z.string()),
   direct_privs_only_1: z.array(z.string()),
   direct_privs_only_2: z.array(z.string()),
@@ -1151,19 +1309,20 @@ export const secCompareRolesOutput = z.object({
 
 // sec_search
 export const secSearchRowSchema = z.object({
-  object_type: z.string().nullable(),
+  object_type: z.string().nullish(),
   object_name: z.string(),
-  module_id: z.string().nullable(),
-  match_context: z.string().nullable(),
+  module_id: z.string().nullish(),
+  match_context: z.string().nullish(),
 });
 export const secSearchOutput = z.object({
   query: z.string(),
-  object_type: z.string().nullable(),
-  modules: z.array(z.string()).nullable(),
+  object_type: z.string().nullish(),
+  modules: z.array(z.string()).nullish(),
   limit: z.number(),
   result_count: z.number(),
   truncated: z.boolean(),
   results: z.array(secSearchRowSchema),
+  ...pageShape,
 });
 
 // sec_stats
@@ -1173,9 +1332,16 @@ export const secStatsMetadataEntrySchema = z.object({
 });
 export const secStatsOutput = z.object({
   build_info: z.array(secStatsMetadataEntrySchema),
-  // Build provenance of every scanned model (empty on sec databases built
-  // before model_versions capture).
-  model_versions: z.array(modelVersionRowSchema),
+  // Scanned models: count + per-origin breakdown (0 on sec databases built
+  // before model_versions capture). The full per-model list (37 KB on a real
+  // snapshot) is present only with include_model_versions=true (#107.2).
+  model_count: z.number(),
+  models_by_origin: z.object({
+    microsoft: z.number(),
+    isv: z.number(),
+    custom: z.number(),
+  }),
+  model_versions: z.array(modelVersionRowSchema).optional(),
   grant_roles: z.number(),
   deny_roles: z.number(),
   total_duties: z.number(),
@@ -1191,10 +1357,10 @@ export const secStatsOutput = z.object({
 
 export const secLicenceUserRowSchema = z.object({
   user_id: z.string(),
-  person_name: z.string().nullable(),
-  required_tier: z.string().nullable(),
+  person_name: z.string().nullish(),
+  required_tier: z.string().nullish(),
   monthly_cost: z.number(),
-  driving_role: z.string().nullable(),
+  driving_role: z.string().nullish(),
   role_count: z.number(),
 });
 export const secLicenceAssessmentOutput = z.object({
@@ -1214,12 +1380,12 @@ export const secLicenceAssessmentOutput = z.object({
 
 export const secWhatIfOutput = z.object({
   user_id: z.string(),
-  person_name: z.string().nullable(),
+  person_name: z.string().nullish(),
   add_roles: z.array(z.string()),
   remove_roles: z.array(z.string()),
-  current_tier: z.string().nullable(),
+  current_tier: z.string().nullish(),
   current_monthly_cost: z.number(),
-  projected_tier: z.string().nullable(),
+  projected_tier: z.string().nullish(),
   projected_monthly_cost: z.number(),
   monthly_delta: z.number(),
   annual_delta: z.number(),
@@ -1234,17 +1400,17 @@ export const secWhatIfOutput = z.object({
 
 export const secObjectAccessPathSchema = z.object({
   role_name: z.string(),
-  permission_type: z.string().nullable(),
-  duty_id: z.string().nullable(),
+  permission_type: z.string().nullish(),
+  duty_id: z.string().nullish(),
   privilege_name: z.string(),
   entry_point_name: z.string(),
-  object_type: z.string().nullable(),
-  grant_read: z.string().nullable(),
-  grant_create: z.string().nullable(),
-  grant_update: z.string().nullable(),
-  grant_delete: z.string().nullable(),
-  grant_correct: z.string().nullable(),
-  grant_invoke: z.string().nullable(),
+  object_type: z.string().nullish(),
+  grant_read: z.string().nullish(),
+  grant_create: z.string().nullish(),
+  grant_update: z.string().nullish(),
+  grant_delete: z.string().nullish(),
+  grant_correct: z.string().nullish(),
+  grant_invoke: z.string().nullish(),
   // true when this path REMOVES access (Deny duty/role, or a Deny grant value).
   denied: z.boolean(),
 });
@@ -1260,7 +1426,7 @@ export const secObjectAccessOutput = z.object({
   paths: z.array(secObjectAccessPathSchema),
   users: z.array(z.object({
     user_id: z.string(),
-    person_name: z.string().nullable(),
+    person_name: z.string().nullish(),
     role_name: z.string(),
   })),
 });
@@ -1292,15 +1458,15 @@ export const wikiIndexOutput = z.object({
   present: z.boolean(),          // false → index.md doesn't exist yet
   content: z.string(),            // '' when present=false
   page_count: z.number(),
-  last_modified: z.string().nullable(),
+  last_modified: z.string().nullish(),
 });
 
 export const wikiListPageSchema = z.object({
   slug: z.string(),
   title: z.string(),
-  summary: z.string().nullable(),
+  summary: z.string().nullish(),
   tags: z.array(z.string()),
-  last_modified: z.string().nullable(),
+  last_modified: z.string().nullish(),
   size_bytes: z.number(),
 });
 
@@ -1320,7 +1486,7 @@ export const wikiReadOutput = z.object({
   frontmatter: z.record(z.string(), z.unknown()),
   content: z.string(),           // raw markdown, frontmatter included
   body: z.string(),               // markdown with frontmatter stripped
-  last_modified: z.string().nullable(),
+  last_modified: z.string().nullish(),
 });
 
 export const wikiSearchMatchSchema = z.object({
@@ -1355,77 +1521,80 @@ export const taskrecorderMarkdownOutput = z.object({
 // when return_inline=true). Use these fields to confirm coverage and to decide
 // whether to open the file.
 
+// Output prose here was 2.7 KB on every tools/list (W1, #105) — the one place
+// output `.describe()` measured as significant. Kept only where a key name
+// does not carry the meaning; the response's `notes` explain the rest.
 export const taskrecorderDocStepSchema = z.object({
-  step: z.number().describe('1-based step number in recording order.'),
-  source: z.string().describe('Origin of the step: "client" (browser repro XML), "word" (.docx), or "recording" (.axtr only).'),
-  docx_text: z.string().nullable().describe('Step text from the Word document, if a .docx was supplied.'),
-  description: z.string().nullable().describe('Effective step description (client action / custom > localized > recorded).'),
-  action_type: z.string().nullable().describe('Action type: client kind (navigate/click/edit/error/...) or .axtr node type.'),
-  target: z.string().nullable().describe('Human-readable target, e.g. "Command: RequestClose (form SysAADClientTable)".'),
-  global_id: z.string().nullable().describe('Stable GlobalId (.axtr) or step id (client recording).'),
-  object_name: z.string().nullable().describe('AOT object the step touched (form or menu item) — the join key to BPM security.'),
-  screenshot_count: z.number().describe('Number of screenshots embedded for this step in the MHTML.'),
-  has_security: z.boolean().describe('True when the BPM package had a security block for this step\'s object.'),
-  matched_action_count: z.number().describe('For client steps: how many server (.axtr) actions correlate to this step.'),
-  texts_agree: z.boolean().describe('True when the Word step text matches the recorded description (false flags a mismatch).'),
+  step: z.number(),
+  source: z.string().describe('client | word | recording'),
+  docx_text: z.string().nullish(),
+  description: z.string().nullish(),
+  action_type: z.string().nullish().describe('Client kind (navigate/click/edit/error) or .axtr node type.'),
+  target: z.string().nullish(),
+  global_id: z.string().nullish(),
+  object_name: z.string().nullish().describe('AOT object touched — join key to BPM security.'),
+  screenshot_count: z.number(),
+  has_security: z.boolean(),
+  matched_action_count: z.number().describe('Server (.axtr) actions correlated to this client step.'),
+  texts_agree: z.boolean().describe('False flags a Word/recording text mismatch.'),
 });
 
 export const taskrecorderClientRecordingSchema = z.object({
-  session_id: z.string().nullable(),
-  title: z.string().nullable(),
-  host: z.string().nullable(),
-  tenant: z.string().nullable(),
-  company: z.string().nullable(),
-  started_at: z.string().nullable(),
-  ended_at: z.string().nullable(),
+  session_id: z.string().nullish(),
+  title: z.string().nullish(),
+  host: z.string().nullish(),
+  tenant: z.string().nullish(),
+  company: z.string().nullish(),
+  started_at: z.string().nullish(),
+  ended_at: z.string().nullish(),
   step_count: z.number(),
   screenshot_count: z.number(),
   matched_step_count: z.number(),
-}).describe('Metadata of the browser-side client repro recording, when one was supplied.');
+});
 
 export const taskrecorderDocFormSchema = z.object({
-  form_name: z.string().describe('AOT form name that was enriched from the KB.'),
-  kb_available: z.boolean().describe('False when the KB database was not configured/present.'),
-  kb_found: z.boolean().describe('True when the form exists in the KB snapshot.'),
-  class_count: z.number().describe('Number of related classes documented for the form.'),
-  endpoint_count: z.number().describe('Number of OData/data-entity endpoints documented for the form.'),
+  form_name: z.string(),
+  kb_available: z.boolean(),
+  kb_found: z.boolean(),
+  class_count: z.number(),
+  endpoint_count: z.number(),
 });
 
 export const taskrecorderDocRoleSchema = z.object({
-  queried: z.string().describe('The BPM role identifier looked up (AOT name or DMF GUID).'),
-  role_name: z.string().nullable().describe('Resolved role display name, or null when not found.'),
-  found: z.boolean().describe('True when the role exists in the Security snapshot.'),
-  sub_role_count: z.number().describe('Direct sub-roles of this role.'),
-  duty_count: z.number().describe('Duties granted across the role and its sub-roles (capped).'),
-  privilege_count: z.number().describe('Distinct privileges granted (capped).'),
-  user_count: z.number().describe('Total users assigned to this role (full count, not the truncated list).'),
+  queried: z.string().describe('BPM role id (AOT name or DMF GUID).'),
+  role_name: z.string().nullish(),
+  found: z.boolean(),
+  sub_role_count: z.number(),
+  duty_count: z.number(),
+  privilege_count: z.number(),
+  user_count: z.number().describe('Full count, not the truncated list.'),
 });
 
 export const taskrecorderDocumentOutput = z.object({
   recording: z.object({
     name: z.string(),
-    description: z.string().nullable(),
-    canonical_id: z.string().nullable(),
-    version: z.string().nullable(),
-    language: z.string().nullable(),
+    description: z.string().nullish(),
+    canonical_id: z.string().nullish(),
+    version: z.string().nullish(),
+    language: z.string().nullish(),
     action_count: z.number(),
-  }).describe('Functional metadata about the recording.'),
-  step_count: z.number().describe('Number of documented steps (client repro steps, or .axtr actions/Word steps).'),
-  screenshot_count: z.number().describe('Total screenshots embedded in the document.'),
-  screenshots_present: z.boolean().describe('True when at least one screenshot was embedded.'),
-  client_recording: taskrecorderClientRecordingSchema.nullable().describe('Client repro recording metadata, or null when none was supplied.'),
-  steps: z.array(taskrecorderDocStepSchema).describe('Per-step mapping summary (client step ↔ server .axtr action ↔ BPM security).'),
-  forms_enriched: z.array(taskrecorderDocFormSchema).describe('KB enrichment summary, one entry per distinct form/object.'),
-  roles_enriched: z.array(taskrecorderDocRoleSchema).describe('Security enrichment summary, one entry per distinct BPM role.'),
-  bpm_role_count: z.number().describe('Distinct role/duty/privilege grants found in the BPM package.'),
-  kb_available: z.boolean().describe('True when KB enrichment ran (KB_DB_PATH present).'),
-  sec_available: z.boolean().describe('True when Security enrichment ran (SEC_DB_PATH present).'),
-  output_path: z.string().nullable().describe('Absolute path the .mhtml was written to — open this file to view the document.'),
-  byte_size: z.number().describe('Size of the generated MHTML document in bytes.'),
-  document_mhtml: z.string().nullable().describe('The full MHTML text, present only when return_inline=true; otherwise null.'),
-  xml_output_path: z.string().nullable().describe('Absolute path the contract XML was written to (when include_xml=true), else null. Validates against schemas/task-recording-document.xsd.'),
-  document_xml: z.string().nullable().describe('The full contract XML text, present only when include_xml=true AND return_inline=true; otherwise null.'),
-  notes: z.array(z.string()).describe('Warnings/observations, e.g. "no screenshots embedded" or "KB database not available".'),
+  }),
+  step_count: z.number(),
+  screenshot_count: z.number(),
+  screenshots_present: z.boolean(),
+  client_recording: taskrecorderClientRecordingSchema.nullish().describe('Client repro recording metadata, when supplied.'),
+  steps: z.array(taskrecorderDocStepSchema).describe('Per-step client ↔ server ↔ BPM mapping.'),
+  forms_enriched: z.array(taskrecorderDocFormSchema),
+  roles_enriched: z.array(taskrecorderDocRoleSchema),
+  bpm_role_count: z.number().describe('Distinct grants in the BPM package.'),
+  kb_available: z.boolean(),
+  sec_available: z.boolean(),
+  output_path: z.string().nullish().describe('Path of the .mhtml — open this to view the document.'),
+  byte_size: z.number(),
+  document_mhtml: z.string().nullish().describe('Full MHTML, only with return_inline=true.'),
+  xml_output_path: z.string().nullish().describe('Contract XML path (include_xml=true); validates against schemas/task-recording-document.xsd.'),
+  document_xml: z.string().nullish().describe('Full XML, only with include_xml AND return_inline.'),
+  notes: z.array(z.string()).describe('Warnings, e.g. no screenshots, KB not available.'),
 });
 
 // ── Sealed-ISV tools (issues #75–#82) ────────────────────────────────────────
@@ -1436,10 +1605,10 @@ export const taskrecorderDocumentOutput = z.object({
 
 /** Provenance every sealed-ISV response repeats, so it is never implicit. */
 export const isvProvenanceSchema = z.object({
-  fidelity: z.string().describe("'metadata' = read from the artefacts the ISV shipped (.md/.xref/.runtime/.xml); 'il' = derived from assembly signatures."),
-  source_kind: z.string().describe("Always 'sealed' for these models: binary-only, no X++ source available."),
-  scanned_at: z.string().nullable().describe('ISO timestamp of the scan that produced these rows — may differ from the service snapshot date.'),
-  caveat: z.string().describe('One-line statement of what this data cannot tell you.'),
+  fidelity: z.string().describe("'metadata' (shipped artefacts) or 'il' (assembly signatures)."),
+  source_kind: z.string().describe("Always 'sealed': binary-only, no X++ source."),
+  scanned_at: z.string().nullish().describe('ISV scan timestamp; may differ from the snapshot date.'),
+  caveat: z.string().describe('What this data cannot tell you.'),
 });
 
 /**
@@ -1454,24 +1623,24 @@ export const isvProvenanceSchema = z.object({
  */
 export const isvIlProvenanceSchema = z.object({
   fidelity: z.literal('il'),
-  source_kind: z.string().describe("Always 'assembly-metadata': ECMA-335 metadata tables, not X++ source."),
-  scanned_at: z.string().nullable(),
-  caveat: z.string().describe('States that signatures are exact and behaviour is unknown — no body was decompiled or stored.'),
+  source_kind: z.string().describe("Always 'assembly-metadata' (ECMA-335 tables, not X++)."),
+  scanned_at: z.string().nullish(),
+  caveat: z.string().describe('Signatures are exact; behaviour is unknown — no body was decompiled or stored.'),
 });
 
 export const d365IsvListModelsOutput = z.object({
-  isv_data_available: z.boolean().describe('False when this database was built before the ISV scan existed, or with no ISV root configured.'),
+  isv_data_available: z.boolean().describe('False when the database predates the ISV scan or no ISV root was configured.'),
   model_count: z.number(),
   models: z.array(z.object({
     model: z.string(),
-    publisher: z.string().nullable().describe("Publisher from the assembly version resource, or 'unknown' — sealed models ship no Descriptor, and CompanyName is commonly empty."),
-    version: z.string().nullable(),
-    layer: z.string().nullable().describe('Always null for a sealed model: no Descriptor ships a layer.'),
+    publisher: z.string().nullish().describe("From the assembly version resource, or 'unknown'."),
+    version: z.string().nullish(),
+    layer: z.string().nullish().describe('Always null: sealed models ship no Descriptor.'),
     source_kind: z.string(),
     fidelity: z.string(),
-    depends_on: z.array(z.string()).describe('Declared module dependencies, from the ModuleReferences entry of the .xref package.'),
-    scanned_at: z.string().nullable(),
-    counts: z.record(z.string(), z.number()).describe('What was recovered per artefact class: elements, labels, refs, coc, events.'),
+    depends_on: z.array(z.string()).describe('Declared module dependencies (.xref ModuleReferences).'),
+    scanned_at: z.string().nullish(),
+    counts: z.record(z.string(), z.number()).describe('Recovered per artefact class: elements, labels, refs, coc, events.'),
   })),
   provenance: isvProvenanceSchema,
 });
@@ -1484,26 +1653,29 @@ export const d365IsvListModelsOutput = z.object({
  * unknown and is not represented here because nothing in the pipeline can know
  * it — no body is decompiled, disassembled or stored.
  */
+// Output prose on the ISV schemas was 6.7 KB on every tools/list (W1, #105):
+// the caveats it carried are repeated in every RESPONSE by isvProvenance() /
+// isvIlProvenance(), which is where a caller reads them. Kept short here.
 export const isvIlSignatureSchema = z.object({
   module: z.string(),
-  assembly: z.string().nullable().describe('Image the signature was read from, e.g. Dynamics.AX.Lasernet.0.netmodule.'),
-  namespace: z.string().nullable().describe('CLR namespace. Load-bearing: a sealed model commonly declares one name as both a table (Dynamics.AX.Application) and the form of that name (Dynamics.AX.Application.Forms), which are different objects with different methods.'),
+  assembly: z.string().nullish().describe('Image the signature was read from.'),
+  namespace: z.string().nullish().describe('CLR namespace — a table and its form share a name in different namespaces.'),
   type_name: z.string(),
   method_name: z.string(),
-  kind: z.string().nullable().describe("method | constructor | accessor. Accessors (CLR get_/set_ property pairs for table fields and form data sources) are excluded from tool responses; they are a field-list question, not a signature question."),
-  return_type: z.string().nullable().describe('X++/CLR type name as encoded in the signature blob.'),
+  kind: z.string().nullish().describe('method | constructor | accessor (accessors are excluded from responses).'),
+  return_type: z.string().nullish(),
   parameters: z.array(z.object({
-    name: z.string().describe('Declared parameter name from the Param table; `argN` when the compiler emitted none.'),
+    name: z.string().describe('Declared name, or `argN` when the compiler emitted none.'),
     type: z.string(),
-    optional: z.boolean().optional().describe('True when X++ declared a default — recovered from the compiler-generated optional-parameter overload.'),
+    optional: z.boolean().optional().describe('True when X++ declared a default.'),
   })),
-  visibility: z.string().nullable().describe('public | protected | private | internal | …'),
+  visibility: z.string().nullish().describe('public | protected | private | internal | …'),
   is_static: z.boolean(),
   is_abstract: z.boolean(),
   is_virtual: z.boolean(),
-  is_final: z.boolean().describe('A final method cannot be overridden; relevant when planning an extension.'),
-  has_implementation: z.boolean().describe('Derived from MethodDef.RVA != 0 — the image carries an implementation. The body itself is never read.'),
-  attributes: z.array(z.string()).describe('Attribute type names only; attribute argument blobs are deliberately not decoded.'),
+  is_final: z.boolean(),
+  has_implementation: z.boolean().describe('MethodDef.RVA != 0; the body itself is never read.'),
+  attributes: z.array(z.string()).describe('Attribute type names only; arguments not decoded.'),
   fidelity: z.literal('il'),
 });
 
@@ -1516,66 +1688,66 @@ export const d365IsvLookupOutput = z.object({
     module: z.string(),
     element_type: z.string().describe('AOT type, e.g. AxTable, AxClass, AxForm.'),
     name: z.string(),
-    blob_size: z.number().nullable().describe('Byte length of the undecoded property blob — a rough "how much is defined here" signal.'),
+    blob_size: z.number().nullish().describe('Byte length of the undecoded property blob.'),
     properties: z.array(z.object({
-      property: z.string().nullable().describe('Resolved property name, or null when the tag is not yet pinned by a fixture.'),
-      tag: z.string().describe('Raw property tag; retained verbatim so an unknown tag is visible rather than dropped.'),
-      value: z.string().nullable(),
-    })).describe('Decoded properties, empty when this element type has no confirmed tag map yet.'),
+      property: z.string().nullish().describe('Resolved name, or null when the tag is not yet pinned.'),
+      tag: z.string().describe('Raw property tag, kept verbatim.'),
+      value: z.string().nullish(),
+    })).describe('Decoded properties; empty when the type has no confirmed tag map.'),
   })),
-  signatures_available: z.boolean().describe('False when the IL signature pass (issue #81) was not run for this database, or include_signatures was not requested.'),
+  signatures_available: z.boolean().describe('False when the IL pass was not run or include_signatures not set.'),
   signature_count: z.number(),
-  signatures: z.array(isvIlSignatureSchema).describe("Method signatures on the matched types, present only when include_signatures is set. fidelity='il' — a weaker claim than the shipped metadata above and never to be rendered as equivalent."),
-  il_provenance: isvIlProvenanceSchema.nullable().describe('Provenance for the signatures block; null when no signatures were returned.'),
+  signatures: z.array(isvIlSignatureSchema).describe("Only with include_signatures. fidelity='il' — weaker than the shipped metadata."),
+  il_provenance: isvIlProvenanceSchema.nullish().describe('Provenance for `signatures`; null when none.'),
   il_command: z.object({
     available: z.boolean(),
-    note: z.string().describe('States that this database holds no IL, method body or source text, that the commands are the operator\'s own action on their own machine, and that use is subject to the vendor licence agreement.'),
+    note: z.string().describe('No IL, body or source is held; running the commands is the operator\'s own action under the vendor licence.'),
     targets: z.array(z.object({
       module: z.string(),
-      assembly: z.string().describe('The image that declares the type — commonly a .netmodule, which is where X++ classes live.'),
-      assembly_path: z.string().describe('Resolved from the scanned metadata root, so the command names the real file.'),
-      qualified_type: z.string().describe('Namespace-qualified type name, as the /item= and -t switches expect.'),
-      ildasm: z.string().describe('Windows SDK ildasm invocation. Emits IL assembly and reads a .netmodule directly. The filename must precede the options or ildasm reports MULTIPLE INPUT FILES SPECIFIED.'),
-      ilspycmd_install: z.string().describe('One-off dotnet global tool install, since ilspycmd is not part of the SDK.'),
-      ilspycmd: z.string().describe('ilspycmd invocation. Emits reconstructed C#, which is a translation rather than the shipped artefact.'),
-      ilspycmd_caveat: z.string().nullable().describe('Set when the declaring image is a .netmodule, which ILSpy commonly cannot load standalone.'),
+      assembly: z.string().describe('Image declaring the type (commonly a .netmodule).'),
+      assembly_path: z.string(),
+      qualified_type: z.string(),
+      ildasm: z.string().describe('Windows SDK ildasm invocation (filename before options).'),
+      ilspycmd_install: z.string().describe('One-off dotnet tool install.'),
+      ilspycmd: z.string().describe('ilspycmd invocation; emits reconstructed C#, a translation.'),
+      ilspycmd_caveat: z.string().nullish().describe('Set when the image is a .netmodule ILSpy cannot load standalone.'),
     })),
-  }).nullable().describe('Present only when include_il_command was explicitly set. Commands for the operator to run locally — never IL, never a method body, never source text.'),
+  }).nullish().describe('Only with include_il_command. Commands for the operator to run locally — never IL, a body or source.'),
   provenance: isvProvenanceSchema,
 });
 
 export const d365IsvExtensionPointsOutput = z.object({
   isv_data_available: z.boolean(),
-  target: z.string().nullable().describe('The standard object asked about, or null when listing a whole module.'),
-  module_filter: z.string().nullable(),
+  target: z.string().nullish().describe('Standard object asked about; null when listing a module.'),
+  module_filter: z.string().nullish(),
   coc_count: z.number(),
   event_count: z.number(),
   extends_count: z.number(),
   chain_of_command: z.array(z.object({
     module: z.string(),
     extension_class: z.string(),
-    target: z.string().nullable(),
-    target_type: z.string().nullable(),
-    method: z.string().nullable().describe('Wrapped method; null when the ISV declares the extension class without a listed method.'),
+    target: z.string().nullish(),
+    target_type: z.string().nullish(),
+    method: z.string().nullish().describe('Wrapped method; null when none is listed.'),
     is_static: z.boolean(),
-    signature: isvIlSignatureSchema.nullable().optional().describe("The wrapped method's signature, when include_signatures is set and the IL pass has run. This is what a CoC wrapper must match; fidelity='il'."),
+    signature: isvIlSignatureSchema.nullish().describe("Wrapped method's signature (include_signatures, IL pass run); fidelity='il'."),
   })),
   event_handlers: z.array(z.object({
     module: z.string(),
-    delegate_element: z.string().nullable(),
-    delegate_method: z.string().nullable(),
-    handler_element: z.string().nullable(),
-    handler_method: z.string().nullable(),
-    direction: z.string().nullable().describe('Pre / Post / other, from delegateTypeId.'),
+    delegate_element: z.string().nullish(),
+    delegate_method: z.string().nullish(),
+    handler_element: z.string().nullish(),
+    handler_method: z.string().nullish(),
+    direction: z.string().nullish().describe('Pre / Post / other.'),
   })),
   extends: z.array(z.object({
     module: z.string(),
     kind: z.string().describe('class | table | edt | odata'),
     child: z.string(),
-    parent: z.string().nullable(),
+    parent: z.string().nullish(),
   })),
-  signatures_available: z.boolean().describe('False when the IL signature pass (issue #81) was not run for this database, or include_signatures was not requested.'),
-  il_provenance: isvIlProvenanceSchema.nullable().describe('Provenance for any signature attached above; null when none was.'),
+  signatures_available: z.boolean().describe('False when the IL pass was not run or include_signatures not set.'),
+  il_provenance: isvIlProvenanceSchema.nullish().describe('Provenance for attached signatures; null when none.'),
   truncated: z.boolean(),
   provenance: isvProvenanceSchema,
 });
@@ -1590,12 +1762,107 @@ export const xrefIsvFindUsagesOutput = z.object({
   })).describe('Referencing sealed ISV models, most references first.'),
   usages: z.array(z.object({
     module: z.string(),
-    source_path: z.string().describe('Referencing element, e.g. /Classes/LACRunController/Methods/run.'),
+    source_path: z.string().describe('Referencing element path.'),
     target_path: z.string(),
-    kind: z.string().nullable().describe('TypeReference | MethodCall | Attribute | ClassExtended | MethodOverride | Property.'),
-    line: z.number().nullable(),
-    col: z.number().nullable(),
+    kind: z.string().nullish().describe('TypeReference | MethodCall | Attribute | ClassExtended | MethodOverride | Property.'),
+    line: z.number().nullish(),
+    col: z.number().nullish(),
   })),
   truncated: z.boolean(),
   provenance: isvProvenanceSchema,
+});
+
+// ── Semantic layer (ADR W7 + W7b, issue #111) ────────────────────────────────
+//
+// Metadata-only payloads: entity ids, object/field names, roles, declarative
+// specs, provenance. No row data, no sample values — see semantic-store.js.
+
+export const semMappedObjectSchema = z.object({
+  object_type: z.string(),
+  object_name: z.string(),
+  model: z.string().nullish(),
+  role: z.string().describe('header | line | master | setup | transaction | reference | posting | ui'),
+  source: z.string().describe('user_confirmed | assistant_inferred | context_hint | seed'),
+  confidence: z.number(),
+  confirmations: z.number(),
+  verified: z.boolean().describe('True when the object exists in the KB snapshot.'),
+});
+
+export const d365MapEntityOutput = z.object({
+  entity_id: z.string(),
+  entity_name: z.string(),
+  process: z.string(),
+  source: z.string(),
+  inserted: z.number(),
+  confirmed: z.number(),
+  unchanged: z.number(),
+  unverified_objects: z.array(z.string()).describe('Objects not found in the KB; recorded with verified=false.'),
+  objects: z.array(semMappedObjectSchema),
+});
+
+export const d365MapDqRuleOutput = z.object({
+  rule_id: z.string(),
+  version: z.number(),
+  action: z.string().describe('inserted | versioned | confirmed | unchanged'),
+  entity_id: z.string().nullish(),
+  object_name: z.string().nullish(),
+  field_name: z.string().nullish(),
+  dimension: z.string(),
+  severity: z.string(),
+  source: z.string(),
+  confidence: z.number(),
+  enabled: z.boolean(),
+  spec: z.record(z.string(), z.unknown()),
+});
+
+export const d365EntityMapOutput = z.object({
+  direction: z.string().describe('forward (entity -> objects) | reverse (object -> entities)'),
+  entity_id: z.string().nullish(),
+  entity_name: z.string().nullish(),
+  process: z.string().nullish(),
+  object_name: z.string().nullish(),
+  mapping_count: z.number(),
+  by_role: z.array(z.object({
+    role: z.string(),
+    objects: z.array(semMappedObjectSchema),
+  })).describe('Forward direction only; empty in reverse.'),
+  entities: z.array(z.object({
+    entity_id: z.string(),
+    entity_name: z.string().nullish(),
+    process: z.string().nullish(),
+    role: z.string(),
+    source: z.string(),
+    confidence: z.number(),
+    confirmations: z.number(),
+  })).describe('Reverse direction only; empty in forward.'),
+  related_entities: z.array(z.object({
+    entity_id: z.string(),
+    relation: z.string(),
+    direction: z.string().describe('out | in'),
+  })),
+});
+
+export const semDqRuleSchema = z.object({
+  rule_id: z.string(),
+  version: z.number(),
+  entity_id: z.string().nullish(),
+  object_name: z.string().nullish(),
+  field_name: z.string().nullish(),
+  dimension: z.string(),
+  spec: z.record(z.string(), z.unknown()),
+  severity: z.string(),
+  source: z.string().describe('kb_derived | user_confirmed | assistant_inferred | seed'),
+  confidence: z.number(),
+  enabled: z.boolean(),
+  binding: z.string().describe('object | entity:<id> — how the rule became applicable.'),
+});
+
+export const d365DqRulesOutput = z.object({
+  entity_id: z.string().nullish(),
+  object_name: z.string().nullish(),
+  rule_count: z.number(),
+  by_dimension: z.array(z.object({ dimension: z.string(), count: z.number() })),
+  rules: z.array(semDqRuleSchema),
+  truncated: z.boolean(),
+  note: z.string().describe('Rules are served, never executed here; render with build/gen-dq-sql.js.'),
 });

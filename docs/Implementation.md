@@ -416,7 +416,9 @@ The deployment disables server-side build (`SCM_DO_BUILD_DURING_DEPLOYMENT=false
 
 ### 7.4 Response-Format Contract
 
-Every MCP tool emits via the helpers in `src/azure/shared.js` (`structuredResult`, `emptyResult`, `notFoundResult`, `errorResult`, `freshnessBanner`, `formatMarkdownTable`, `formatPermission`, `truncationNote`, `contextAround`, `makeLabelResolver`). Tools are registered with `server.registerTool(name, { description, inputSchema, outputSchema, annotations: READ_ONLY_DB_ANNOTATIONS }, handler)` (typed-first, render Markdown from typed). The static-scan test `test/response-format.test.js` enforces these rules across all five services.
+Every MCP tool emits via the helpers in `src/azure/shared.js` (`structuredResult`, `emptyResult`, `notFoundResult`, `errorResult`, `formatMarkdownTable`, `formatPermission`, `truncationNote`, `contextAround`, `makeLabelResolver`). Tools are registered with `server.registerTool(name, { description, inputSchema, outputSchema, annotations: READ_ONLY_DB_ANNOTATIONS }, handler)` (typed-first, render Markdown from typed). The static-scan test `test/response-format.test.js` enforces these rules across all five services.
+
+**Note (2026-09-02):** the response-format contract also calls for a `freshnessBanner(db, service)` helper that prepends a snapshot-date line to data responses. This helper does not exist in `shared.js` — a same-named but unrelated function lives in the Wiki service's `wiki-storage.js` (different signature, no `db`/`service` params). No KB/XRef/Sec tool currently emits a freshness banner. Tracked in issue #86.
 
 ---
 

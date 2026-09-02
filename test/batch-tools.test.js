@@ -16,6 +16,7 @@ import { createRequire } from 'node:module';
 
 import { registerKbTools } from '../src/azure/kb-tools.js';
 import { registerXrefTools } from '../src/azure/xref-tools.js';
+import { registerSecTools } from '../src/azure/sec-tools.js';
 import { ensureIsvSchema } from '../src/azure/isv-schema.js';
 
 const require = createRequire(import.meta.url);
@@ -49,6 +50,12 @@ function kbDb() {
       is_clustered TEXT, fields_json TEXT);
     CREATE TABLE relations (source_table TEXT, related_table TEXT, relation_name TEXT,
       constraints_json TEXT, relationship_type TEXT, on_delete TEXT);
+
+    CREATE TABLE kb_search (object_type TEXT, object_name TEXT, module_id TEXT, content TEXT);
+    INSERT INTO kb_search VALUES
+      ('table','CustTable','ApplicationSuite','Customer master table with payment terms'),
+      ('table','VendTable','ApplicationSuite','Vendor master table with payment terms'),
+      ('class','SalesFormLetter','ApplicationSuite','Posts sales documents');
 
     INSERT INTO tables (table_name) VALUES ('CustTable'), ('SalesTable');
     INSERT INTO fields (table_name, field_name) VALUES
@@ -295,6 +302,152 @@ test('xref_object_summary: rejects a call with neither parameter', async () => {
   const s = mockServer();
   registerXrefTools(s, xrefDb());
   assert.equal((await s.call('xref_object_summary', {})).isError, true);
+});
+
+/* ── d365_search: queries[] (issue #83, W3) ──────────────────────────────── */
+
+test('d365_search: a single-query call is unchanged by batching', async () => {
+  const s = mockServer();
+  registerKbTools(s, kbDb());
+  const r = await s.call('d365_search', { query: 'payment' });
+  const t = r.structuredContent;
+  assert.equal(t.query, 'payment');
+  assert.equal(t.result_count, 2);
+  assert.deepEqual(Object.keys(t).sort(),
+    ['has_more', 'limit', 'modules', 'object_type', 'query', 'result_count', 'results', 'truncated'],
+    'a single-query payload must carry no batch keys (has_more is the W5 page key)');
+});
+
+test('d365_search: batch mode hoists the shared scope and carries one entry per query, caller order', async () => {
+  const s = mockServer();
+  registerKbTools(s, kbDb());
+  const r = await s.call('d365_search', { queries: ['sales', 'payment', 'nothing-matches'], object_type: 'table' });
+  const t = r.structuredContent;
+  assert.equal(t.requested_count, 3);
+  assert.equal(t.object_type, 'table', 'the filter is carried once, in the envelope');
+  assert.deepEqual(t.queries.map(x => x.query), ['sales', 'payment', 'nothing-matches']);
+  assert.equal(t.queries[0].result_count, 0, 'object_type applies to every query (SalesFormLetter is a class)');
+  assert.equal(t.queries[1].result_count, 2);
+  assert.equal(t.queries[2].result_count, 0, 'a search with no hits is data, not a failure');
+  assert.ok(!r.isError);
+  assert.equal(t.query, undefined, 'no single-mode keys in a batch');
+  assert.ok(!('object_type' in t.queries[0]), 'entries do not repeat what the envelope carries');
+  const h2 = (await s.call('d365_search', { queries: ['sales', 'payment'], format: 'markdown' }))
+    .content[0].text.split('\n').filter(l => /^## /.test(l));
+  assert.equal(h2.length, 1, 'exactly one H2 (rule #3)');
+});
+
+test('d365_search: singular and plural are unioned and deduped; neither is an error', async () => {
+  const s = mockServer();
+  registerKbTools(s, kbDb());
+  const r = await s.call('d365_search', { query: 'payment', queries: ['payment', 'sales'] });
+  assert.equal(r.structuredContent.requested_count, 2);
+  assert.equal((await s.call('d365_search', {})).isError, true);
+});
+
+/* ── xref_find_references: objects[] (issue #83, W3) ─────────────────────── */
+
+test('xref_find_references: a single-object call is unchanged by batching', async () => {
+  const s = mockServer();
+  registerXrefTools(s, xrefDb());
+  const r = await s.call('xref_find_references', { object_name: 'CustTable' });
+  const t = r.structuredContent;
+  assert.equal(t.target_path, '/Tables/CustTable');
+  assert.equal(t.result_count, 3);
+  assert.deepEqual(Object.keys(t).sort(),
+    ['has_more', 'isv', 'kind_filter', 'limit', 'references', 'result_count', 'target_path', 'truncated'],
+    'a single-object payload must be exactly the pre-batching shape (has_more is the W5 page key)');
+});
+
+test('xref_find_references: batch mode hoists kind/limit, one entry per object, misses in not_found', async () => {
+  const s = mockServer();
+  registerXrefTools(s, xrefDb());
+  const r = await s.call('xref_find_references', { objects: ['CustTable', 'SalesTable', 'Nope'], kind: 'Call' });
+  const t = r.structuredContent;
+  assert.ok(!r.isError, 'a partial batch is a success');
+  assert.equal(t.requested_count, 3);
+  assert.equal(t.resolved_count, 2);
+  assert.deepEqual(t.not_found, ['Nope']);
+  assert.equal(t.kind_filter, 'Call');
+  assert.deepEqual(t.objects.map(o => o.target_path), ['/Tables/CustTable', '/Tables/SalesTable']);
+  assert.equal(t.objects[0].result_count, 2, 'kind applies to every object');
+  assert.equal(t.target_path, undefined);
+  assert.ok(t.objects.every(o => !('isv' in o)), 'without include_isv no object carries an isv key');
+});
+
+test('xref_find_references: batch include_isv hoists the note once and puts counts on every object (rule #14)', async () => {
+  const s = mockServer();
+  registerXrefTools(s, xrefDb({ withIsv: true }));
+  const r = await s.call('xref_find_references', { objects: ['CustTable', 'SalesTable'], include_isv: true });
+  const t = r.structuredContent;
+  assert.match(t.isv_note, /no X\+\+ source/);
+  assert.equal(t.objects[0].isv.reference_count, 3);
+  assert.deepEqual(t.objects[1].isv, { reference_count: 0, module_summary: [] },
+    'an object with no ISV callers still carries the key, so rows stay uniform');
+  assert.ok(t.objects.every(o => !('note' in o.isv)), 'the note is not repeated per object');
+  // On a pre-ISV database the block is absent everywhere, never "0 references".
+  const s2 = mockServer();
+  registerXrefTools(s2, xrefDb());
+  const r2 = await s2.call('xref_find_references', { objects: ['CustTable'], include_isv: true });
+  assert.ok(!('isv_note' in r2.structuredContent));
+  assert.ok(!('isv' in r2.structuredContent.objects[0]));
+});
+
+test('xref_find_references: an unresolvable name singly is still a not-found error', async () => {
+  const s = mockServer();
+  registerXrefTools(s, xrefDb());
+  assert.equal((await s.call('xref_find_references', { object_name: 'Nope' })).isError, true);
+  assert.equal((await s.call('xref_find_references', {})).isError, true);
+});
+
+/* ── sec_lookup_role: role_names[] (issue #83, W3) ───────────────────────── */
+
+function secDb() {
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE roles (role_id TEXT PRIMARY KEY, role_name TEXT, module_id TEXT, label TEXT, description TEXT,
+      license_type TEXT, permission_type TEXT DEFAULT 'Grant', is_profile INTEGER DEFAULT 0, source TEXT);
+    CREATE TABLE role_subroles (parent_role_id TEXT, child_role_id TEXT, is_transitive INTEGER);
+    CREATE TABLE duties (duty_id TEXT PRIMARY KEY, duty_name TEXT);
+    CREATE TABLE role_duties (role_id TEXT, duty_id TEXT, permission_type TEXT);
+    CREATE TABLE role_direct_privileges (role_id TEXT, privilege_name TEXT);
+    CREATE TABLE role_direct_entity_permissions (role_id TEXT, entity_name TEXT, resource_type TEXT, grant_read TEXT,
+      grant_create TEXT, grant_update TEXT, grant_delete TEXT, grant_correct TEXT, grant_invoke TEXT);
+    CREATE TABLE user_roles (user_id TEXT, role_id TEXT);
+    CREATE TABLE sec_metadata (key TEXT, value TEXT);
+    INSERT INTO roles (role_id, role_name, license_type) VALUES ('R1', 'AP clerk', 'Activity'), ('R2', 'AP manager', 'Enterprise');
+    INSERT INTO duties VALUES ('D1', 'Duty one');
+    INSERT INTO role_duties VALUES ('R1', 'D1', 'Grant'), ('R2', 'D1', 'Grant');
+    INSERT INTO role_direct_entity_permissions VALUES ('R1', 'VendEntity', 'DataEntity', 'Allow', NULL, NULL, NULL, NULL, NULL);
+  `);
+  return db;
+}
+
+test('sec_lookup_role: a single-role call is unchanged by batching', async () => {
+  const s = mockServer();
+  registerSecTools(s, secDb());
+  const r = await s.call('sec_lookup_role', { role_name: 'AP clerk' });
+  const t = r.structuredContent;
+  assert.equal(t.role_name, 'AP clerk');
+  assert.equal(t.duty_count, 1);
+  assert.ok(!('roles' in t) && !('requested_count' in t), 'no batch keys on a single call');
+});
+
+test('sec_lookup_role: batch mode returns one summary payload per role, misses in not_found', async () => {
+  const s = mockServer();
+  registerSecTools(s, secDb());
+  const r = await s.call('sec_lookup_role', { role_names: ['AP manager', 'AP clerk', 'Ghost'], format: 'markdown' });
+  const t = r.structuredContent;
+  assert.ok(!r.isError);
+  assert.equal(t.requested_count, 3);
+  assert.equal(t.resolved_count, 2);
+  assert.deepEqual(t.not_found, ['Ghost']);
+  assert.deepEqual(t.roles.map(x => x.role_name), ['AP manager', 'AP clerk'], 'caller order');
+  assert.equal(t.roles[1].direct_entity_permission_count, 1);
+  assert.equal(t.role_name, undefined);
+  const h2 = r.content[0].text.split('\n').filter(l => /^## /.test(l));
+  assert.equal(h2.length, 1, 'exactly one H2 (rule #3)');
+  assert.equal((await s.call('sec_lookup_role', { role_name: 'Ghost' })).isError, true, 'single miss stays an error');
 });
 
 /* ── include_isv on xref_find_references (issue #82) ─────────────────────── */
