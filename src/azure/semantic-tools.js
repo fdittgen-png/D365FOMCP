@@ -151,7 +151,14 @@ const objectColumns = ['role', 'object_type', 'object_name', 'model', 'source', 
 /**
  * Register the four semantic-layer tools.
  *
- * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
+ * `server` is typed structurally — the one method this module calls — rather
+ * than as the SDK `McpServer`: the registration path hands in a prototype-chained
+ * policy view (`tool-sets.js`) and the tests a bare mock, and the SDK's generic
+ * `registerTool` signature rejects the shared `errorResult`/`structuredResult`
+ * shapes (`type: string`, not the literal `"text"`) that every other tool file
+ * returns untyped.
+ *
+ * @param {{ registerTool: (name: string, config: object, handler: (...args: any[]) => any) => unknown }} server
  * @param {import('better-sqlite3').Database} semDb  Read-write semantic DB (openSemanticDb()).
  * @param {import('better-sqlite3').Database|null} kbDb  Read-only KB for object verification; may be null.
  */

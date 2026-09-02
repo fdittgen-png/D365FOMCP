@@ -57,6 +57,71 @@ The single `shared.js` error is real and is the first ratchet target:
 `'markdown' | 'toon'` but the adaptive default passes `'auto'` (rule #5). The JSDoc
 is behind the code.
 
+## Ratchet — 2026-09-02, W6.4 (#110): the new modules
+
+The W0–W7 modules (`pagination.js`, `request-context.js`, `resources.js`,
+`semantic-store.js`, `semantic-tools.js`, `effective-schema-tools.js`,
+`build/seed-dq-rules.js`, `build/gen-dq-sql.js`, `build/export-semantic.js`) were
+written without running the checker and took the count from **215 to 267**. Fixes
+were confined to those files — JSDoc only, no behaviour change, no `@ts-ignore`:
+
+| Before | After | File | Fix |
+|---:|---:|---|---|
+| 34 | 0 | `build/seed-dq-rules.js` | `stmt()` helper narrows `db.prepare()` to `Statement<unknown[], Row>` once, instead of a cast per `.get()`/`.all()`; `counts` gets its `Record<…>` type |
+| 5 | 0 | `src/azure/pagination.js` | `decodeCursor` typed as ONE shape (`ok` + optional `offset`/`sort_key`/`error`) — with `strict: false` TypeScript does not narrow a union on `!page.ok`; `encodeCursor` gets its destructured-param type |
+| 4 | 0 | `src/azure/semantic-tools.js` | `server` typed structurally (`{ registerTool }`) rather than as the SDK `McpServer`, whose generic `registerTool` rejects the shared `errorResult`/`structuredResult` shapes every other tool file returns untyped |
+| 1 | 0 | `src/azure/semantic-store.js` | a literal `@` in a JSDoc sentence was parsed as a tag (TS1003) |
+| 3 / 3 / 2 | 0 / 0 / 0 | `kb-tools.js` / `sec-tools.js` / `xref-tools.js` | downstream of the `decodeCursor` type — untouched, fixed by the source |
+
+| | |
+|---|---:|
+| **Errors** | **215** (267 → 215; 52 fixed) |
+| Files with errors | 30 |
+
+Left in place, deliberately: `src/azure/tool-sets.js(72)` — `lazySemanticDb()` returns a
+`Proxy` over `{}` that is not a `Database` to the checker. That file is outside this
+ratchet's scope; the fix is a typed `/** @type {import('better-sqlite3').Database} */`
+cast on the Proxy, not a change to `registerSemanticTools`' parameter type.
+
+### Per file — all 30 (2026-09-02, after W6.4)
+
+| Errors | File |
+|---:|---|
+| 58 | `src/azure/sec-builder.js` |
+| 41 | `build/merge-kb-custom.js` |
+| 28 | `src/functions/d365sec-upload.js` |
+| 20 | `src/functions/d365kb-upload.js` |
+| 16 | `build/update-xref-module.js` |
+| 5 | `src/functions/otrs-admin.js` |
+| 5 | `build/xref-source.js` |
+| 4 | `src/functions/d365taskrecorder.js` |
+| 4 | `src/azure/wiki-tools.js` |
+| 4 | `build/gen-plugin-tool-refs.js` |
+| 3 | `build/update-kb-model.js` |
+| 3 | `build/inject-duty-privs.js` |
+| 2 | `src/azure/wiki-storage.js` |
+| 2 | `src/azure/taskrecorder-parser.js` |
+| 2 | `src/azure/build-jobs.js` |
+| 2 | `build/pe-metadata.js` |
+| 2 | `build/isv-scan.js` |
+| 2 | `build/add-sec-indexes.js` |
+| 1 | `src/functions/wiki-mcp.js` |
+| 1 | `src/functions/d365xref.js` |
+| 1 | `src/functions/d365sec.js` |
+| 1 | `src/functions/d365kb.js` |
+| 1 | `src/functions/d365health.js` |
+| 1 | `src/azure/tool-sets.js` |
+| 1 | `src/azure/ticket-pdf-helpers.js` |
+| 1 | `src/azure/sec-indexes.js` |
+| 1 | `src/azure/otrs-xml-parse.js` |
+| 1 | `src/azure/otrs-xml.js` |
+| 1 | `build/build-kb.js` |
+| 1 | `build/add-kb-fts.js` |
+
+The four `HttpRequest is not assignable to Request` errors (`d365kb.js`, `d365xref.js`,
+`d365sec.js`, `wiki-mcp.js`) are the SDK's `WebStandardStreamableHTTPServerTransport`
+signature against the Azure Functions v4 request type — an adapter question, not a JSDoc one.
+
 ## Why TypeScript 5.9.3 and not 7.x
 
 TypeScript 7.0.2 (the native compiler) is on `latest`. It was tried first: 421 errors on
