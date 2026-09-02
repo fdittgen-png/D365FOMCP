@@ -33,6 +33,7 @@ import { z } from 'zod';
 import { isCustomFieldName } from './custom-fields.js';
 import { hasIsvData } from './isv-schema.js';
 import { registerEffectiveSchemaTools, queryTableFields } from './effective-schema-tools.js';
+import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 import {
   resolveCustomFieldChecks,
   customFieldsForTable,
@@ -512,13 +513,16 @@ export function registerKbTools(server, db) {
       object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
       modules: modulesFilterParam,
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results (default 20)'),
+      cursor: cursorParam,
       format: formatTextParam,
     },
       outputSchema: d365SearchOutput.shape,
     },
-    async ({ query: singleQuery, queries, object_type, modules, limit, format }) => {
+    async ({ query: singleQuery, queries, object_type, modules, limit, cursor, format }) => {
       const lim = Number.isInteger(limit) && limit > 0 ? limit : 20;
       const moduleFilter = sanitizeModulesFilter(modules);
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
 
       // Batching (issue #83): singular and plural are unioned and deduped, the
       // caller's order is preserved, and the shared filters are hoisted into
@@ -529,12 +533,18 @@ export function registerKbTools(server, db) {
       ].map(s => String(s).trim()).filter(Boolean))];
       if (!requested.length) return errorResult('invalid-input', 'Provide `query` or `queries`.');
       const batchMode = Array.isArray(queries) && queries.length > 0;
+      if (batchMode && page.offset > 0) {
+        return errorResult('invalid-input', '`cursor` pages a single `query`; run a batch without it.');
+      }
       // Defensive cap: Zod's .max() is bypassed by the test mock server (rule #13).
       const searches = requested.slice(0, SEARCH_BATCH_MAX);
 
-      /** One search -> { typed, error }. `typed` is exactly the pre-batching
-       *  single payload; `error` is an errorResult to return as-is. */
-      const runSearch = (searchQuery) => {
+      /** One search -> { typed, has_more, error }. `typed` is exactly the
+       *  pre-batching single payload; `error` is an errorResult to return as-is.
+       *  Fetches limit+1 rows (probe) so has_more is exact; rowid order is the
+       *  order the un-ordered query always returned, now made explicit so
+       *  OFFSET is stable. */
+      const runSearch = (searchQuery, offset = 0) => {
       // issue #42: gate the wildcard LIKE scan on pattern length before the DB.
       const pv = validateLikePattern(searchQuery);
       if (pv) return { error: patternErrorResult(pv) };
@@ -561,8 +571,8 @@ export function registerKbTools(server, db) {
           ftsSql += ` AND s.module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
           ftsParams.push(...moduleFilter);
         }
-        ftsSql += ` LIMIT ?`;
-        ftsParams.push(lim);
+        ftsSql += ` ORDER BY s.rowid LIMIT ? OFFSET ?`;
+        ftsParams.push(probeLimit(lim), offset);
         rows = q(ftsSql, ftsParams);
       } catch {
         // kb_search_fts missing — LIKE scan over kb_search.
@@ -588,8 +598,8 @@ export function registerKbTools(server, db) {
           likeParams.push(...moduleFilter);
         }
 
-        sql += ` LIMIT ?`;
-        likeParams.push(lim);
+        sql += ` ORDER BY rowid LIMIT ? OFFSET ?`;
+        likeParams.push(probeLimit(lim), offset);
 
         try {
           rows = q(sql, likeParams);
@@ -598,14 +608,17 @@ export function registerKbTools(server, db) {
         }
       }
 
+      const pageRows = takePage(rows, lim);
+      rows = pageRows.rows;
       return {
+        has_more: pageRows.has_more,
         typed: {
           query: searchQuery,
           object_type: object_type ?? null,
           modules: moduleFilter.length ? moduleFilter : null,
           limit: lim,
           result_count: rows.length,
-          truncated: rows.length >= lim,
+          truncated: pageRows.has_more,
           results: rows.map(r => ({
             object_type: r.object_type ?? null,
             object_name: r.object_name,
@@ -627,16 +640,18 @@ export function registerKbTools(server, db) {
       })));
 
       if (!batchMode) {
-        const { typed, error } = runSearch(searches[0]);
+        const { typed, has_more, error } = runSearch(searches[0], page.offset);
         if (error) return error;
+        // Page envelope (#109): has_more always, next_cursor only when true.
+        Object.assign(typed, pageMeta(null, page.offset, typed.result_count, lim, has_more));
         if (typed.result_count === 0) {
           return emptyResult(`matches for "${typed.query}"`, typed);
         }
-        // Exactly the pre-batching payload: no batch keys at all.
+        // Exactly the pre-batching payload plus the page keys: no batch keys at all.
         let out = `## Search Results: "${typed.query}"\n\n`;
         if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
         out += renderRows(typed.results);
-        if (typed.truncated) out += truncationNote('user', lim);
+        if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
         return structuredResult(typed, out, format);
       }
 
@@ -1058,14 +1073,17 @@ export function registerKbTools(server, db) {
         filter: z.string().min(1).max(500).optional().describe('Optional filter on method name (LIKE pattern). Cheapest way to narrow a wide class.'),
         include_source: z.boolean().optional().default(false).describe('Return the full X++ body of EVERY method. Default false. ~6x the signature listing; prefer d365_get_method_source for specific methods.'),
         limit: z.number().int().min(1).max(500).optional().default(100).describe('Max results (default 100)'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: d365GetClassMethodsOutput.shape,
     },
-    async ({ name, filter, include_source, limit, format }) => {
+    async ({ name, filter, include_source, limit, cursor, format }) => {
       // Defensive defaults (mock server bypasses Zod)
       include_source = include_source === true;
       limit = Number.isInteger(limit) && limit > 0 ? limit : 100;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
 
       const n = name.trim();
 
@@ -1085,11 +1103,12 @@ export function registerKbTools(server, db) {
         sql += ` AND method_name LIKE ? COLLATE NOCASE`;
         params.push(`%${filter}%`);
       }
-      sql += ` ORDER BY is_static DESC, method_name LIMIT ?`;
-      params.push(limit);
+      // (owner, method_name) is the PK, so this order is stable under OFFSET.
+      sql += ` ORDER BY is_static DESC, method_name LIMIT ? OFFSET ?`;
+      params.push(probeLimit(limit), page.offset);
 
-      const result = q(sql, params);
-      if (!result || result.length === 0) {
+      const { rows: result, has_more } = takePage(q(sql, params) || [], limit);
+      if (result.length === 0) {
         return emptyResult(`methods on "${n}"`, {
           owner_name: n,
           owner_type: '',
@@ -1100,6 +1119,7 @@ export function registerKbTools(server, db) {
           method_count: 0,
           methods: [],
           truncated: false,
+          has_more: false,
         });
       }
 
@@ -1144,7 +1164,8 @@ export function registerKbTools(server, db) {
         ...(include_source ? {} : {
           source_lines_total: result.reduce((a, r) => a + (toNum(r.source_lines) ?? 0), 0),
         }),
-        truncated: result.length >= limit,
+        truncated: has_more,
+        ...pageMeta(null, page.offset, result.length, limit, has_more),
       };
 
       // Markdown fallback rendered from the typed object.
@@ -1178,7 +1199,7 @@ export function registerKbTools(server, db) {
         out += `\n\n_Signatures only. \`Lines\` is each body's length — pull the few you need with \`d365_get_method_source\` (\`method_names\` takes several in one call). \`include_source: true\` returns all ${typed.source_lines_total} lines of X++ at roughly 6x this response._`;
       }
 
-      if (typed.truncated) out += truncationNote('user', limit);
+      if (typed.has_more) out += pageNote(typed.method_count, page.offset, typed.next_cursor);
 
       return structuredResult(typed, out, format);
     }
@@ -1537,14 +1558,17 @@ export function registerKbTools(server, db) {
         computed_only: z.boolean().optional().default(false).describe('Only computed/virtual fields (no backing data field)'),
         include_provenance: z.boolean().optional().default(false).describe('Emit source_module/is_extension on EVERY field. Default false - the pair is emitted only for extension fields, where it carries information; on a standard Microsoft field it repeats the entity\'s own module and cost ~27% of this response.'),
         limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return (default 500, max 1000)'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: d365GetEntitySourcesOutput.shape,
     },
-    async ({ entity_name, include_methods, fields_like, custom_only, computed_only, include_provenance, limit, format }) => {
+    async ({ entity_name, include_methods, fields_like, custom_only, computed_only, include_provenance, limit, cursor, format }) => {
       const en = entity_name.trim();
       // Defensive defaults - the test mock server bypasses Zod (contract rule #13).
       const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 500;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const wantMethods = include_methods === true;
       const customOnly = custom_only === true;
       const computedOnly = computed_only === true;
@@ -1663,7 +1687,9 @@ export function registerKbTools(server, db) {
       // Filtering still runs on the full internal rows, so what comes back is
       // unaffected by what is emitted.
       const emitProvenance = wantProvenance || customOnly;
-      const shownFields = matched.slice(0, lim).map(f => (emitProvenance
+      // Page over the filtered rows (#109): the list is already in memory and
+      // ordered by field_name, so the cursor is a plain offset into `matched`.
+      const shownFields = matched.slice(page.offset, page.offset + lim).map(f => (emitProvenance
         ? f
         : { field_name: f.field_name, data_field: f.data_field, data_source: f.data_source, is_mandatory: f.is_mandatory }));
 
@@ -1714,6 +1740,7 @@ export function registerKbTools(server, db) {
           signature: m.signature ?? null,
           is_static: Boolean(m.is_static),
         })),
+        ...pageMeta(null, page.offset, shownFields.length, lim, page.offset + shownFields.length < matched.length),
       };
 
       const activeFilters = [
@@ -1745,8 +1772,8 @@ export function registerKbTools(server, db) {
           })),
           ['Field', 'DataField', 'DataSource', 'Model', 'Mand'],
         );
-        if (typed.fields_matched > shownFields.length) {
-          out += truncationNote('cap', shownFields.length, 1000);
+        if (typed.has_more) {
+          out += pageNote(shownFields.length, page.offset, typed.next_cursor);
         }
       } else {
         out += '_No fields match the filter._';

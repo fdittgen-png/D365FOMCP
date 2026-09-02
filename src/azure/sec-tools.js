@@ -27,6 +27,7 @@ import {
   READ_ONLY_DB_ANNOTATIONS,
 } from './shared.js';
 import { installToolGuards } from './tool-guards.js';
+import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 import { z } from 'zod';
 import {
   secLookupUserOutput,
@@ -854,12 +855,15 @@ export function registerSecTools(server, db) {
       inputSchema: {
         duty_name: z.string().min(1).max(500).describe('Duty ID or name'),
         limit: listLimitParam(FIND_CAP_DEFAULT),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: secFindRolesByDutyOutput.shape,
     },
-    async ({ duty_name, limit, format }) => {
+    async ({ duty_name, limit, cursor, format }) => {
       const lim = clampListLimit(limit, FIND_CAP_DEFAULT);
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const dn = duty_name.trim();
       const duty = q(`SELECT duty_id FROM duties
         WHERE duty_id = ? COLLATE NOCASE OR duty_name = ? COLLATE NOCASE`, [dn, dn]);
@@ -879,18 +883,23 @@ export function registerSecTools(server, db) {
         result_count: 0,
         truncated: false,
         roles: [],
+        has_more: false,
       });
 
+      // The whole list is in memory (ordered by role_name), so the cursor is a
+      // plain offset; result_count stays the exact total (#109).
+      const pageRows = rows.slice(page.offset, page.offset + lim);
       const typed = {
         duty_id: duty[0].duty_id,
         result_count: rows.length,
         truncated: rows.length > lim,
-        roles: rows.slice(0, lim).map(r => ({
+        roles: pageRows.map(r => ({
           role_name: r.role_name,
           permission_type: r.permission_type ?? null,
           license_type: r.license_type ?? null,
           duty_permission: r.duty_permission ?? null,
         })),
+        ...pageMeta(null, page.offset, pageRows.length, lim, page.offset + pageRows.length < rows.length),
       };
 
       let out = `## Roles granting duty: ${typed.duty_id}\n${typed.result_count} role(s)\n\n`;
@@ -904,7 +913,7 @@ export function registerSecTools(server, db) {
         })),
         ['role_name', 'permission_type', 'license_type', 'duty_permission'],
       );
-      if (typed.truncated) out += truncationNote(limitKind(limit), typed.roles.length, LIST_CAP_MAX);
+      if (typed.has_more) out += pageNote(typed.roles.length, page.offset, typed.next_cursor);
       return structuredResult(typed, out, format);
     }
   );
@@ -919,22 +928,26 @@ export function registerSecTools(server, db) {
       inputSchema: {
         privilege_name: z.string().min(1).max(500).describe('Privilege name'),
         limit: listLimitParam(FIND_CAP_DEFAULT),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: secFindRolesByPrivilegeOutput.shape,
     },
-    async ({ privilege_name, limit, format }) => {
+    async ({ privilege_name, limit, cursor, format }) => {
       const lim = clampListLimit(limit, FIND_CAP_DEFAULT);
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const pn = privilege_name.trim();
 
-      // Via duty chain
+      // Via duty chain. duty_id completes the ORDER BY: one role can reach the
+      // privilege through several duties, and OFFSET needs a stable order.
       const viaChain = q(`SELECT DISTINCT r.role_name, rd.permission_type, d.duty_id
         FROM duty_privileges dp
         JOIN role_duties rd ON rd.duty_id = dp.duty_id
         JOIN roles r ON r.role_id = rd.role_id
         JOIN duties d ON d.duty_id = dp.duty_id
         WHERE dp.privilege_name = ? COLLATE NOCASE
-        ORDER BY r.role_name`, [pn]);
+        ORDER BY r.role_name, d.duty_id`, [pn]);
 
       // Direct assignments
       const direct = q(`SELECT r.role_name
@@ -950,20 +963,27 @@ export function registerSecTools(server, db) {
           truncated: false,
           via_chain: [],
           direct: [],
+          has_more: false,
         });
       }
 
+      // One cursor pages both lists in step (same offset, same page size); the
+      // *_count keys stay the exact totals (#109).
+      const chainPage = viaChain.slice(page.offset, page.offset + lim);
+      const directPage = direct.slice(page.offset, page.offset + lim);
+      const hasMore = page.offset + lim < viaChain.length || page.offset + lim < direct.length;
       const typed = {
         privilege_name: pn,
         via_chain_count: viaChain.length,
         direct_count: direct.length,
         truncated: viaChain.length > lim || direct.length > lim,
-        via_chain: viaChain.slice(0, lim).map(v => ({
+        via_chain: chainPage.map(v => ({
           role_name: v.role_name,
           permission_type: v.permission_type ?? null,
           duty_id: v.duty_id,
         })),
-        direct: direct.slice(0, lim).map(d => ({ role_name: d.role_name })),
+        direct: directPage.map(d => ({ role_name: d.role_name })),
+        ...pageMeta(null, page.offset, Math.max(chainPage.length, directPage.length), lim, hasMore),
       };
 
       let out = `## Roles granting privilege: ${typed.privilege_name}\n\n`;
@@ -987,6 +1007,7 @@ export function registerSecTools(server, db) {
         );
         out += capNote(typed.direct.length, typed.direct_count);
       }
+      if (typed.has_more) out += pageNote(Math.max(typed.via_chain.length, typed.direct.length), page.offset, typed.next_cursor);
 
       return structuredResult(typed, out, format);
     }
@@ -1563,12 +1584,15 @@ export function registerSecTools(server, db) {
       object_type: z.enum(['role', 'duty', 'privilege', 'user']).optional().describe('Filter: role, duty, privilege, user'),
       modules: modulesFilterParam,
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
+      cursor: cursorParam,
       format: formatTextParam,
     },
       outputSchema: secSearchOutput.shape,
     },
-    async ({ query: searchQuery, object_type, modules, limit: rawLimit, format }) => {
+    async ({ query: searchQuery, object_type, modules, limit: rawLimit, cursor, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 20;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const moduleFilter = sanitizeModulesFilter(modules);
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
       if (!terms.length) return errorResult('invalid-input', 'Provide at least one search term.');
@@ -1593,8 +1617,10 @@ export function registerSecTools(server, db) {
           ftsSql += ` AND s.module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
           ftsParams.push(...moduleFilter);
         }
-        ftsSql += ' LIMIT ?';
-        ftsParams.push(limit);
+        // rowid order is what the un-ordered query returned; explicit so OFFSET
+        // is stable. limit+1 probe makes has_more exact (#109).
+        ftsSql += ' ORDER BY s.rowid LIMIT ? OFFSET ?';
+        ftsParams.push(probeLimit(limit), page.offset);
         results = q(ftsSql, ftsParams);
       } catch {
         // FTS5 table missing — fall back to LIKE scan.
@@ -1611,10 +1637,12 @@ export function registerSecTools(server, db) {
           sql += ` AND module_id COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})`;
           likeParams.push(...moduleFilter);
         }
-        sql += ' LIMIT ?';
-        likeParams.push(limit);
+        sql += ' ORDER BY rowid LIMIT ? OFFSET ?';
+        likeParams.push(probeLimit(limit), page.offset);
         results = q(sql, likeParams);
       }
+      const pageRows = takePage(results, limit);
+      results = pageRows.rows;
       if (!results.length) return emptyResult(`matches for "${searchQuery}"`, {
         query: searchQuery,
         object_type: object_type ?? null,
@@ -1623,6 +1651,7 @@ export function registerSecTools(server, db) {
         result_count: 0,
         truncated: false,
         results: [],
+        has_more: false,
       });
 
       // P4-09: center the snippet on the first matching term so matches at
@@ -1636,16 +1665,19 @@ export function registerSecTools(server, db) {
         modules: moduleFilter.length ? moduleFilter : null,
         limit,
         result_count: results.length,
-        truncated: results.length >= limit,
+        truncated: pageRows.has_more,
         results: results.map(r => ({
           object_type: r.object_type ?? null,
           object_name: r.object_name,
           module_id: r.module_id ?? null,
           match_context: r.content ? contextAround(r.content, anchor, 60) : null,
         })),
+        ...pageMeta(null, page.offset, results.length, limit, pageRows.has_more),
       };
 
-      let out = formatMarkdownTable(
+      let out = `## Security search: "${typed.query}"\n\n`;
+      if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
+      out += formatMarkdownTable(
         typed.results.map(r => ({
           object_type: r.object_type ?? '',
           object_name: r.object_name,
@@ -1654,7 +1686,7 @@ export function registerSecTools(server, db) {
         })),
         ['object_type', 'object_name', 'module_id', 'match_context'],
       );
-      if (typed.truncated) out += truncationNote('user', limit);
+      if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
       return structuredResult(typed, out, format);
     }
   );

@@ -67,6 +67,7 @@ Full-text search across all D365FO objects (tables, classes, enums, entities). U
 | `object_type` | string (min 1, max 500) | no | Optional filter: table, class, enum, entity |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results (default 20) |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `d365_get_enum`
@@ -100,6 +101,7 @@ Get method signatures for a D365FO class, table, or data entity. TIER 1 of the t
 | `filter` | string (min 1, max 500) | no | Optional filter on method name (LIKE pattern). Cheapest way to narrow a wide class. |
 | `include_source` | boolean | default `false` | Return the full X++ body of EVERY method. Default false. ~6x the signature listing; prefer d365_get_method_source for specific methods. |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100) |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `d365_get_method_source`
@@ -147,6 +149,7 @@ Get the data source chain and fields of a D365FO data entity. Resolves the AOT n
 | `computed_only` | boolean | default `false` | Only computed/virtual fields (no backing data field) |
 | `include_provenance` | boolean | default `false` | Emit source_module/is_extension on EVERY field. Default false - the pair is emitted only for extension fields, where it carries information; on a standard Microsoft field it repeats the entity's own module and cost ~27% of this response. |
 | `limit` | integer (≥1, ≤1000) | default `500` | Max fields to return (default 500, max 1000) |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `d365_sql_template`

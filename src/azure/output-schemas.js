@@ -247,6 +247,14 @@ export const d365ClassMethodSchema = z.object({
   source_lines: z.number().int().optional(),
 });
 
+// ── Cursor pagination (issue #109 part A) ────────────────────────────────────
+// Spread into the outputSchema of every paginated list tool: `has_more` is
+// always present on a single-target response, `next_cursor` only when there is
+// a next page (rule #14). `pageShape` is the strict form; `pageShapeOptional`
+// is for tools whose batch mode has no page (d365_search, xref_find_references).
+export const pageShape = { has_more: z.boolean(), next_cursor: z.string().optional() };
+export const pageShapeOptional = { has_more: z.boolean().optional(), next_cursor: z.string().optional() };
+
 export const d365GetClassMethodsOutput = z.object({
   owner_name: z.string(),
   owner_type: z.string(),
@@ -260,6 +268,7 @@ export const d365GetClassMethodsOutput = z.object({
   // caller can price `include_source: true` before paying for it.
   source_lines_total: z.number().int().optional(),
   truncated: z.boolean(),
+  ...pageShape,
 });
 
 // ── Pilot 3: xref_impact_analysis ────────────────────────────────────────────
@@ -440,6 +449,7 @@ export const d365SearchOutput = z.object({
   result_count: z.number().optional(),
   truncated: z.boolean().optional(),
   results: z.array(d365SearchResultSchema).optional(),
+  ...pageShapeOptional,
   requested_count: z.number().optional().describe('Batch mode only.'),
   queries: z.array(d365SearchQueryPayloadSchema).optional().describe('Batch mode only: one entry per query, caller order.'),
 });
@@ -644,6 +654,7 @@ export const d365GetEntitySourcesOutput = z.object({
     signature: z.string().nullable(),
     is_static: z.boolean(),
   })),
+  ...pageShape,
 });
 
 // d365_sql_template — SQL templates
@@ -791,6 +802,7 @@ export const xrefFindReferencesOutput = z.object({
     module_summary: xrefIsvModuleSummarySchema,
     note: z.string(),
   }).nullish(),
+  ...pageShapeOptional,
   requested_count: z.number().optional().describe('Batch mode only.'),
   resolved_count: z.number().optional(),
   not_found: z.array(z.string()).optional().describe('Batch mode only: names that did not resolve.'),
@@ -806,6 +818,7 @@ export const xrefFindUsagesOutput = z.object({
   result_count: z.number(),
   truncated: z.boolean(),
   usages: z.array(xrefRefRowSchema),
+  ...pageShape,
 });
 
 // xref_find_method_callers
@@ -1183,6 +1196,7 @@ export const secFindRolesByDutyOutput = z.object({
   result_count: z.number(),
   truncated: z.boolean(),
   roles: z.array(secFindRolesByDutyRowSchema),
+  ...pageShape,
 });
 
 // sec_find_roles_by_privilege
@@ -1201,6 +1215,7 @@ export const secFindRolesByPrivilegeOutput = z.object({
   truncated: z.boolean(),
   via_chain: z.array(secFindRolesByPrivilegeViaChainRowSchema),
   direct: z.array(secFindRolesByPrivilegeDirectRowSchema),
+  ...pageShape,
 });
 
 // sec_company_users
@@ -1285,6 +1300,7 @@ export const secSearchOutput = z.object({
   result_count: z.number(),
   truncated: z.boolean(),
   results: z.array(secSearchRowSchema),
+  ...pageShape,
 });
 
 // sec_stats

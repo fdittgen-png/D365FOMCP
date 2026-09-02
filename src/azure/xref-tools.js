@@ -50,6 +50,7 @@ import {
   rawSqlOutput,
 } from './output-schemas.js';
 import { hasIsvData } from './isv-schema.js';
+import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 
 /** Convert array-of-arrays rows to array-of-objects using column names as keys. */
 function rowsToObjects(columns, arrayRows) {
@@ -193,15 +194,18 @@ export function registerXrefTools(server, db) {
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
         include_isv: z.boolean().optional().default(false)
           .describe('Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites.'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: xrefFindReferencesOutput.shape,
     },
-    async ({ object_name, objects, kind, limit: rawLimit, include_isv, format }) => {
+    async ({ object_name, objects, kind, limit: rawLimit, include_isv, cursor, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
       const kindFilterLabel = kind || 'All';
       // Defensive default: the test mock server bypasses Zod (contract item 13).
       const wantIsv = include_isv === true;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
 
       // Batching (issue #83): singular and plural are unioned and deduped in
       // caller order; kind / limit / include_isv are hoisted into the envelope.
@@ -211,6 +215,9 @@ export function registerXrefTools(server, db) {
       ].map(s => String(s).trim()).filter(Boolean))];
       if (!requested.length) return errorResult('invalid-input', 'Provide `object_name` or `objects`.');
       const batchMode = Array.isArray(objects) && objects.length > 0;
+      if (batchMode && page.offset > 0) {
+        return errorResult('invalid-input', '`cursor` pages a single `object_name`; run a batch without it.');
+      }
       const names = requested.slice(0, REFS_BATCH_MAX);
       for (const n of names) {
         const _v = validateLikePattern(n);
@@ -224,24 +231,27 @@ export function registerXrefTools(server, db) {
         if (kindId) { kindFilter = ' AND r.kind = ?'; kindParams.push(Number(kindId)); }
       }
 
-      /** References to one resolved object; null when the name does not resolve. */
-      const findOne = (name) => {
+      /** References to one resolved object; null when the name does not resolve.
+       *  Fetches limit+1 rows so has_more is exact; line/col complete the ORDER
+       *  BY so OFFSET is stable when one source references the target twice. */
+      const findOne = (name, offset = 0) => {
         const resolved = resolveNameId(q, name);
         if (!resolved) return null;
         const { id: targetId, path: targetPath } = resolved;
-        const result = q(`
+        const { rows: result, has_more } = takePage(q(`
           SELECT n.path AS source, r.kind, r.line, r.col, m.module
           FROM refs r
           JOIN names n ON r.source_id = n.id
           JOIN modules m ON n.module_id = m.id
           WHERE r.target_id = ? ${kindFilter}
-          ORDER BY m.module, n.path
-          LIMIT ?
-        `, [targetId, ...kindParams, limit]);
+          ORDER BY m.module, n.path, r.line, r.col
+          LIMIT ? OFFSET ?
+        `, [targetId, ...kindParams, probeLimit(limit), offset]), limit);
         return {
           target_path: targetPath,
           result_count: result.length,
-          truncated: result.length >= limit,
+          truncated: has_more,
+          has_more,
           references: result.map(r => ({
             path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
           })),
@@ -264,9 +274,9 @@ export function registerXrefTools(server, db) {
       };
 
       if (!batchMode) {
-        const one = findOne(names[0]);
+        const one = findOne(names[0], page.offset);
         if (!one) return notFoundResult('Object', names[0]);
-        // Exactly the pre-batching payload — no batch keys.
+        // Exactly the pre-batching payload plus the page keys — no batch keys.
         const baseTyped = {
           target_path: one.target_path,
           kind_filter: kindFilterLabel,
@@ -275,6 +285,7 @@ export function registerXrefTools(server, db) {
           truncated: one.truncated,
           references: one.references,
           isv: one.isv,
+          ...pageMeta(null, page.offset, one.result_count, limit, one.has_more),
         };
         const isvBlock = one.isv;
         if (!one.result_count && !(isvBlock && isvBlock.reference_count)) {
@@ -283,7 +294,7 @@ export function registerXrefTools(server, db) {
 
         let out = `## References to ${one.target_path}\n${baseTyped.result_count} result(s)\n\n`;
         out += renderRefs(baseTyped);
-        if (baseTyped.truncated) out += truncationNote('user', limit);
+        if (baseTyped.has_more) out += pageNote(baseTyped.result_count, page.offset, baseTyped.next_cursor);
         if (isvBlock) out += renderIsv(isvBlock, '###') + `\n_${isvBlock.note}_\n`;
         return structuredResult(baseTyped, out, format);
       }
@@ -349,12 +360,15 @@ export function registerXrefTools(server, db) {
         kind: z.enum(['All', 'Call', 'Read', 'Implements', 'Extends', 'Delegate', 'Attribute', 'Override']).default('All')
           .describe('Filter by reference kind'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max results (default 100, max 500)'),
+        cursor: cursorParam,
         format: formatTextParam,
       },
       outputSchema: xrefFindUsagesOutput.shape,
     },
-    async ({ object_name, kind, limit: rawLimit, format }) => {
+    async ({ object_name, kind, limit: rawLimit, cursor, format }) => {
       const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? rawLimit : 100;
+      const page = decodeCursor(cursor);
+      if (!page.ok) return page.error;
       const _v = validateLikePattern(object_name);
       if (_v) return patternErrorResult(_v);
       const resolved = resolveNameId(q, object_name);
@@ -369,27 +383,29 @@ export function registerXrefTools(server, db) {
         const kindId = Object.entries(KIND_NAMES).find(([, v]) => v === kindFilterLabel)?.[0];
         if (kindId) { kindFilter = ' AND r.kind = ?'; params.push(Number(kindId)); }
       }
-      params.push(limit);
+      params.push(probeLimit(limit), page.offset);
 
-      const result = q(`
+      // line/col complete the ORDER BY so OFFSET is stable (#109).
+      const { rows: result, has_more } = takePage(q(`
         SELECT n.path AS target, r.kind, r.line, r.col, m.module
         FROM refs r
         JOIN names n ON r.target_id = n.id
         JOIN modules m ON n.module_id = m.id
         WHERE r.source_id = ? ${kindFilter}
-        ORDER BY r.kind, n.path
-        LIMIT ?
-      `, params);
+        ORDER BY r.kind, n.path, r.line, r.col
+        LIMIT ? OFFSET ?
+      `, params), limit);
 
       const typed = {
         source_path: sourcePath,
         kind_filter: kindFilterLabel,
         limit,
         result_count: result.length,
-        truncated: result.length >= limit,
+        truncated: has_more,
         usages: result.map(r => ({
           path: r.target, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
         })),
+        ...pageMeta(null, page.offset, result.length, limit, has_more),
       };
       if (!result.length) return emptyResult(`outgoing references from "${sourcePath}"`, typed);
 
@@ -398,7 +414,7 @@ export function registerXrefTools(server, db) {
         typed.usages.map(r => ({ Target: r.path, Kind: r.kind, Line: r.line ?? '', Col: r.col ?? '', Module: r.module ?? '' })),
         ['Target', 'Kind', 'Line', 'Col', 'Module'],
       );
-      if (typed.truncated) out += truncationNote('user', limit);
+      if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
       return structuredResult(typed, out, format);
     },
   );

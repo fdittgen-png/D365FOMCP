@@ -37,6 +37,7 @@ Find all objects that reference a given D365FO object (who calls/reads/extends i
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind. Default: All |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
 | `include_isv` | boolean | default `false` | Add a per-model count of references from sealed ISV models. Off by default so existing results are unchanged. Use `xref_isv_find_usages` for the individual call sites. |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_usages`
@@ -48,6 +49,7 @@ Find all objects that a given D365FO object references (what it calls/reads/exte
 | `object_name` | string (min 1, max 500) | yes | Object name or full path |
 | `kind` | `All` \| `Call` \| `Read` \| `Implements` \| `Extends` \| `Delegate` \| `Attribute` \| `Override` | default `"All"` | Filter by reference kind |
 | `limit` | integer (≥1, ≤500) | default `100` | Max results (default 100, max 500) |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `xref_find_method_callers`

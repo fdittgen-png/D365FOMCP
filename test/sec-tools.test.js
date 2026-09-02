@@ -1567,7 +1567,7 @@ describe('W3 summary-by-default on the wide-role tools', () => {
     assert.equal(t.result_count, 2);
     assert.equal(t.roles.length, 1);
     assert.equal(t.truncated, true);
-    assert.match(r.content[0].text, /caller `limit`/);
+    assert.match(r.content[0].text, /more available — pass `cursor:/);
     const dflt = await call('sec_find_roles_by_duty', { duty_name: 'WideDuty001' });
     assert.equal(dflt.structuredContent.roles.length, 2);
     assert.equal(dflt.structuredContent.truncated, false);

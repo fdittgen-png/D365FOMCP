@@ -314,8 +314,8 @@ test('d365_search: a single-query call is unchanged by batching', async () => {
   assert.equal(t.query, 'payment');
   assert.equal(t.result_count, 2);
   assert.deepEqual(Object.keys(t).sort(),
-    ['limit', 'modules', 'object_type', 'query', 'result_count', 'results', 'truncated'],
-    'a single-query payload must carry no batch keys');
+    ['has_more', 'limit', 'modules', 'object_type', 'query', 'result_count', 'results', 'truncated'],
+    'a single-query payload must carry no batch keys (has_more is the W5 page key)');
 });
 
 test('d365_search: batch mode hoists the shared scope and carries one entry per query, caller order', async () => {
@@ -355,8 +355,8 @@ test('xref_find_references: a single-object call is unchanged by batching', asyn
   assert.equal(t.target_path, '/Tables/CustTable');
   assert.equal(t.result_count, 3);
   assert.deepEqual(Object.keys(t).sort(),
-    ['isv', 'kind_filter', 'limit', 'references', 'result_count', 'target_path', 'truncated'],
-    'a single-object payload must be exactly the pre-batching shape');
+    ['has_more', 'isv', 'kind_filter', 'limit', 'references', 'result_count', 'target_path', 'truncated'],
+    'a single-object payload must be exactly the pre-batching shape (has_more is the W5 page key)');
 });
 
 test('xref_find_references: batch mode hoists kind/limit, one entry per object, misses in not_found', async () => {

@@ -99,6 +99,7 @@ Find all roles that contain a specific duty.
 |---|---|---|---|
 | `duty_name` | string (min 1, max 500) | yes | Duty ID or name |
 | `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list (default 100) |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_find_roles_by_privilege`
@@ -109,6 +110,7 @@ Find all roles that grant a privilege (via the duty chain or directly).
 |---|---|---|---|
 | `privilege_name` | string (min 1, max 500) | yes | Privilege name |
 | `limit` | integer (≥1, ≤2000) | default `100` | Max rows per list (default 100) |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_company_users`
@@ -165,6 +167,7 @@ Full-text search across roles, duties, privileges, and users. Scope with `module
 | `object_type` | `role` \| `duty` \| `privilege` \| `user` | no | Filter: role, duty, privilege, user |
 | `modules` | array<string (min 1, max 200)> | no | Optional: limit results to these modules/models (case-insensitive), e.g. ["iExtension"] or ["ApplicationSuite","ApplicationPlatform"]. Use the service's list-modules/stats tool to see the scanned modules and their build versions. |
 | `limit` | integer (≥1, ≤500) | default `20` | Max results |
+| `cursor` | string (max 500) | no | Page cursor: the `next_cursor` of the previous response. |
 | `format` | `markdown` \| `toon` \| `auto` | default `"auto"` | Default "auto" (smallest). "markdown" only when quoting text verbatim. |
 
 ## `sec_stats`

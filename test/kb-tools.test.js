@@ -436,11 +436,11 @@ describe('d365_search', () => {
     assert.match(result, /No matches for "xyznonexistent" found/);
   });
 
-  it('respects limit and emits user-kind truncation note', async () => {
+  it('respects limit and emits a resumable page note (#109)', async () => {
     const result = await callTool('d365_search', { query: 'Table', limit: 1 });
-    // P1-02 contract: user-requested limit → user-kind note
-    assert.match(result, /Showing first 1 results \(caller/);
-    assert.match(result, /Pass a higher `limit`/);
+    // W5 contract: a cut list is resumable — the note carries the cursor, not "raise limit".
+    assert.match(result, /Showing 1 results; more available/);
+    assert.match(result, /pass `cursor: "[A-Za-z0-9_-]+"` to continue/);
   });
 
   it('P2-05: non-empty response opens with self-identifying search heading', async () => {
@@ -623,10 +623,10 @@ describe('d365_get_class_methods', () => {
     assert.ok(!result.includes('this.post()'));
   });
 
-  it('respects limit and emits user-kind truncation note when methods exceed the cap', async () => {
+  it('respects limit and emits a resumable page note when methods exceed the cap (#109)', async () => {
     const result = await callTool('d365_get_class_methods', { name: 'SalesFormLetter', include_source: false, limit: 2 });
-    // P1-02 contract: user-requested limit → user-kind note
-    assert.match(result, /Showing first 2 results \(caller/);
+    assert.match(result, /Showing 2 results; more available/);
+    assert.match(result, /pass `cursor:/);
   });
 
   it('filters by method name', async () => {
@@ -2238,7 +2238,8 @@ describe('response shaping — d365_get_entity_sources', () => {
     assert.equal(t.fields_matched, 4);
     assert.equal(t.fields_returned, 2);
     assert.equal(t.entity_fields.length, 2);
-    assert.match(res.content[0].text, /Showing first 2 results/);
+    assert.equal(t.has_more, true);
+    assert.match(res.content[0].text, /Showing 2 results; more available/);
   });
 
   it('a non-matching filter explains the two field classes that live in no model', async () => {
