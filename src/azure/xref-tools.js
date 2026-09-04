@@ -84,6 +84,15 @@ function num(v) {
  *   "/Classes/SalesFormLetter"  → exact match
  */
 function resolveNameId(queryFn, objectName) {
+  // A label id (`@SYS9694`, `@LAC1`, `@ABA:Key`) lives under /Labels/ (#122).
+  // 225,686 label names are indexed; before this branch a bare id fell through
+  // the type-prefix list and "label where-used" looked like a missing feature.
+  if (objectName.startsWith('@')) {
+    const exact = queryFn('SELECT id, path FROM names WHERE path = ? LIMIT 1', [`/Labels/${objectName}`]);
+    if (exact.length > 0) return exact[0];
+    const ci = queryFn('SELECT id, path FROM names WHERE path = ? COLLATE NOCASE LIMIT 1', [`/Labels/${objectName}`]);
+    return ci.length > 0 ? ci[0] : null;
+  }
   if (objectName.startsWith('/') || objectName.includes('/')) {
     const rows = queryFn(
       'SELECT id, path FROM names WHERE path = ? LIMIT 1', [objectName]);
@@ -132,6 +141,7 @@ const XREF_TYPE_BY_SEGMENT = Object.freeze({
   Tables: 'table', Classes: 'class', Forms: 'form', Enums: 'enum', DataEntityViews: 'data_entity',
   Edts: 'edt', Views: 'view', Maps: 'map', Queries: 'query', Reports: 'report',
   MenuItemDisplays: 'menu_item', MenuItemActions: 'menu_item', MenuItemOutputs: 'menu_item',
+  Labels: 'label',
 });
 const XREF_SEGMENTS_BY_TYPE = Object.freeze(Object.entries(XREF_TYPE_BY_SEGMENT).reduce((acc, [seg, type]) => {
   (acc[type] ??= []).push(seg);
@@ -252,7 +262,7 @@ export function registerXrefTools(server, db, opts = {}) {
     'xref_find_references',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Objects that reference a given D365FO object ("Used By" / "Find All References"). `include_isv` adds per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot.',
+      description: 'Objects that reference a given D365FO object ("Used By" / "Find All References"); a label id (`@SYS9694`) gives the label where-used. `include_isv` adds per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot.',
       inputSchema: {
         object_name: z.string().min(1).max(500).optional().describe('Object name (e.g. "SalesTable", "CustInvoiceJour") or full path (e.g. "/Classes/SalesFormLetter"). Use this or `objects`.'),
         objects: z.array(z.string().min(1).max(500)).min(1).max(REFS_BATCH_MAX).optional()
@@ -307,6 +317,7 @@ export function registerXrefTools(server, db, opts = {}) {
         const resolved = resolveNameId(q, name);
         if (!resolved) return null;
         const { id: targetId, path: targetPath } = resolved;
+        const isvBlock = wantIsv ? isvReferenceSummary(targetPath) : null;
         const { rows: result, has_more } = takePage(q(`
           SELECT n.path AS source, r.kind, r.line, r.col, m.module
           FROM refs r
@@ -324,7 +335,9 @@ export function registerXrefTools(server, db, opts = {}) {
           references: result.map(r => ({
             path: r.source, kind: kindName(r.kind), line: num(r.line), col: num(r.col), module: r.module ?? null,
           })),
-          isv: wantIsv ? isvReferenceSummary(targetPath) : null,
+          // Rule #14: the key exists only when asked for AND the snapshot can
+          // answer (isvReferenceSummary is null on a pre-ISV database).
+          ...(isvBlock ? { isv: isvBlock } : {}),
         };
       };
 
@@ -355,7 +368,7 @@ export function registerXrefTools(server, db, opts = {}) {
           result_count: one.result_count,
           truncated: one.truncated,
           references: one.references,
-          isv: one.isv,
+          ...(one.isv ? { isv: one.isv } : {}),
           ...pageMeta(null, page.offset, one.result_count, limit, one.has_more),
         };
         const isvBlock = one.isv;
@@ -1362,7 +1375,7 @@ export function registerXrefTools(server, db, opts = {}) {
     'xref_check_exists',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Preflight: do these XRef objects exist? Accepts `Name`, `/Type/Name`, `Owner.method`; misses get suggestions.',
+      description: 'Preflight: do these XRef objects exist? Accepts `Name`, `/Type/Name`, `Owner.method`, `@LabelId`; misses get suggestions.',
       inputSchema: {
         objects: z.array(z.object({
           name: z.string().min(1).max(500),
@@ -1397,6 +1410,13 @@ export function registerXrefTools(server, db, opts = {}) {
 
       /** @param {{ name: string, type?: string }} item */
       const checkOne = ({ name, type }) => {
+        // 0. A label id: /Labels/@SYS9694 (#122). No near-miss list — label ids
+        //    are opaque numbers, a Levenshtein neighbour is a different label.
+        if (name.startsWith('@')) {
+          const row = exact(`/Labels/${name}`)
+            ?? q('SELECT id, path FROM names WHERE path = ? COLLATE NOCASE LIMIT 1', [`/Labels/${name}`])[0];
+          return row ? { hit: hitFrom(name, row, 'label') } : { miss: { name, suggestions: [] } };
+        }
         // 1. A path: exact, then case-only via closestNames on the object kind.
         if (name.includes('/')) {
           const row = exact(name.startsWith('/') ? name : `/${name}`);

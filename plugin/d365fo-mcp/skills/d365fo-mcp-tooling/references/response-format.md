@@ -9,6 +9,10 @@ Every tool now declares an `outputSchema` and returns a typed payload via `struc
 
 Other hard-won rules:
 - **`@SYS` labels**: resolve via `makeLabelResolver(db)`; the labels table column is **`text`** (not `label_text`). A wrong column makes the resolver silently pass-through and leak raw IDs.
-- **Text channel format**: typed `structuredContent` stays **JSON** (it's what the SDK validates); the human/LLM text channel uses **TOON** as the default on flat-uniform-table tools (`*_raw_sql`, search, list) and Markdown for nested/detail tools. 
+- **Text channel format**: typed `structuredContent` stays **JSON** (it's what the SDK validates and what the claude.ai connector bills); the text channel is **adaptive** — per response the server emits TOON or Markdown, whichever is smaller (TOON wins on nested payloads, Markdown on wide flat tables). `format: "markdown"` / `"toon"` pin it; the default is the right choice unless the text is quoted verbatim.
+- **Banner and coverage lines** (2026-09-02): line 2 of every snapshot-backed data response is `_<Service> snapshot: <YYYY-MM-DD>_`; beneath it, one italic line per coverage signal that applies — `field_limit_hit`, `provenance_omitted`, `isv_not_scanned`, `isv_excluded` (exact count), `partial_build` — each mirrored by an optional typed key. Meta-responses (`emptyResult` / `notFoundResult` / `errorResult`, marked `_meta.kind`) carry neither.
+- **Pagination**: list tools return `has_more` always and `next_cursor` only when `has_more` is true; pass it back as `cursor` (opaque, stateless) with unchanged arguments. `total_count` appears only when cheap.
+- **Not-found responses list the closest existing names** for the requested kind; batch tools return misses in `not_found[]` and are a success, not an error.
+- **Loop guard**: the third identical call (tool + arguments) within fifteen calls returns a short corrective note with no `structuredContent` — a meta-response, not a failure.
 
 ---

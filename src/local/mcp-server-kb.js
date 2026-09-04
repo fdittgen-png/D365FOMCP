@@ -12,6 +12,7 @@ import { join } from 'path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerAllKbTools } from '../azure/tool-sets.js';
+import { ensureKbIndexes } from '../azure/kb-indexes.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 import { resolvePreferences, setProcessRequestContext } from '../azure/request-context.js';
 
@@ -32,10 +33,14 @@ const DEFAULT_DB_PATH = join(
 
 const dbPath = process.argv[2] || process.env.KB_DB_PATH || DEFAULT_DB_PATH;
 
+// Self-healing indexes (#125): the same check getKbDb() runs on Azure, so a
+// local snapshot built before an index existed gets it at first start.
+if (process.env.KB_AUTO_INDEX !== 'false') ensureKbIndexes(dbPath);
+
 const db = new Database(dbPath, { readonly: true });
 db.pragma('journal_mode = OFF');
 db.pragma('cache_size = -50000');
-db.pragma('mmap_size = 1100000000');
+db.pragma('mmap_size = 1300000000');
 
 const server = new McpServer(serverInfo('kb'), serverOptions('kb'));
 

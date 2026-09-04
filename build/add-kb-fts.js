@@ -50,6 +50,34 @@ export function ensureKbFtsIndex(dbPath) {
   }
 }
 
+/**
+ * Labels v2 (#84/#127): create (if needed) and rebuild the labels_fts index —
+ * reverse label search (`d365_search(object_type: 'label')`). Content-external
+ * on `labels` via rowid, so 'rebuild' is idempotent. Returns 0 when the labels
+ * table has no `language` column (pre-v2 snapshot: nothing to index).
+ * @param {string} dbPath
+ * @returns {number} rows indexed
+ */
+export function ensureLabelsFtsIndex(dbPath) {
+  const Database = require('better-sqlite3');
+  const db = new Database(dbPath);
+  try {
+    /** @type {any[]} */
+    const colRows = db.prepare(`PRAGMA table_info(labels)`).all();
+    if (!colRows.map(c => String(c.name)).includes('language')) return 0;
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS labels_fts USING fts5(
+      text,
+      content='labels', content_rowid='rowid'
+    )`);
+    db.exec(`INSERT INTO labels_fts(labels_fts) VALUES('rebuild')`);
+    /** @type {any} */
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM labels_fts`).get();
+    return Number(row.n);
+  } finally {
+    db.close();
+  }
+}
+
 const invokedDirectly = process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {

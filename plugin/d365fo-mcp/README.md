@@ -11,9 +11,11 @@ Contact / information: florian.dittgen@trelleborg.com
 ## Install
 
 ```text
-/plugin marketplace add fdittgen-png/D365FOMCP        # the repo's plugin/ folder is the marketplace
+/plugin marketplace add fdittgen-png/D365FOMCP        # reads <repo>/.claude-plugin/marketplace.json
 /plugin install d365fo-mcp@d365fo-mcp-marketplace
 ```
+
+You need read access to the GitHub repository (it is private — ask the contact above). Claude Code clones the repo and reads the marketplace file **at the repo root**; the second copy under `plugin/.claude-plugin/` exists only for a local *directory* marketplace (`/plugin marketplace add C:\path\to\D365FOMCP\plugin`) and a test keeps the two identical. After a plugin update, run `/plugin` → *Marketplaces* → *Update* to pull the new version; skills and commands are re-read on the next session.
 
 **The plugin ships skills and commands only — no MCP server definitions.** The four D365FO services are reached through the **claude.ai connectors** ("D365 KB", "D365 xRef", "D365 Sec", "D365 Task recorder") that your organisation publishes in the claude.ai Directory; enable them once under *Customize → Connectors* and they are available in claude.ai, Claude Desktop and Claude Code alike (Claude Code: `/mcp` → Authenticate). Sign-in is Entra ID; your account needs the `Mcp.Access` app role — ask the contact above if you get a 403.
 
@@ -124,6 +126,8 @@ Keep the server **keys** as above — the commands and skills refer to tools as 
 | Plugin tools duplicated (`mcp__d365kb__*` and `mcp__plugin_d365fo-mcp_d365kb__*`) | User-level stdio servers and the plugin's HTTP servers both active | Intentional if you want offline + live; otherwise remove one side |
 | A security call hangs and *every other* tool on the host times out | The Function App has one Node worker and SQLite is synchronous — one slow query blocks all endpoints | Indexes self-heal at first request after deploy (`ensureSecIndexes`); fan out heavy `sec_object_access` / `xref_find_references` calls one at a time with `limit` |
 | The skill fell back to `*_raw_sql` on another server or to local files when a service was down | Older skill text | Skill now says: a disconnected service is a gap to report, not a detour |
+| `/plugin marketplace add fdittgen-png/D365FOMCP` → **Marketplace file not found at …\.claude-plugin\marketplace.json** | Claude Code reads the marketplace file at the repo root; older clones had it only under `plugin/` | Pull a version with the root `.claude-plugin/marketplace.json` (plugin ≥ 1.1.0); you also need read access to the private repo |
+| `/plugin install …` says **already installed** but the skills still show the old text | Install copies the plugin into `~/.claude/plugins/cache/…/<version>/`; editing or pulling the repo does not touch that copy | `/plugin marketplace update d365fo-mcp-marketplace` → `/plugin update d365fo-mcp@d365fo-mcp-marketplace` (or uninstall + install), then **start a new session** — skills are read at session start |
 
 ## Maintaining
 

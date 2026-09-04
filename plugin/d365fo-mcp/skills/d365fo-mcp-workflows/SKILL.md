@@ -37,7 +37,10 @@ This skill defines efficient multi-tool workflows for the 5 MCP service families
 | Need | Service | Best Starting Tool |
 |------|---------|-------------------|
 | Table/field metadata | d365kb | `d365_lookup_table` |
+| Table as compiled (base + extension fields, tagged by origin/module) | d365kb | `d365_effective_schema` |
 | "Does this field exist?" | d365kb | `d365_check_field_exists` |
+| "Do these objects / methods exist?" (preflight, ≤50, misses carry suggestions) | d365xref | `xref_check_exists` |
+| "Do these roles / duties / privileges / entry points exist?" (preflight, returns canonical casing) | d365sec | `sec_check_exists` |
 | Enum values | d365kb | `d365_get_enum` |
 | Join keys between tables | d365kb | `d365_get_join_keys` |
 | Who calls/uses X? | d365xref | `xref_find_references` or `xref_find_method_callers` |
@@ -62,14 +65,17 @@ This skill defines efficient multi-tool workflows for the 5 MCP service families
 
 ```
 PARALLEL:
-  d365_lookup_table(tableName)           -- fields, indexes, relations
-  xref_object_summary(objectName)        -- who references this table
+  d365_lookup_table(tableName, limit/fields_like)   -- fields, indexes, relations (pass functional_context when known)
+  xref_object_summary(objectName)                   -- who references this table (counts first)
 
+THEN (if the customisation surface matters):
+  d365_effective_schema(tableName)       -- base + every extension's fields, each tagged origin/module/model_origin
+                                         -- replaces lookup_table + xref_find_extensions for "who added which field"
 THEN (if user needs security):
   sec_permission_trace(objectName)       -- who has access
 ```
 
-**Do NOT** call `d365_search` if you already know the exact table name. Go straight to `d365_lookup_table`.
+**Do NOT** call `d365_search` if you already know the exact table name. Go straight to `d365_lookup_table`. If the name is uncertain, a not-found response already lists the closest existing names — use them instead of a search call.
 
 ---
 
@@ -94,11 +100,17 @@ THEN (if enum type):
 **When:** User plans to modify a table, field, class, or method.
 
 ```
+FIRST (one call, all names):
+  xref_check_exists(objects=[...])                 -- verify every name you are about to reason over; fix misses from the suggestions
+
 PARALLEL:
-  xref_impact_analysis(objectName)                 -- all downstream consumers
+  xref_impact_analysis(objectName, limit)          -- all downstream consumers
   d365_lookup_table(tableName) OR                   -- current structure
     d365_get_class_methods(className)
-  xref_find_extensions(objectName)                  -- CoC extensions on it
+  xref_find_extensions(objectName, limit)           -- CoC extensions on it
+
+READ the coverage lines: an `isv_excluded` count means sealed-ISV consumers (Lasernet, banking …)
+are not in the list — add include_isv or xref_isv_find_usages before calling the blast radius complete.
 
 THEN (if cross-module):
   xref_cross_module_deps(moduleName)               -- module boundary crossings
@@ -242,13 +254,29 @@ THEN (if need full article):
 
 **When:** User asks about a data entity, its fields, or staging behavior.
 
+### 7a — "Structure of entity X" (B5, the `/d365-entity` recipe, target ≤ 4 k MCP tokens, 3 calls)
+
+State the shape first: *"Shape: data sources + keys + party link → summary, one table lookup, one sibling query."* Then:
+
+```
+1. d365_get_entity_sources(entity_name)                      -- SUMMARY (default): header, data sources
+                                                             --   with field counts, method + custom counts
+2. d365_lookup_table(primary_table,                          -- keys + relations of the backing table,
+                     sections: ["indexes","relations_out"],  --   NO field list; provenance once
+                     include_provenance: true)
+3. d365_raw_sql: SELECT entity_name, public_collection, label, primary_table
+                 FROM data_entities WHERE primary_table = ? COLLATE NOCASE LIMIT 20
+                                                             -- sibling entities on the same table
+```
+Field rows only on request (`fields_like`, `custom_only`, `summary:false`), and never a second `d365_lookup_table` on the same table. Measured on the vendor entity (2026-09-04): 11 calls / 25.3 k tokens without the recipe, ≈ 4 calls / ≤ 4 k with it, same answer.
+
+### 7b — field-level mapping (when the question IS the fields)
+
 ```
 PARALLEL:
-  d365_get_entity_sources(entityName)              -- field-to-datasource mapping
-                                                   -- (custom_only:true for just the
-                                                   --  customisation surface)
-  d365_lookup_table(primaryTableName)              -- backing table structure
-  xref_find_references(entityName)                 -- who uses the entity
+  d365_get_entity_sources(entityName, fields_like | custom_only)   -- the rows you need, not all
+  d365_lookup_table(primaryTableName, sections: ["fields"], fields_like)
+  xref_find_references(entityName, limit: 20)                      -- who uses the entity
 ```
 
 ---
@@ -485,7 +513,7 @@ Hard-won this session — a raw_sql call blew the token limit **three times** an
 
 1. **Aggregate, never enumerate.** "Which roles/duties grant X" must return **one row per entity** via `count(*)` / `GROUP BY`, never a row per (role × privilege) — a cross-join over a tenant's roles is thousands of rows and overflows the token budget. Get the count/shape first; only expand a specific slice you actually need.
 2. **No `group_concat` over an unbounded column.** One `group_concat(duty_name)` returned a single 298 KB cell. If you must concat, wrap with a known-small `WHERE` or a `LIMIT`-ed subquery.
-3. **Always add `LIMIT`** on exploratory queries, and pass **`format="toon"`** for flat tabular result sets (~25-35 % fewer tokens).
+3. **Always add `LIMIT`** on exploratory queries. Leave `format` alone — the text channel is adaptive (TOON or Markdown, whichever is smaller for that response; the difference is ~5%, not the 25–35% once claimed). Pin `format="markdown"` only when the rows are quoted verbatim into a document.
 4. **Query-guard quirks** (the guard is a naive string check):
    - Must **start** with `SELECT` / `WITH` / `PRAGMA` — a **leading `--` comment makes it fail** ("Only SELECT, WITH, and PRAGMA allowed"). Put comments after the first keyword, or omit them.
    - `UPDATE` / `DELETE` / `INSERT` are rejected **even inside string literals** (role name `'…status update'` → "Forbidden keyword UPDATE"). Match such names with a keyword-free `LIKE 'prefix%'`.
@@ -526,6 +554,15 @@ Hard-won this session — a raw_sql call blew the token limit **three times** an
 | Concluding an object doesn't exist from 0 rows of `xref_search_names` with an `object_type` filter | `object_type="Classes"` returned 0 for `VersioningPurchaseOrder%` although the class exists (name-node type mismatch) | Retry without the filter, or prove existence via a caller/reference hit; only then conclude absence |
 | `d365_check_field_exists` on a table MAP (`PurchTableMap`) | Maps aren't in the KB tables list → "Table not found" | Enumerate map fields via `xref_search_names('Map/<Name>/%')` (Workflow 14) |
 | Stopping a wiped-field RCA at the first plausible writer (`initFromVendTable`, versioning restore) | The plausible writers often only run at create/modify time — they can't explain an approval/posting-time wipe | Walk each writer's call chain up to a trigger that matches the reported moment before presenting it (Workflow 14, step 4) |
+| **Answering about object A by checking object B, because the KB cannot reach A** (view → its base tables; map → the mapped table; entity → its primary table) | The tool gap silently becomes an assumption. `d365_check_field_exists('PurchTableHistory','PurchOrderFormNum')`=true was used to conclude `PurchTableAllVersions` exposes it. It does **not** — a union view exposes a *curated* column list. Wrong design conclusion, stated as fact (2026-09-01) | When the tool cannot address the exact object, fill the gap from another source — `AxView\`/`AxQuery\` XML under `PackagesLocalDirectory` (the KB `views.file_path` column hands you the path), or a live query. Never substitute the nearest object the tool *can* address |
+| **Reusing a prior analysis's `CONFIRMED` finding without re-reading the evidence under it** | A finding can be confirmed on one leg and merely *quoted* on the other, while the label covers both. "The requester InnerJoin drops POs" was CONFIRMED on `PurchTable.Requester mandatory=No` (true, from MCP) and inherited on "GRUK/HOVN/KAIN/WEUK configured InnerJoin" (false — every child join in all 11 Queries is OuterJoin) | Split a reused finding into its premises and ask which were **read** and which were **quoted**; re-read the quoted ones. "Treat these as baseline, don't re-run settled work" is scope guidance, not evidence |
+| Reporting a derived count or list with no independent figure to check it against | Every parsing bug caught in the PO run (leaf-name collision across two aliases of one table, missing `()` on display-method output names, Windows `*.XML`/`*.xml` double glob counting 114 files instead of 57) was caught by a mismatch against a known number. The two errors that survived had no such anchor | Anchor each extraction to something known independently — document count, prior per-LE counts, figures the requester supplied. Where no anchor exists, say so and mark the number unverified |
+| Re-running a truncated list call with a bigger `limit` | On the paginated tools (`d365_search`, `d365_get_class_methods`, `d365_get_entity_sources`, `xref_find_references`, `xref_find_usages`, `sec_search`, `sec_find_roles_by_*`) that re-pays every row already in context | Pass `next_cursor` back as `cursor` with the same arguments — the next page only |
+| One lookup call per name just to confirm the names exist | N turns and N payloads for a yes/no question; a wrong guess ships confidently | `d365_check_field_exists(tables=[…])` / `xref_check_exists(objects=[…])` / `sec_check_exists(roles=[…], …)` — one batch, misses come back with suggestions and canonical casing |
+| Re-issuing the same call after a *not-found*, or a `d365_search` to fix the spelling | The not-found response already lists the closest existing names | Pick from that list; a search call is a wasted turn |
+| Ignoring the italic coverage lines under the snapshot banner (`isv_excluded`, `partial_build`, `field_limit_hit`, `provenance_omitted`, `isv_not_scanned`) | They are the exact statement of what the response does NOT cover — asserting completeness over them is the hallucination these tools exist to prevent | Carry each line into the deliverable as an evidence limit; widen the call (`include_isv`, `include_provenance`, `fields_like`) only when the gap matters |
+| Retrying a call that came back with a "you are repeating this call" note | The server suppresses the payload on the third identical call in fifteen — the answer is already in context or the arguments are wrong | Change the arguments or move on; never loop on an unchanged call |
+| Calling `d365_lookup_table` on several tables in one turn, or `xref_find_extensions` + `d365_lookup_table` to learn who added which field | `lookup_table` is deliberately unbatched (one response is already large); two calls to answer one question | One `d365_effective_schema(table)` — base + every extension's fields, each row tagged `origin` / `module` / `model_origin` |
 
 ---
 
@@ -541,9 +578,22 @@ Hard-won this session — a raw_sql call blew the token limit **three times** an
 8. **Aggregate over enumerate in raw_sql**: count/shape a result set before expanding it; never return a row per (role × privilege) or `group_concat` an unbounded column (token-limit overflow)
 9. **Authoritative tools beat hand-rolled SQL**: prefer `sec_object_access`/`sec_effective_permissions` over duty-join SQL — and sanity-check `duty_privileges` before trusting it
 10. **Verify a "now fixed" claim once**: when told a broken tool is fixed, re-test exactly once; if it still errors the server build/connection wasn't reloaded — report, don't loop
+11. **Preflight names in one batch**: `*_check_exists` / `d365_check_field_exists(tables=[…])` before any SQL, X++ or security statement that names several objects — a miss is data with suggestions, not an error
+12. **Page with `cursor`, never with a bigger `limit`**: `has_more` + `next_cursor` are on every paginated list; re-issuing with a larger limit re-pays the head of the list
+13. **Batch same-kind targets**: `enum_names`, `tables`, `method_names`, `queries`, `object_names`, `objects`, `role_names` — one turn instead of N at about the same JSON size (the batch hoists what the entries repeat). Exception: `d365_lookup_table`, unbatched on purpose
+14. **Read the coverage lines before asserting completeness**: `isv_excluded` / `partial_build` / `field_limit_hit` / `provenance_omitted` / `isv_not_scanned` say exactly what a response leaves out — repeat them in the answer
+15. **Leave `format` at its default**: the text channel is adaptive (TOON or Markdown, whichever is smaller per response); the JSON `structuredContent` is what the claude.ai connector bills and it is identical either way
+17. **Counts and aggregates before any list** (B1): entity summary before field rows; `sections: ["indexes","relations_out"]` before fields; `GROUP BY` before rows in raw_sql, then ≤ 5 rows per group (B4).
+18. **Provenance on the first call** (B2): `include_provenance: true` on the first `d365_lookup_table`; never a second lookup of the same table with `custom_only`.
+19. **No discovery search for a known name** (B3): `d365_search` only when the object name is unknown.
+20. **Decide the answer shape before the first call and name it in one line** (A2); **offer a new session at a topic switch before any work** (A1).
+21. **One `WebFetch` beats a subagent for a single documentation page** (E2, measured: 49 k tokens of subagent for four facts one fetch gives); **when a deploy script is likely to hit the classifier, run the publish steps directly from the start** (E3).
+16. **Pass `functional_context`** (`sales_order`, `vendor_invoice`, …) on the lookup tools when the business entity is known — a hit records the mapping for later sessions, a miss returns the objects already mapped to that entity
 
 ---
 
+*Version: 1.9 | Date: 2026-09-04 | Added: Workflow 7a (entity structure in 3 calls — summary default, `sections`, sibling query), rules 17–21 (counts before lists, provenance once, no discovery search, answer shape + new-session offer, WebFetch over subagent) from `MCP_Communication_Efficiency_Improvements_2026-09-04`.*
+*Version: 1.8 | Date: 2026-09-03 | Added: `d365_effective_schema` (Workflow 1/3, service map), `xref_check_exists` / `sec_check_exists` preflights (service map, Workflow 3), cursor pagination + batch parameters + coverage lines + loop-guard note as cost rules 11–16 and 6 anti-patterns; corrected the stale `format="toon"` guardrail (adaptive default, ~5% not 25–35%). First external-user measurement: ~70% fewer tokens on a script-writing task after the 2026-09-02 response-quality release.*
 *Version: 1.7 | Date: 2026-08-18 | Added: Workflow 14 ("who wipes/writes this field" — KB source search as ground truth for writers, custom-model rule-out sweep, walk-up-to-the-trigger-moment discipline, unit-test names and doc comments as evidence, labels-table lookup for named labels), KB raw-SQL schema notes (real `methods(owner_name,…)` schema vs the wrong documented one, `sqlite_master` discovery, `labels` table), map-field enumeration via path patterns, 4 anti-patterns (xref field-usage false negatives, object_type-filtered 0-rows ≠ absence, check_field_exists on maps, stopping at the first plausible writer).*
 *Version: 1.6 | Date: 2026-07-08 | Added: Workflow 13 (migration-defect RCA via DMF entity validation depth — method-count as a signal for thin-pass-through vs. guarded entities; module_id-reveals-custom-AOT-model-name bonus technique), 3 anti-patterns (trusting docs over a live-environment contradiction; silently resolving conflicting sources instead of flagging; guessing a custom model name instead of checking module_id).*
 *Version: 1.5 | Date: 2026-07-07 | Added: Workflow 12 (caching/timing bug diagnosis via d365_lookup_table cache_lookup + key-shape + validTimeState EDT checks; cross-check every hypothesis against ALL symptoms, not just the failure case), 2 anti-patterns (environment-agnostic theory presented as environment-specific cause; d365kb raw_sql confirmed broken like d365sec's).*

@@ -8,7 +8,7 @@ Compiler cross-reference snapshot: who calls, reads, writes, extends, implements
 
 | Tool | One-line purpose |
 |---|---|
-| `xref_find_references` | Objects that reference a given D365FO object ("Used By" / "Find All References"). |
+| `xref_find_references` | Objects that reference a given D365FO object ("Used By" / "Find All References"); a label id (`@SYS9694`) gives the label where-used. |
 | `xref_find_usages` | Find all objects that a given D365FO object references (what it calls/reads/extends). |
 | `xref_find_method_callers` | Find all callers of a specific method on a class or table. |
 | `xref_class_hierarchy` | Find the full class inheritance hierarchy — all subclasses (recursive) or the parent chain of a given class. |
@@ -29,7 +29,7 @@ Compiler cross-reference snapshot: who calls, reads, writes, extends, implements
 
 ## `xref_find_references`
 
-Objects that reference a given D365FO object ("Used By" / "Find All References"). `include_isv` adds per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot.
+Objects that reference a given D365FO object ("Used By" / "Find All References"); a label id (`@SYS9694`) gives the label where-used. `include_isv` adds per-model counts from sealed (binary-only) ISV models, otherwise absent from this snapshot.
 
 | Param | Type | Required | Description |
 |---|---|---|---|
@@ -177,7 +177,7 @@ Compact summary of an object: incoming vs outgoing reference counts by kind, met
 
 ## `xref_check_exists`
 
-Preflight: do these XRef objects exist? Accepts `Name`, `/Type/Name`, `Owner.method`; misses get suggestions.
+Preflight: do these XRef objects exist? Accepts `Name`, `/Type/Name`, `Owner.method`, `@LabelId`; misses get suggestions.
 
 | Param | Type | Required | Description |
 |---|---|---|---|

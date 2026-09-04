@@ -14,6 +14,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerAllXrefTools } from '../azure/tool-sets.js';
 import { serverInfo, serverOptions } from '../azure/server-metadata.js';
 import { resolvePreferences, setProcessRequestContext } from '../azure/request-context.js';
+import { startLiveRefresh } from './xref-live-refresh.js';
 
 // Agent guardrails are a SESSION concern, so they are switched on here — at the
 // MCP entry point — rather than defaulting on inside the tool library, where a
@@ -48,6 +49,12 @@ server.server.oninitialized = () => {
 // xref + isv-xref — the set is defined ONCE in tool-sets.js so the tools/list
 // budget test measures exactly what this server registers.
 registerAllXrefTools(server, db);
+
+// XREF_LIVE=1 (#129): converge this snapshot on the live DYNAMICSXREFDB for the
+// custom modules, detached, after the tools are up. stdout is the MCP transport,
+// so every line goes to stderr.
+const live = startLiveRefresh({ db, dbPath, log: (m) => console.error(m) });
+if (process.env.XREF_LIVE === '1' && !live.started) console.error(`XREF_LIVE: not started — ${live.reason}`);
 
 // Graceful shutdown
 process.on('SIGINT', () => { try { db.close(); } catch {} process.exit(0); });

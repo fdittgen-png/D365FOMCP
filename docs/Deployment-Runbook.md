@@ -118,7 +118,7 @@ Auth details: `docs/MCP-Entra-Auth-Setup.md`.
 | `KEY_VAULT_URI`, `KEY_VAULT_NAME` | Key Vault for the live custom-fields credentials | infra / `Set-D365CustomFieldsSource.ps1` |
 | `CUSTOM_FIELDS_SOURCES` | live environment(s) for `d365_custom_fields` | `Set-D365CustomFieldsSource.ps1` |
 | `WIKI_CONFIG_JSON`, `OTRS_*` | wiki / ticket integrations | manual |
-| `MCP_TOOL_PROFILE`, `MCP_TEXT_CHANNEL`, `MCP_STALE_WARN_DAYS` | optional server-wide defaults; per-connector `?profile=core` / `?text=summary` on the URL override them | manual |
+| `MCP_TOOL_PROFILE`, `MCP_TEXT_CHANNEL`, `MCP_STRUCTURED_CONTENT`, `MCP_STALE_WARN_DAYS` | optional server-wide defaults; per-connector `?profile=core` / `?text=summary` / `?structured=off` on the URL override them. Recommended connector URL for Claude clients (they store `structuredContent` and drop the text): `…/api/d365kb?structured=off` | manual |
 
 ```powershell
 az functionapp config appsettings set -g tis-d-mcpd365fo-rg -n tis-d-mcpd365fo-func --settings NAME=value

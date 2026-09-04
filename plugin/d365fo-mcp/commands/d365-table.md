@@ -1,22 +1,23 @@
 ---
 description: Produces a full structural analysis of one D365FO table — fields, indexes, relations, extensions, usage hotspots, enums. Use when the user names a table (e.g. CustTable, SalesTable) and wants to understand its structure, dependencies, or customization surface.
-argument-hint: <TableName>
+argument-hint: <TableName> [--full]
 ---
 
 # D365 Table Deep Dive
 
 ## Task
 Analyze the D365 table `$ARGUMENTS` across structure, usage, security, and customizations.
+**Default is brief** (B5): keys, relations, customisation surface and usage counts — no field list. Only with `--full` in the arguments list the fields (`sections: ["fields","indexes","relations_out"]`, `field_limit` as needed). State the shape in one line before the first call.
 **Done when:** the report covers every section below with data from the MCP services, all enum fields are resolved to values, and anything the tools could not confirm is explicitly flagged as unverified.
 
 ## Workflow
 
 ### Step 1: Gather all metadata (parallel)
 Run ALL of these in parallel:
-- `d365kb:d365_lookup_table` with tableName = `$ARGUMENTS` (fields, indexes, relations, properties)
+- `d365kb:d365_lookup_table` with `table_name` = `$ARGUMENTS`, `sections: ["indexes","relations_out"]`, `include_provenance: true` (brief) — add `"fields"` to `sections` only with `--full`. Never a second lookup of the same table.
 - `d365xref:xref_object_summary` with objectName = `$ARGUMENTS` (reference counts, top callers)
-- `d365xref:xref_find_extensions` with objectName = `$ARGUMENTS` (CoC extensions and overlayering)
-- `d365kb:d365_find_referencing_tables` with tableName = `$ARGUMENTS` (foreign keys pointing to this table)
+- `d365xref:xref_find_extensions` with objectName = `$ARGUMENTS`, `limit: 20` (CoC extensions and overlayering)
+- `d365kb:d365_find_referencing_tables` with tableName = `$ARGUMENTS`, `limit: 20` (foreign keys pointing to this table — the lookup carries only `incoming_count`)
 
 ### Step 2: Resolve enums
 For each enum-type field discovered in Step 1, call `d365kb:d365_get_enum` to get the value mappings.

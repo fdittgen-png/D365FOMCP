@@ -331,7 +331,7 @@ describe('d365_lookup_table', () => {
   });
 
   it('shows incoming relations', async () => {
-    const result = await callTool('d365_lookup_table', { table_name: 'CustTable' });
+    const result = await callTool('d365_lookup_table', { table_name: 'CustTable', sections: ['relations_in'] });
     assert.ok(result.includes('Incoming Relations'));
     assert.ok(result.includes('SalesTable'));
   });
@@ -364,7 +364,8 @@ describe('d365_lookup_table', () => {
     assert.ok(Array.isArray(result.structuredContent.fields));
     assert.ok(Array.isArray(result.structuredContent.indexes));
     assert.ok(Array.isArray(result.structuredContent.outgoing_relations));
-    assert.ok(Array.isArray(result.structuredContent.incoming_relations));
+    assert.equal(result.structuredContent.incoming_relations, undefined, 'C1: incoming rows only with sections relations_in');
+    assert.equal(typeof result.structuredContent.incoming_count, 'number');
   });
 
   it('given an unknown table, then isError is true and markdown fallback carries did-you-mean', async () => {
@@ -964,7 +965,7 @@ describe('d365_get_entity_sources', () => {
   });
 
   it('shows entity fields', async () => {
-    const result = await callTool('d365_get_entity_sources', { entity_name: 'CustCustomerEntity' });
+    const result = await callTool('d365_get_entity_sources', { entity_name: 'CustCustomerEntity', summary: false });
     assert.ok(result.includes('Entity Fields'));
     assert.ok(result.includes('CustomerAccount'));
     assert.ok(result.includes('AccountNum'));
@@ -1674,7 +1675,7 @@ describe('TEXT column coercion — d365_get_entity_sources', () => {
 
   it('given TEXT-typed is_mandatory, then schema parses', async () => {
     const { d365GetEntitySourcesOutput } = await import('../src/azure/output-schemas.js');
-    const result = await callToolFull('d365_get_entity_sources', { entity_name: 'TextCoercionEntity' });
+    const result = await callToolFull('d365_get_entity_sources', { entity_name: 'TextCoercionEntity', summary: false });
     assert.ok(result.structuredContent, 'expected structuredContent');
     assert.doesNotThrow(() => d365GetEntitySourcesOutput.parse(result.structuredContent));
     for (const f of result.structuredContent.entity_fields) {
@@ -1701,7 +1702,7 @@ describe('NULL relation fields — d365_lookup_table', () => {
 
   it('given NULL source_table and relation_name in relations, then schema parses', async () => {
     const { d365LookupTableOutput } = await import('../src/azure/output-schemas.js');
-    const result = await callToolFull('d365_lookup_table', { table_name: 'NullRelTest' });
+    const result = await callToolFull('d365_lookup_table', { table_name: 'NullRelTest', sections: ['fields', 'indexes', 'relations_out', 'relations_in'] });
     assert.ok(result.structuredContent, 'expected structuredContent');
     assert.doesNotThrow(() => d365LookupTableOutput.parse(result.structuredContent));
     // Incoming relation should have nullable source_table
@@ -2138,7 +2139,7 @@ describe('response shaping — d365_get_entity_sources', () => {
   });
 
   it('omits method signatures by default but always reports method_count', async () => {
-    const res = await call({ entity_name: 'ReleasedProductsV2' });
+    const res = await call({ entity_name: 'ReleasedProductsV2', summary: false });
     assert.equal(res.structuredContent.method_count, 2);
     assert.deepEqual(res.structuredContent.methods, []);
     assert.match(res.content[0].text, /pass `include_methods: true`/);
@@ -2177,7 +2178,7 @@ describe('response shaping — d365_get_entity_sources', () => {
   };
 
   it('emits no provenance by default, and does so uniformly across every field', async () => {
-    const res = await call({ entity_name: 'ReleasedProductsV2' });
+    const res = await call({ entity_name: 'ReleasedProductsV2', summary: false });
     const fields = res.structuredContent.entity_fields;
     assertUniformFieldShape(fields, 'default');
     for (const f of fields) {
@@ -2204,7 +2205,7 @@ describe('response shaping — d365_get_entity_sources', () => {
       assert.ok('is_extension' in f, `${f.field_name}: is_extension must be present`);
     }
     // Opting in must cost more than the default, or the default is not an optimisation.
-    const lean = await call({ entity_name: 'ReleasedProductsV2' });
+    const lean = await call({ entity_name: 'ReleasedProductsV2', summary: false });
     assert.ok(
       JSON.stringify(lean.structuredContent).length < JSON.stringify(res.structuredContent).length,
       'the default payload must be smaller than the include_provenance one',
@@ -2413,5 +2414,172 @@ describe('response shaping — d365_lookup_table field narrowing', () => {
     const res = await tools['d365_lookup_table'].handler({ table_name: 'InventTable', field_limit: -5, format: 'markdown' });
     assert.equal(res.structuredContent.fields.length, 3);
     assert.equal(res.structuredContent.fields_truncated, false);
+  });
+});
+
+// ── Labels v2 (#84/#127) ─────────────────────────────────────────────────────
+describe('labels v2: d365_search(object_type: "label") and d365_resolve_label(languages)', () => {
+  it('on a pre-v2 snapshot label search LIKE-scans en-US text and rows carry no language key', async () => {
+    const r = await callToolFull('d365_search', { query: 'vendor', object_type: 'label', include_context: true });
+    assert.equal(r.structuredContent.result_count, 1);
+    assert.equal(r.structuredContent.results[0].object_type, 'label');
+    assert.equal(r.structuredContent.results[0].object_name, '@SYS67890');
+    assert.match(r.structuredContent.results[0].context, /en-US: Vendor account/);
+    const l = await callToolFull('d365_resolve_label', { label_ids: ['@SYS12345'], languages: ['de'] });
+    assert.deepEqual(l.structuredContent.resolved, [{ label_id: '@SYS12345', text: 'Customer account' }], 'languages ignored without a language column');
+  });
+
+  it('on a v2 snapshot resolve_label returns one row per (id, language) and search uses labels_fts', async () => {
+    const v2 = new Database(':memory:');
+    v2.exec(`
+      CREATE TABLE labels (label_id TEXT, language TEXT DEFAULT 'en-US', text TEXT, label_file TEXT, module TEXT, PRIMARY KEY(label_id, language));
+      INSERT INTO labels VALUES ('@SYS40543','en-US','Search string','SYS','ApplicationPlatform');
+      INSERT INTO labels VALUES ('@SYS40543','de','Suchzeichenfolge','SYS','ApplicationPlatform');
+      INSERT INTO labels VALUES ('@LAC:InvoiceDate','en-US','Invoice date','LAC','Lasernet');
+      CREATE VIRTUAL TABLE labels_fts USING fts5(text, content='labels', content_rowid='rowid');
+      INSERT INTO labels_fts(labels_fts) VALUES('rebuild');
+      CREATE TABLE kb_metadata (key TEXT PRIMARY KEY, value TEXT);
+    `);
+    const { registerKbTools } = await import('../src/azure/kb-tools.js');
+    const mock = createMockServer();
+    registerKbTools(mock, v2);
+    const call = async (name, args) => mock.handlers[name].handler(z.object(mock.handlers[name].schema).parse({ format: 'markdown', ...args }));
+
+    const en = await call('d365_resolve_label', { label_ids: ['@SYS40543', '@LAC:InvoiceDate', '@SYS1'] });
+    assert.deepEqual(en.structuredContent.resolved, [
+      { label_id: '@LAC:InvoiceDate', language: 'en-US', text: 'Invoice date' },
+      { label_id: '@SYS40543', language: 'en-US', text: 'Search string' },
+    ]);
+    assert.deepEqual(en.structuredContent.not_found, ['@SYS1']);
+    const de = await call('d365_resolve_label', { label_ids: ['@SYS40543'], languages: ['de', 'en-US'] });
+    assert.deepEqual(de.structuredContent.resolved.map(r => r.language), ['de', 'en-US']);
+    assert.match(de.content[0].text, /Suchzeichenfolge/);
+
+    const s = await call('d365_search', { query: 'search', object_type: 'label' });
+    assert.equal(s.structuredContent.result_count, 1);
+    assert.equal(s.structuredContent.results[0].object_name, '@SYS40543');
+    assert.equal(s.structuredContent.results[0].module_id, 'ApplicationPlatform');
+    const scoped = await call('d365_search', { query: 'invoice', object_type: 'label', modules: ['Lasernet'] });
+    assert.equal(scoped.structuredContent.results[0].object_name, '@LAC:InvoiceDate');
+    const none = await call('d365_search', { query: 'invoice', object_type: 'label', modules: ['ApplicationSuite'] });
+    assert.equal(none._meta.kind, 'empty');
+  });
+});
+
+// ── MCP_Communication_Efficiency_Improvements_2026-09-04 — C1 / C2 / C3 / C4 / C6 ──
+describe('C1 — d365_lookup_table sections', () => {
+  it('default sections are fields, indexes, relations_out; incoming relations become a count', async () => {
+    const r = await callToolFull('d365_lookup_table', { table_name: 'CustTable' });
+    const sc = r.structuredContent;
+    assert.ok(Array.isArray(sc.fields) && sc.fields.length > 0);
+    assert.ok(Array.isArray(sc.indexes) && sc.indexes.length === 2);
+    assert.ok(Array.isArray(sc.outgoing_relations) && sc.outgoing_relations.length === 2);
+    assert.equal(sc.incoming_relations, undefined, 'incoming rows are not in the default view');
+    assert.equal(sc.incoming_relations_truncated, undefined);
+    assert.equal(sc.incoming_count, 1);
+    assert.equal(sc.outgoing_count, 2);
+    assert.equal(sc.index_count, 2);
+    assert.deepEqual(sc.sections, ['fields', 'indexes', 'relations_out']);
+    assert.match(r.content[0].text, /not included: relations_in \(1 incoming\)/);
+  });
+
+  it('sections: [relations_in] returns only the incoming rows', async () => {
+    const r = await callToolFull('d365_lookup_table', { table_name: 'CustTable', sections: ['relations_in'] });
+    const sc = r.structuredContent;
+    assert.equal(sc.fields, undefined);
+    assert.equal(sc.indexes, undefined);
+    assert.equal(sc.outgoing_relations, undefined);
+    assert.equal(sc.incoming_relations.length, 1);
+    assert.equal(sc.incoming_relations[0].source_table, 'SalesTable');
+    assert.equal(sc.incoming_relations_truncated, false);
+    assert.equal(sc.field_count, 5, 'counts stay whole-table');
+    assert.doesNotMatch(r.content[0].text, /## Indexes/);
+  });
+
+  it('custom_only without sections implies fields only — relations are not re-emitted', async () => {
+    const r = await callToolFull('d365_lookup_table', { table_name: 'CustTable', custom_only: true });
+    const sc = r.structuredContent;
+    assert.deepEqual(sc.sections, ['fields']);
+    assert.equal(sc.indexes, undefined);
+    assert.equal(sc.outgoing_relations, undefined);
+    assert.equal(sc.outgoing_count, 2, 'the count is still there');
+  });
+
+  it('custom_only with an explicit sections list honours the list', async () => {
+    const r = await callToolFull('d365_lookup_table', { table_name: 'CustTable', custom_only: true, sections: ['fields', 'indexes'] });
+    assert.deepEqual(r.structuredContent.sections, ['fields', 'indexes']);
+    assert.equal(r.structuredContent.indexes.length, 2);
+  });
+});
+
+describe('C3 — compact relation rows in the text channel', () => {
+  it('renders one line per relation instead of a five-column table', async () => {
+    const text = await callTool('d365_lookup_table', { table_name: 'CustTable', sections: ['relations_out', 'relations_in'] });
+    assert.match(text, /- CustGroupRel → CustGroup \[CustGroup->CustGroup\] Association, delete Restricted/);
+    assert.match(text, /- SalesTable\.CustAccountRel → this \[CustAccount->AccountNum\]/);
+    assert.doesNotMatch(text, /\| Relation \| To Table \|/);
+  });
+});
+
+describe('C2 — d365_get_entity_sources summary mode', () => {
+  it('is the default when no field filter, cursor, limit or methods are requested', async () => {
+    const r = await callToolFull('d365_get_entity_sources', { entity_name: 'CustCustomerEntity' });
+    const sc = r.structuredContent;
+    assert.equal(sc.summary, true);
+    assert.deepEqual(sc.data_sources, [{ name: 'CustTable', field_count: 2 }]);
+    assert.equal(sc.field_count, 2);
+    assert.equal(sc.custom_field_count, 0);
+    assert.equal(sc.method_count, 0);
+    assert.equal(sc.entity_fields, undefined, 'no field rows in summary mode');
+    assert.equal(sc.fields_returned, undefined);
+    assert.equal(sc.has_more, false);
+    assert.match(r.content[0].text, /CustTable/);
+    assert.match(r.content[0].text, /summary/i);
+  });
+
+  it('any field filter, an explicit limit, or summary:false switches to field rows', async () => {
+    const byFilter = await callToolFull('d365_get_entity_sources', { entity_name: 'CustCustomerEntity', fields_like: 'Account' });
+    assert.equal(byFilter.structuredContent.summary, undefined);
+    assert.equal(byFilter.structuredContent.entity_fields.length, 1);
+    const byLimit = await callToolFull('d365_get_entity_sources', { entity_name: 'CustCustomerEntity', limit: 1 });
+    assert.equal(byLimit.structuredContent.entity_fields.length, 1);
+    assert.equal(byLimit.structuredContent.has_more, true);
+    const explicit = await callToolFull('d365_get_entity_sources', { entity_name: 'CustCustomerEntity', summary: false });
+    assert.equal(explicit.structuredContent.entity_fields.length, 2);
+    const forced = await callToolFull('d365_get_entity_sources', { entity_name: 'CustCustomerEntity', summary: true, fields_like: 'Account' });
+    assert.equal(forced.structuredContent.summary, true, 'an explicit summary:true wins over a filter');
+  });
+});
+
+describe('C4 — d365_search without snippets by default', () => {
+  it('omits context on every row unless include_context is passed', async () => {
+    const plain = await callToolFull('d365_search', { query: 'customer' });
+    assert.ok(plain.structuredContent.results.length > 0);
+    assert.ok(plain.structuredContent.results.every(r => !('context' in r)));
+    assert.doesNotMatch(plain.content[0].text, /context/);
+    const withCtx = await callToolFull('d365_search', { query: 'customer', include_context: true });
+    assert.ok(withCtx.structuredContent.results.every(r => typeof r.context === 'string'));
+    const batch = await callToolFull('d365_search', { queries: ['customer', 'vendor'] });
+    assert.ok(batch.structuredContent.queries.every(q => q.results.every(r => !('context' in r))));
+  });
+});
+
+describe('C6 — server-side shape hint on large unfiltered responses', () => {
+  before(() => {
+    db.exec(`INSERT INTO tables VALUES ('WideTable', 'ApplicationSuite', NULL, 'Main', 1, 'Found', 'PkIdx', 'PkIdx', 300)`);
+    const ins = db.prepare(`INSERT INTO fields (table_name, field_name, field_type, edt, enum_type, mandatory, label) VALUES ('WideTable', ?, 'String', 'Name', NULL, 0, NULL)`);
+    for (let i = 0; i < 300; i++) ins.run(`WideField_${String(i).padStart(3, '0')}`);
+  });
+
+  it('fires on a wide unfiltered lookup and names the narrowing parameters', async () => {
+    const r = await callToolFull('d365_lookup_table', { table_name: 'WideTable', field_limit: 300 });
+    assert.equal(typeof r.structuredContent.shape_hint, 'string');
+    assert.match(r.structuredContent.shape_hint, /sections|fields_like/);
+    assert.match(r.content[0].text, /_Hint: /);
+  });
+
+  it('stays silent when a filter was passed', async () => {
+    const r = await callToolFull('d365_lookup_table', { table_name: 'WideTable', field_limit: 300, fields_like: 'WideField' });
+    assert.equal(r.structuredContent.shape_hint, undefined);
   });
 });

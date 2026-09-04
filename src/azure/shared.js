@@ -12,6 +12,7 @@ import { z } from 'zod';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 import { ensureSecIndexes } from './sec-indexes.js';
+import { ensureKbIndexes } from './kb-indexes.js';
 import { getRequestContext } from './request-context.js';
 import { entityDisplayName, mappedObjectsForEntity, suggestEntities } from './semantic-store.js';
 
@@ -109,7 +110,15 @@ function openDb(filePath, mmapSize = 3221225472) {
 export function getKbDb() {
   if (!kbDb) {
     const dbPath = process.env.KB_DB_PATH || '/home/data/d365fo_kb.sqlite';
-    kbDb = openDb(dbPath, 1100000000);
+    // Self-healing indexes (#125), same contract as the Sec DB below:
+    // KB_AUTO_INDEX=false disables.
+    if (process.env.KB_AUTO_INDEX !== 'false') {
+      const r = ensureKbIndexes(dbPath, { log: (m) => console.log(m) });
+      if (r.created.length) console.log(`kb DB: ${r.created.length} index(es) added in ${r.ms} ms`);
+    }
+    // 1.3 GB mmap: form_controls (#124) and objects_meta (#123) grow the file
+    // past the 1.1 GB that fitted the pre-#123 snapshot.
+    kbDb = openDb(dbPath, 1300000000);
   }
   return kbDb;
 }
@@ -599,7 +608,7 @@ export const READ_ONLY_LIVE_ANNOTATIONS = Object.freeze({
  *   which bypasses Zod) is treated as 'auto' — a 'toon' default here would
  *   silently pin the encoding for every such call, which is exactly how this
  *   was wrong the first time.
- * @param {{ coverage?: { text: string, keys: Record<string, number|boolean> } }} [opts]
+ * @param {{ coverage?: { text: string, keys: Record<string, number|boolean|string> } }} [opts]
  *   Coverage boundaries from `coverageNotes()` (#116).
  */
 export function structuredResult(typed, markdownText, format = 'auto', { coverage } = {}) {
@@ -699,13 +708,14 @@ function insertAfterHeading(text, lines) {
  *   isv_excluded?: { count: number },
  *   partial_build?: { since?: string|null },
  *   custom_layer?: string,
+ *   shape_hint?: string,
  * }} [signals]
- * @returns {{ text: string, keys: Record<string, boolean|number> }}
+ * @returns {{ text: string, keys: Record<string, boolean|number|string> }}
  */
 export function coverageNotes(signals = {}) {
   const s = signals && typeof signals === 'object' ? signals : {};
   const lines = [];
-  /** @type {Record<string, number|boolean>} */
+  /** @type {Record<string, number|boolean|string>} */
   const keys = {};
   const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
 
@@ -740,6 +750,14 @@ export function coverageNotes(signals = {}) {
     const since = typeof pb === 'object' && pb.since ? String(pb.since).slice(0, 10) : 'the last full build';
     lines.push(`_KB is a delta-merged snapshot; kb_search may be stale for base tables extended since ${since}._`);
     keys.partial_build = true;
+  }
+
+  // C6 (2026-09-04): a cheap nudge on a large, unfiltered list response — the
+  // server knows the response is big and that no narrowing parameter was
+  // passed; the skill text may drift, this line does not.
+  if (typeof s.shape_hint === 'string' && s.shape_hint.trim()) {
+    lines.push(`_Hint: ${s.shape_hint.trim()}_`);
+    keys.shape_hint = s.shape_hint.trim();
   }
 
   // Existing behaviour reused, not duplicated: customLayerNote already decides

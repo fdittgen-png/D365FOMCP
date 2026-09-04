@@ -16,6 +16,7 @@ import {
   normalizeProfile, normalizeTextChannel,
   CLIENT_TEXT_CHANNEL_POLICY, DEFAULT_PREFERENCES,
   HEADER_PROFILE, HEADER_TEXT_CHANNEL, ENV_PROFILE, ENV_TEXT_CHANNEL,
+  HEADER_STRUCTURED, ENV_STRUCTURED, QUERY_STRUCTURED, normalizeStructured, CLIENT_STRUCTURED_POLICY,
 } from '../src/azure/request-context.js';
 
 const noEnv = {};
@@ -25,15 +26,15 @@ describe('resolvePreferences — resolution order', () => {
     const p = resolvePreferences({ env: noEnv });
     assert.equal(p.profile, 'full');
     assert.equal(p.textChannel, 'full');
-    assert.deepEqual(p.sources, { profile: 'default', textChannel: 'default' });
-    assert.deepEqual(DEFAULT_PREFERENCES, { profile: 'full', textChannel: 'full' });
+    assert.deepEqual(p.sources, { profile: 'default', textChannel: 'default', structured: 'default' });
+    assert.deepEqual(DEFAULT_PREFERENCES, { profile: 'full', textChannel: 'full', structured: 'full' });
   });
 
   it('env is read when nothing more specific is present', () => {
     const p = resolvePreferences({ env: { [ENV_PROFILE]: 'core', [ENV_TEXT_CHANNEL]: 'summary' } });
     assert.equal(p.profile, 'core');
     assert.equal(p.textChannel, 'summary');
-    assert.deepEqual(p.sources, { profile: 'env', textChannel: 'env' });
+    assert.deepEqual(p.sources, { profile: 'env', textChannel: 'env', structured: 'default' });
   });
 
   it('header beats env', () => {
@@ -41,7 +42,7 @@ describe('resolvePreferences — resolution order', () => {
     const p = resolvePreferences({ headers, env: { [ENV_PROFILE]: 'full', [ENV_TEXT_CHANNEL]: 'full' } });
     assert.equal(p.profile, 'core');
     assert.equal(p.textChannel, 'summary');
-    assert.deepEqual(p.sources, { profile: 'header', textChannel: 'header' });
+    assert.deepEqual(p.sources, { profile: 'header', textChannel: 'header', structured: 'default' });
   });
 
   it('query beats header', () => {
@@ -49,7 +50,7 @@ describe('resolvePreferences — resolution order', () => {
     const p = resolvePreferences({ headers, query: 'https://x/api/d365kb?profile=full&text=full', env: noEnv });
     assert.equal(p.profile, 'full');
     assert.equal(p.textChannel, 'full');
-    assert.deepEqual(p.sources, { profile: 'query', textChannel: 'query' });
+    assert.deepEqual(p.sources, { profile: 'query', textChannel: 'query', structured: 'default' });
   });
 
   it('accepts URLSearchParams, a plain object, and a plain-object header bag', () => {
@@ -64,7 +65,7 @@ describe('resolvePreferences — resolution order', () => {
     const p = resolvePreferences({ headers, query: '?profile=minimal-typo&text=json', env: { [ENV_TEXT_CHANNEL]: 'summary' } });
     assert.equal(p.profile, 'core', 'query typo -> header wins');
     assert.equal(p.textChannel, 'summary', 'query typo -> env wins');
-    assert.deepEqual(p.sources, { profile: 'header', textChannel: 'env' });
+    assert.deepEqual(p.sources, { profile: 'header', textChannel: 'env', structured: 'default' });
 
     const bad = resolvePreferences({ env: { [ENV_PROFILE]: 'nope', [ENV_TEXT_CHANNEL]: 'nope' } });
     assert.equal(bad.profile, 'full');
@@ -110,7 +111,7 @@ describe('resolvePreferences — resolution order', () => {
     const p = preferencesFromHttpRequest(request, noEnv);
     assert.equal(p.profile, 'core');
     assert.equal(p.textChannel, 'summary');
-    assert.match(describePreferences(p), /^profile=core\(query\) text=summary\(header\)$/);
+    assert.match(describePreferences(p), /^profile=core\(query\) text=summary\(header\) structured=full\(default\)$/);
   });
 });
 
@@ -166,5 +167,39 @@ describe('request context — AsyncLocalStorage', () => {
       assert.ok(Object.isFrozen(ctx));
       assert.throws(() => { 'use strict'; ctx.profile = 'full'; });
     });
+  });
+});
+
+// ── C5 (MCP_Communication_Efficiency_Improvements_2026-09-04): the client that
+// stores `structuredContent` and drops the text channel (Claude Code, verified
+// on 10/10 results) must be able to receive the compact text INSTEAD. The
+// preference is `structured`: 'full' (default, byte-identical) | 'off'.
+describe('resolvePreferences — structured content policy (C5)', () => {
+  it('defaults to full and reads query > header > env > client policy', () => {
+    assert.equal(resolvePreferences({ env: noEnv }).structured, 'full');
+    assert.equal(resolvePreferences({ env: { [ENV_STRUCTURED]: 'off' } }).structured, 'off');
+    const h = resolvePreferences({ env: { [ENV_STRUCTURED]: 'off' }, headers: new Headers({ [HEADER_STRUCTURED]: 'full' }) });
+    assert.equal(h.structured, 'full');
+    assert.equal(h.sources.structured, 'header');
+    const q = resolvePreferences({ env: noEnv, headers: new Headers({ [HEADER_STRUCTURED]: 'full' }), query: `?${QUERY_STRUCTURED}=off` });
+    assert.equal(q.structured, 'off');
+    assert.equal(q.sources.structured, 'query');
+    const c = resolvePreferences({ env: noEnv, clientInfo: { name: 'Probe-Client' }, structuredPolicy: { 'probe-client': 'off' } });
+    assert.equal(c.structured, 'off');
+    assert.equal(c.sources.structured, 'client-policy');
+  });
+
+  it('an unknown value falls through, and the normalizer knows only full|off', () => {
+    assert.equal(resolvePreferences({ env: { [ENV_STRUCTURED]: 'compact' } }).structured, 'full');
+    assert.equal(normalizeStructured('OFF'), 'off');
+    assert.equal(normalizeStructured('json'), null);
+  });
+
+  it('the shipped client policy names Claude Code, the client measured to drop the text channel', () => {
+    assert.equal(CLIENT_STRUCTURED_POLICY['claude-code'], 'off');
+  });
+
+  it('describePreferences reports the structured channel', () => {
+    assert.match(describePreferences(resolvePreferences({ env: { [ENV_STRUCTURED]: 'off' } })), /structured=off\(env\)/);
   });
 });

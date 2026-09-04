@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "d365fo-mcp-marketplace",
+  "description": "Trelleborg TIS marketplace for Dynamics 365 Finance & Operations Claude Code plugins. Contact / information: florian.dittgen@trelleborg.com",
+  "owner": {
+    "name": "Trelleborg Group — TIS D365 F&O Services",
+    "email": "florian.dittgen@trelleborg.com"
+  },
+  "plugins": [
+    {
+      "name": "d365fo-mcp",
+      "description": "D365FO MCP services (knowledge base, cross-references, security, Task Recorder) with expert analysis commands and skills.",
+      "author": {
+        "name": "Trelleborg Group — TIS D365 F&O Services"
+      },
+      "category": "productivity",
+      "source": "./plugin/d365fo-mcp"
+    }
+  ]
+}

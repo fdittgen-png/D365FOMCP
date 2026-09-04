@@ -37,6 +37,8 @@ const TOOL_FILES = [
   // one sanctioned exception: it declares READ_ONLY_LIVE_ANNOTATIONS instead of
   // READ_ONLY_DB_ANNOTATIONS — see the PM-03 test below.
   'custom-fields-tools.js',
+  // Authoring-loop read tools (#123–#128), registered from registerKbTools().
+  'authoring-tools.js',
 ];
 
 // P6-01: every directory under src/ must not contain a `/* ignore */`

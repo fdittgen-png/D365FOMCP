@@ -7,6 +7,12 @@
  *   profile      'full' | 'core'      which tools are REGISTERED (tools/list size)
  *   textChannel  'full' | 'summary'   what `content[0].text` carries next to
  *                                     `structuredContent` (payload size)
+ *   structured   'full' | 'off'       whether `structuredContent` (and the
+ *                                     outputSchema that mandates it) is sent at
+ *                                     all — C5 of the 2026-09-04 efficiency
+ *                                     analysis: Claude Code stores the JSON and
+ *                                     drops the compact text channel, so for it
+ *                                     the text IS the payload
  *
  * On Azure the Streamable HTTP entry points build a fresh `McpServer` per
  * request, so the natural scope for both is the request: the claude.ai
@@ -18,11 +24,11 @@
  *
  * Resolution order, highest precedence first — implemented ONCE here:
  *
- *   1. query parameter    ?profile=core            ?text=summary
- *   2. HTTP header        X-MCP-Tool-Profile       X-MCP-Text-Channel
- *   3. environment        MCP_TOOL_PROFILE         MCP_TEXT_CHANNEL
- *   4. clientInfo policy  —                        CLIENT_TEXT_CHANNEL_POLICY[clientInfo.name]
- *   5. default            full                     full
+ *   1. query parameter    ?profile=core            ?text=summary            ?structured=off
+ *   2. HTTP header        X-MCP-Tool-Profile       X-MCP-Text-Channel       X-MCP-Structured-Content
+ *   3. environment        MCP_TOOL_PROFILE         MCP_TEXT_CHANNEL         MCP_STRUCTURED_CONTENT
+ *   4. clientInfo policy  —                        CLIENT_TEXT_CHANNEL_POLICY   CLIENT_STRUCTURED_POLICY
+ *   5. default            full                     full                     full
  *
  * An unknown value at any level falls through to the next one — never an
  * error. A typo in a connector URL must not strip a server down to nothing or
@@ -38,10 +44,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 export const PROFILES = Object.freeze(['full', 'core']);
 export const TEXT_CHANNELS = Object.freeze(['full', 'summary']);
+export const STRUCTURED_MODES = Object.freeze(['full', 'off']);
 
 export const DEFAULT_PREFERENCES = Object.freeze({
   profile: 'full',
   textChannel: 'full',
+  structured: 'full',
 });
 
 /**
@@ -58,13 +66,32 @@ export const DEFAULT_PREFERENCES = Object.freeze({
  */
 export const CLIENT_TEXT_CHANNEL_POLICY = Object.freeze({});
 
+/**
+ * clientInfo.name (lower-cased) → structured-content mode, consulted for stdio
+ * sessions after `initialize`.
+ *
+ * NOT empty, and the difference to the table above is the measurement: on
+ * 2026-09-04 all 10 MCP results of a Claude Code session were checked in the
+ * transcript — the stored content is the `structuredContent` JSON byte for byte,
+ * the TOON/Markdown text (and the snapshot banner) never reaches the model.
+ * For that client the compact text channel is only useful if it is the ONLY
+ * channel, hence 'off'. Registration already happened when `initialize`
+ * arrives on stdio, so this table can only strip `structuredContent` at call
+ * time; omitting the outputSchema as well needs `MCP_STRUCTURED_CONTENT=off`
+ * in the server's environment (the local `.claude.json` entries carry it).
+ */
+export const CLIENT_STRUCTURED_POLICY = Object.freeze({ 'claude-code': 'off' });
+
 /** Header names, exported so the entry points and tests share one spelling. */
 export const HEADER_PROFILE = 'x-mcp-tool-profile';
 export const HEADER_TEXT_CHANNEL = 'x-mcp-text-channel';
+export const HEADER_STRUCTURED = 'x-mcp-structured-content';
 export const QUERY_PROFILE = 'profile';
 export const QUERY_TEXT_CHANNEL = 'text';
+export const QUERY_STRUCTURED = 'structured';
 export const ENV_PROFILE = 'MCP_TOOL_PROFILE';
 export const ENV_TEXT_CHANNEL = 'MCP_TEXT_CHANNEL';
+export const ENV_STRUCTURED = 'MCP_STRUCTURED_CONTENT';
 
 /** 'core' | 'full', or null for anything else (so the caller can fall through). */
 export function normalizeProfile(value) {
@@ -76,6 +103,12 @@ export function normalizeProfile(value) {
 export function normalizeTextChannel(value) {
   const v = String(value ?? '').trim().toLowerCase();
   return TEXT_CHANNELS.includes(v) ? v : null;
+}
+
+/** 'off' | 'full', or null for anything else. */
+export function normalizeStructured(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  return STRUCTURED_MODES.includes(v) ? v : null;
 }
 
 /* ── Source readers (tolerant of every shape the runtimes hand us) ────────── */
@@ -104,19 +137,20 @@ function readQuery(query, name) {
 /**
  * Resolve the preferences for one request / one process.
  *
- * @param {{ headers?: any, query?: any, env?: object, clientInfo?: {name?: string}, policy?: Record<string, string> }} [sources]
+ * @param {{ headers?: any, query?: any, env?: object, clientInfo?: {name?: string}, policy?: Record<string, string>, structuredPolicy?: Record<string, string> }} [sources]
  *   `headers`: Fetch `Headers`, Azure `HttpRequest.headers`, or a plain object.
  *   `query`: `URLSearchParams`, a plain object, or a full URL string.
  *   `env`: defaults to `process.env`.
  *   `clientInfo`: the `initialize` `Implementation` (stdio only).
  *   `policy`: clientInfo.name → text channel; defaults to CLIENT_TEXT_CHANNEL_POLICY
  *   (injectable so the mechanism is testable while the real table stays empty).
- * @returns {{ profile: 'full'|'core', textChannel: 'full'|'summary', clientName?: string,
- *             sources: { profile: string, textChannel: string } }}
+ *   `structuredPolicy`: clientInfo.name → structured mode; defaults to CLIENT_STRUCTURED_POLICY.
+ * @returns {{ profile: 'full'|'core', textChannel: 'full'|'summary', structured: 'full'|'off', clientName?: string,
+ *             sources: { profile: string, textChannel: string, structured: string } }}
  *   `sources` names the level that decided each value — it is what gets logged
  *   so `CORE_TOOLS` can be tuned from real usage rather than guessed.
  */
-export function resolvePreferences({ headers, query, env = process.env, clientInfo, policy = CLIENT_TEXT_CHANNEL_POLICY } = {}) {
+export function resolvePreferences({ headers, query, env = process.env, clientInfo, policy = CLIENT_TEXT_CHANNEL_POLICY, structuredPolicy = CLIENT_STRUCTURED_POLICY } = {}) {
   const pick = (normalize, candidates) => {
     for (const [source, raw] of candidates) {
       if (raw === undefined || raw === null || raw === '') continue;
@@ -136,6 +170,7 @@ export function resolvePreferences({ headers, query, env = process.env, clientIn
     ? clientInfo.name.trim()
     : undefined;
   const policyChannel = clientName && policy ? policy[clientName.toLowerCase()] : undefined;
+  const policyStructured = clientName && structuredPolicy ? structuredPolicy[clientName.toLowerCase()] : undefined;
 
   const textChannel = pick(normalizeTextChannel, [
     ['query', readQuery(query, QUERY_TEXT_CHANNEL)],
@@ -144,11 +179,19 @@ export function resolvePreferences({ headers, query, env = process.env, clientIn
     ['client-policy', policyChannel],
   ]);
 
+  const structured = pick(normalizeStructured, [
+    ['query', readQuery(query, QUERY_STRUCTURED)],
+    ['header', readHeader(headers, HEADER_STRUCTURED)],
+    ['env', env?.[ENV_STRUCTURED]],
+    ['client-policy', policyStructured],
+  ]);
+
   return Object.freeze({
     profile: profile.value ?? DEFAULT_PREFERENCES.profile,
     textChannel: textChannel.value ?? DEFAULT_PREFERENCES.textChannel,
+    structured: structured.value ?? DEFAULT_PREFERENCES.structured,
     ...(clientName ? { clientName } : {}),
-    sources: Object.freeze({ profile: profile.source, textChannel: textChannel.source }),
+    sources: Object.freeze({ profile: profile.source, textChannel: textChannel.source, structured: structured.source }),
   });
 }
 
@@ -169,6 +212,7 @@ export function describePreferences(prefs) {
   const p = prefs ?? DEFAULT_PREFERENCES;
   const src = p.sources ?? {};
   return `profile=${p.profile}(${src.profile ?? 'default'}) text=${p.textChannel}(${src.textChannel ?? 'default'})`
+    + ` structured=${p.structured ?? 'full'}(${src.structured ?? 'default'})`
     + (p.clientName ? ` client=${p.clientName}` : '');
 }
 
