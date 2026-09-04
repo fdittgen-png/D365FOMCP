@@ -22,6 +22,9 @@ State the shape in one line first: *"Shape: data sources + keys + party link →
 ### Step 3: Sibling entities
 - `d365kb:d365_raw_sql`: `SELECT entity_name, public_collection, label, primary_table FROM data_entities WHERE primary_table = '<primary_table>' COLLATE NOCASE LIMIT 20`
 
+### Step 4 (only when customisation or a migration mapping is in scope)
+- `d365kb:d365_get_entity_sources` with `custom_only: true` — names the extension fields the entity exposes, per model (≈ 360 tokens in the text channel). Measured 2026-09-04: without it the brief answer could only count the 11 extension fields, not name Trelleborg's `TRB_IsCRApproved`.
+
 ### Only with `--fields`
 - `d365kb:d365_get_entity_sources` with `summary: false` and `fields_like` / `custom_only`, paging with `cursor` — never a larger `limit`.
 
@@ -34,7 +37,7 @@ State the shape in one line first: *"Shape: data sources + keys + party link →
 6. **Siblings**: other entities on the same primary table (V1/V2/V3, satellites)
 7. **Not verified here**: what the three calls did not cover
 
-Separate what the tools confirmed from what you inferred; label inferences. Quote the snapshot date from the banner.
+Separate what the tools confirmed from what you inferred; label inferences — in particular, a sibling entity's purpose read from its label or module name ("slim variant for Copilot") is an inference until its fields or methods were queried. Quote the snapshot date from the banner.
 
 ## Follow-ups to offer
 - Field rows for one data source (`fields_like`, `summary: false`)

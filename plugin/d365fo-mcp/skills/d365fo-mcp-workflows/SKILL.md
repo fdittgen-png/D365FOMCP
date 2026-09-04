@@ -268,7 +268,12 @@ State the shape first: *"Shape: data sources + keys + party link → summary, on
                  FROM data_entities WHERE primary_table = ? COLLATE NOCASE LIMIT 20
                                                              -- sibling entities on the same table
 ```
-Field rows only on request (`fields_like`, `custom_only`, `summary:false`), and never a second `d365_lookup_table` on the same table. Measured on the vendor entity (2026-09-04): 11 calls / 25.3 k tokens without the recipe, ≈ 4 calls / ≤ 4 k with it, same answer.
+```
+4. (customisation or migration in scope) d365_get_entity_sources(entity_name, custom_only: true)
+                                                             -- names the exposed extension fields per model,
+                                                             --   ≈ 360 tokens; counts alone cannot name TRB_* fields
+```
+Field rows only on request (`fields_like`, `custom_only`, `summary:false`), and never a second `d365_lookup_table` on the same table. Measured on the vendor entity (2026-09-04, replayed): 4 calls / 39.4 KB JSON (≈ 9.8 k tokens) with field lists and the JSON channel; 3 calls / 8.8 KB text (≈ 2.2 k tokens) with the recipe; step 4 adds 1.5 KB. Same structural conclusion; label-derived descriptions of sibling entities are inferences and must be marked as such.
 
 ### 7b — field-level mapping (when the question IS the fields)
 
@@ -592,6 +597,7 @@ Hard-won this session — a raw_sql call blew the token limit **three times** an
 
 ---
 
+*Version: 1.10 | Date: 2026-09-04 | Workflow 7a step 4 (`custom_only` when customisation/migration is in scope), replayed measurement 9.8 k → 2.2 k tokens, label-derived sibling descriptions are inferences.*
 *Version: 1.9 | Date: 2026-09-04 | Added: Workflow 7a (entity structure in 3 calls — summary default, `sections`, sibling query), rules 17–21 (counts before lists, provenance once, no discovery search, answer shape + new-session offer, WebFetch over subagent) from `MCP_Communication_Efficiency_Improvements_2026-09-04`.*
 *Version: 1.8 | Date: 2026-09-03 | Added: `d365_effective_schema` (Workflow 1/3, service map), `xref_check_exists` / `sec_check_exists` preflights (service map, Workflow 3), cursor pagination + batch parameters + coverage lines + loop-guard note as cost rules 11–16 and 6 anti-patterns; corrected the stale `format="toon"` guardrail (adaptive default, ~5% not 25–35%). First external-user measurement: ~70% fewer tokens on a script-writing task after the 2026-09-02 response-quality release.*
 *Version: 1.7 | Date: 2026-08-18 | Added: Workflow 14 ("who wipes/writes this field" — KB source search as ground truth for writers, custom-model rule-out sweep, walk-up-to-the-trigger-moment discipline, unit-test names and doc comments as evidence, labels-table lookup for named labels), KB raw-SQL schema notes (real `methods(owner_name,…)` schema vs the wrong documented one, `sqlite_master` discovery, `labels` table), map-field enumeration via path patterns, 4 anti-patterns (xref field-usage false negatives, object_type-filtered 0-rows ≠ absence, check_field_exists on maps, stopping at the first plausible writer).*
