@@ -362,8 +362,8 @@ test('xref_find_references: a single-object call is unchanged by batching', asyn
   assert.equal(t.target_path, '/Tables/CustTable');
   assert.equal(t.result_count, 3);
   assert.deepEqual(dataKeys(t),
-    ['has_more', 'isv', 'kind_filter', 'limit', 'references', 'result_count', 'target_path', 'truncated'],
-    'a single-object payload must be exactly the pre-batching shape (has_more is the W5 page key)');
+    ['has_more', 'kind_filter', 'limit', 'references', 'result_count', 'target_path', 'truncated'],
+    'a single-object payload must be exactly the pre-batching shape (has_more is the W5 page key; isv only with include_isv, #122)');
 });
 
 test('xref_find_references: batch mode hoists kind/limit, one entry per object, misses in not_found', async () => {
@@ -464,8 +464,8 @@ test('xref_find_references: include_isv is off by default and changes nothing', 
   registerXrefTools(s, xrefDb({ withIsv: true }));
   const r = await s.call('xref_find_references', { object_name: 'CustTable' });
 
-  assert.equal(r.structuredContent.isv, null,
-    'the default answer is byte-identical to before the ISV work');
+  assert.equal('isv' in r.structuredContent, false,
+    'the default answer carries no isv key at all (rule #14: a null key is a dead key, #122)');
   assert.equal(r.structuredContent.result_count, 3);
 });
 
@@ -488,8 +488,8 @@ test('xref_find_references: include_isv on a pre-ISV database emits no block at 
   registerXrefTools(s, xrefDb({ withIsv: false }));
   const r = await s.call('xref_find_references', { object_name: 'CustTable', include_isv: true });
 
-  assert.equal(r.structuredContent.isv, null,
-    'an un-scanned database must not report "no ISV references" — it does not know');
+  assert.equal('isv' in r.structuredContent, false,
+    'an un-scanned database must not report "no ISV references" — it does not know, so the key is absent');
 });
 
 test('xref_find_references: an object with only ISV callers is not reported as empty', async () => {

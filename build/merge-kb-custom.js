@@ -153,7 +153,10 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
 
     // These are keyed by object name; custom names don't collide with MS, and a
     // deliberate re-customization of an MS object should win → OR REPLACE.
-    for (const t of ['classes', 'edts', 'data_entities', 'entity_fields', 'forms', 'views', 'menu_items', 'methods', 'indexes_tbl', 'relations']) {
+    // objects_meta / form_controls (#123, #124) exist only on schema ≥ 1.2
+    // builds; merge them when BOTH sides have them, skip silently otherwise.
+    const optionalTables = ['objects_meta', 'form_controls'].filter(t => hasTable(db, 'main', t) && hasTable(db, 'cust', t));
+    for (const t of ['classes', 'edts', 'data_entities', 'entity_fields', 'forms', 'views', 'menu_items', 'methods', 'indexes_tbl', 'relations', ...optionalTables]) {
       const b = before(t);
       db.exec(`INSERT OR REPLACE INTO main.${t} SELECT * FROM cust.${t}`);
       summary.added[t] = before(t) - b;

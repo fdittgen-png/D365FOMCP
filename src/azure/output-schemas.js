@@ -52,6 +52,8 @@ export const coverageKeys = Object.freeze({
   provenance_omitted: z.number().optional(),
   isv_not_scanned: z.boolean().optional(),
   isv_excluded: z.number().optional(),
+  // C6: present only on a large response that was not narrowed (text of the hint).
+  shape_hint: z.string().optional(),
 });
 /** Pick a subset of `coverageKeys` to spread into an output schema. */
 export const coverage = (...names) => Object.fromEntries(names.map(n => [n, coverageKeys[n]]));
@@ -186,7 +188,7 @@ export const d365LookupTableIncomingRelationSchema = z.object({
 
 export const d365LookupTableOutput = z.object({
   ...kbCoverage,
-  ...coverage('field_limit_hit', 'provenance_omitted', 'isv_not_scanned'),
+  ...coverage('field_limit_hit', 'provenance_omitted', 'isv_not_scanned', 'shape_hint'),
   table_name: z.string(),
   module_id: z.string().nullish(),
   label: z.string().nullish(),
@@ -208,11 +210,20 @@ export const d365LookupTableOutput = z.object({
   is_customized: z.boolean(),
   custom_field_count: z.number(),
   customization_modules: z.array(z.string()),
-  fields: z.array(d365LookupTableFieldSchema),
-  indexes: z.array(d365LookupTableIndexSchema),
-  outgoing_relations: z.array(d365LookupTableRelationSchema),
-  incoming_relations: z.array(d365LookupTableIncomingRelationSchema),
-  incoming_relations_truncated: z.boolean(),
+  // C1 (2026-09-04): `sections` names the blocks this response carries. The
+  // counts are always present; the row arrays only for the requested sections
+  // (default fields, indexes, relations_out; custom_only alone → fields). The
+  // incoming rows were emitted on every lookup and cited on none — now a count
+  // unless `relations_in` is asked for.
+  sections: z.array(z.enum(['fields', 'indexes', 'relations_out', 'relations_in'])),
+  index_count: z.number(),
+  outgoing_count: z.number(),
+  incoming_count: z.number(),
+  fields: z.array(d365LookupTableFieldSchema).optional(),
+  indexes: z.array(d365LookupTableIndexSchema).optional(),
+  outgoing_relations: z.array(d365LookupTableRelationSchema).optional(),
+  incoming_relations: z.array(d365LookupTableIncomingRelationSchema).optional(),
+  incoming_relations_truncated: z.boolean().optional(),
   // Issue #90 — present only with include_custom_fields=true. A SEPARATE
   // block: UI custom fields are live environment state and must never be
   // interleaved into `fields`, which means "declared in a scanned model".
@@ -483,7 +494,7 @@ export const d365SearchQueryPayloadSchema = z.object({
 });
 export const d365SearchOutput = z.object({
   ...kbCoverage,
-  ...coverage('isv_not_scanned'),
+  ...coverage('isv_not_scanned', 'shape_hint'),
   query: z.string().optional(),
   object_type: z.string().nullish(),
   modules: z.array(z.string()).nullish(),
@@ -688,7 +699,7 @@ export const d365EntityFieldSchema = z.object({
 });
 export const d365GetEntitySourcesOutput = z.object({
   ...kbCoverage,
-  ...coverage('provenance_omitted'),
+  ...coverage('provenance_omitted', 'shape_hint'),
   entity_name: z.string(),
   module_id: z.string().nullish(),
   label: z.string().nullish(),
@@ -699,11 +710,17 @@ export const d365GetEntitySourcesOutput = z.object({
   staging_table: z.string().nullish(),
   config_key: z.string().nullish(),
   field_count: z.number(),
-  // fields_matched = rows after the fields_like / custom_only / computed_only
-  // filters; fields_returned = rows actually in entity_fields (after limit).
-  fields_matched: z.number(),
-  fields_returned: z.number(),
-  entity_fields: z.array(d365EntityFieldSchema),
+  custom_field_count: z.number(),
+  // C2 (2026-09-04): summary mode — the default when no field filter, cursor
+  // or limit is passed — carries the data-source breakdown instead of field
+  // rows (~300 tokens against ~2,000 for 60 rows that were never cited).
+  summary: z.boolean().optional(),
+  data_sources: z.array(z.object({ name: z.string().nullish(), field_count: z.number() })).optional(),
+  // Field-row mode: fields_matched = rows after the fields_like / custom_only /
+  // computed_only filters; fields_returned = rows in entity_fields (after limit).
+  fields_matched: z.number().optional(),
+  fields_returned: z.number().optional(),
+  entity_fields: z.array(d365EntityFieldSchema).optional(),
   // Entity-level X++ methods (empty on KB databases built before entity-method
   // extraction was added). Use d365_get_class_methods with include_source for
   // the full X++ body of any method.
@@ -814,6 +831,9 @@ export const d365ListModulesOutput = z.object({
 // d365_resolve_label — label resolution result
 export const d365ResolvedLabelSchema = z.object({
   label_id: z.string(),
+  // Labels v2 (#84/#127): on every row when the snapshot has a language
+  // column, on none before that (rule #14).
+  language: z.string().optional(),
   text: z.string(),
 });
 export const d365ResolveLabelOutput = z.object({
@@ -823,6 +843,173 @@ export const d365ResolveLabelOutput = z.object({
   not_found_count: z.number(),
   resolved: z.array(d365ResolvedLabelSchema),
   not_found: z.array(z.string()),
+});
+
+// ── Authoring-loop read tools (#123–#128, src/azure/authoring-tools.js) ─────
+
+// d365_find_method_implementations
+export const d365MethodImplementationSchema = z.object({
+  owner_type: z.string(),
+  owner_name: z.string(),
+  module_id: z.string().nullish(),
+  model_origin: z.string().nullish(),
+  signature: z.string().nullish(),
+  is_static: z.boolean(),
+  source_lines: z.number().nullish(),
+});
+export const d365FindMethodImplementationsOutput = z.object({
+  ...kbCoverage,
+  method_name: z.string(),
+  owner_type: z.string().nullish(),
+  modules: z.array(z.string()).nullish(),
+  exclude_extensions: z.boolean(),
+  owner_count: z.number().describe('Exact number of owners implementing the method (all pages).'),
+  result_count: z.number(),
+  implementations: z.array(d365MethodImplementationSchema),
+  ...pageShape,
+});
+
+// d365_lookup_object — the long tail of AOT types (objects_meta)
+export const d365ObjectMenuItemSchema = z.object({
+  menu_item_name: z.string(),
+  menu_item_type: z.string().nullish(),
+});
+export const d365LookupObjectOutput = z.object({
+  ...kbCoverage,
+  object_type: z.string(),
+  object_name: z.string(),
+  module_id: z.string().nullish(),
+  model_origin: z.string().nullish(),
+  label: z.string().nullish(),
+  properties: z.record(z.string(), z.unknown()),
+  menu_items: z.array(d365ObjectMenuItemSchema),
+});
+
+// d365_lookup_form / d365_find_forms
+export const d365FormControlSchema = z.object({
+  name: z.string(),
+  type: z.string().nullish(),
+  pattern: z.string().nullish(),
+  pattern_version: z.string().nullish(),
+  data_source: z.string().nullish(),
+  data_field: z.string().nullish(),
+  parent: z.string().nullish(),
+});
+export const d365LookupFormOutput = z.object({
+  ...kbCoverage,
+  form_name: z.string(),
+  module_id: z.string().nullish(),
+  model_origin: z.string().nullish(),
+  label: z.string().nullish(),
+  pattern: z.string().nullish(),
+  pattern_version: z.string().nullish(),
+  patterns_indexed: z.boolean(),
+  data_sources: z.array(z.string()),
+  controls_count: z.number().nullish(),
+  menu_items: z.array(d365ObjectMenuItemSchema),
+  controls: z.array(d365FormControlSchema).optional(),
+  controls_shown: z.number().optional(),
+  controls_truncated: z.boolean().optional(),
+});
+export const d365FormRowSchema = z.object({
+  form_name: z.string(),
+  module_id: z.string().nullish(),
+  model_origin: z.string().nullish(),
+  label: z.string().nullish(),
+  pattern: z.string().nullish(),
+  pattern_version: z.string().nullish(),
+  data_sources: z.array(z.string()),
+});
+export const d365FindFormsOutput = z.object({
+  ...kbCoverage,
+  mode: z.enum(['forms', 'patterns']),
+  pattern_filter: z.string().nullish(),
+  table_filter: z.string().nullish(),
+  modules: z.array(z.string()).nullish(),
+  result_count: z.number(),
+  forms: z.array(d365FormRowSchema).optional(),
+  patterns: z.array(z.object({
+    pattern: z.string(),
+    form_count: z.number(),
+    example_form: z.string().nullish(),
+  })).optional(),
+  ...pageShapeOptional,
+});
+
+// d365_preflight
+export const d365PreflightObjectSchema = z.object({
+  exists: z.boolean(),
+  object_type: z.string().nullish(),
+  object_name: z.string(),
+  module_id: z.string().nullish(),
+  model_origin: z.string().nullish(),
+  label: z.string().nullish(),
+  sealed_isv: z.array(z.object({ module: z.string(), element_type: z.string() })).optional(),
+  suggestions: z.array(z.string()).optional(),
+});
+export const d365PreflightMethodSchema = z.object({
+  exists: z.boolean(),
+  method_name: z.string(),
+  signature: z.string().nullish(),
+  visibility: z.string().nullish(),
+  is_static: z.boolean().optional(),
+  is_final: z.boolean().optional(),
+  is_abstract: z.boolean().optional(),
+  hookable: z.boolean().nullish(),
+  wrappable_attribute: z.boolean().nullish(),
+  replaceable: z.boolean().optional(),
+  coc_wrappable: z.boolean().nullish(),
+  coc_reason: z.string().nullish(),
+  suggestions: z.array(z.string()).optional(),
+});
+export const d365PreflightExtensionsSchema = z.object({
+  classes: z.array(z.object({ class_name: z.string(), module_id: z.string().nullish() })),
+  table_extension_models: z.array(z.string()),
+  sealed_isv_coc: z.array(z.object({
+    module: z.string(),
+    extension_class: z.string(),
+    method: z.string().nullish(),
+  })).optional(),
+  heuristic_note: z.string(),
+});
+export const d365PreflightNameSchema = z.object({
+  name: z.string(),
+  valid_identifier: z.boolean(),
+  collisions: z.array(z.object({
+    object_type: z.string(),
+    source: z.string(),
+    module: z.string().nullish(),
+  })),
+  prefix_ok: z.boolean().nullish(),
+});
+export const d365PreflightOutput = z.object({
+  ...kbCoverage,
+  object: d365PreflightObjectSchema.optional(),
+  method: d365PreflightMethodSchema.optional(),
+  existing_extensions: d365PreflightExtensionsSchema.optional(),
+  proposed_names: z.array(d365PreflightNameSchema).optional(),
+  naming_prefixes: z.array(z.string()).nullish(),
+  verdict: z.string(),
+});
+
+// d365_knowledge — curated rulebook shipped with the code, not the snapshot
+export const d365KnowledgeTopicSchema = z.object({
+  topic: z.string(),
+  title: z.string(),
+  tags: z.array(z.string()),
+  score: z.number().optional(),
+});
+export const d365KnowledgeOutput = z.object({
+  source_kind: z.string(),
+  query: z.string().nullish(),
+  topic: z.string().optional(),
+  title: z.string().optional(),
+  aliases: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional(),
+  sources: z.array(z.string()).optional(),
+  body: z.string().optional(),
+  topic_count: z.number().optional(),
+  topics: z.array(d365KnowledgeTopicSchema).optional(),
 });
 
 // ── XRef tools (15) ──────────────────────────────────────────────────────────

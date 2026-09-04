@@ -100,6 +100,14 @@ const POLICY_APPLIED = Symbol.for('d365fo.mcp.toolSetPolicyApplied');
  *   - TITLE: a tool without `title` gets one derived from its name
  *     (`deriveToolTitle`). Measured cost on tools/list: see the budget test's
  *     `title` column — a deliberate ~1 KB across the four servers.
+ *   - STRUCTURED CONTENT (C5, 2026-09-04): when the request context says
+ *     `structured: 'off'`, the tool is registered WITHOUT its outputSchema and
+ *     `structuredContent` is stripped from every result AFTER the freshness
+ *     banner — so a client that stores the JSON and drops the text (Claude Code,
+ *     measured) receives the compact text channel, banner included, as its only
+ *     payload. Registration reads the context once (per request on Azure, from
+ *     the environment on stdio); the strip reads it per call, so the stdio
+ *     `clientInfo` policy still applies after `initialize`.
  *
  * `stats.registered` counts what actually reached the underlying server, so a
  * caller can report the effective tool count (the snapshot resource does).
@@ -117,9 +125,37 @@ export function withRegistrationPolicy(server, { service = 'snapshot', db = null
   view.registerTool = (name, config, handler) => {
     if (!toolInProfile(name, profile)) { stats.skipped.push(name); return undefined; }
     stats.registered += 1;
-    return server.registerTool(name, withTitle(name, config), withFreshness(name, handler, config, db, service));
+    const cfg = withoutOutputSchema(withTitle(name, config));
+    return server.registerTool(name, cfg, withStructuredPolicy(withFreshness(name, handler, config, db, service)));
   };
   return view;
+}
+
+/* ── Structured-content policy (C5) ───────────────────────────────────────── */
+
+/** Registration side: drop `outputSchema` when the CURRENT context says `structured: 'off'`. */
+function withoutOutputSchema(config) {
+  if (!config || typeof config !== 'object' || !('outputSchema' in config)) return config;
+  if (getRequestContext().structured !== 'off') return config;
+  const { outputSchema: _omitted, ...rest } = config;
+  return rest;
+}
+
+/**
+ * Call side: strip `structuredContent` when the context AT CALL TIME says
+ * `structured: 'off'`. Runs outside `withFreshness`, so the banner is already
+ * in the text. Meta-responses (`_meta.kind`) keep their marker; only the typed
+ * payload goes.
+ */
+function withStructuredPolicy(handler) {
+  if (typeof handler !== 'function') return handler;
+  return async (...args) => {
+    const result = await handler(...args);
+    if (getRequestContext().structured !== 'off') return result;
+    if (!result || typeof result !== 'object' || !('structuredContent' in result)) return result;
+    const { structuredContent: _omitted, ...rest } = result;
+    return rest;
+  };
 }
 
 /* ── Tool titles (W5.B, #109) ─────────────────────────────────────────────── */

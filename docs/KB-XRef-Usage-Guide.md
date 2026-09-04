@@ -214,7 +214,7 @@ d365fo-mcp-skills.zip
 
 ## 8. Installing the skills
 
-### 8.1 Recommended — install the plugin (skills + 19 commands, and it updates)
+### 8.1 Recommended — install the plugin (skills + 20 commands, and it updates)
 
 ```text
 /plugin marketplace add fdittgen-png/D365FOMCP
@@ -292,7 +292,7 @@ Plugin route: `/plugin update d365fo-mcp`. Zip route: rebuild the zip and copy o
 
 ## See also
 
-- `plugin/d365fo-mcp/README.md` — the plugin, its 19 commands, local stdio setup
+- `plugin/d365fo-mcp/README.md` — the plugin, its 20 commands, local stdio setup
 - `plugin/d365fo-mcp/skills/d365fo-mcp-tooling/references/{kb,xref}-tools.md` — generated per-tool parameter tables
 - `MCP_SERVICES_REFERENCE.md` — full service inventory including Sec and Task Recorder
 - `docs/XRef-Custom-Layer-Coverage.md` — exactly which custom/ISV models the XRef snapshot compiled

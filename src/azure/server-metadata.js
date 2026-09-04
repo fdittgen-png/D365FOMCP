@@ -86,12 +86,12 @@ export const SERVICES = Object.freeze({
     // resource d365://tool-guide. Every claim is tested against the registered
     // tools in test/server-metadata.test.js.
     instructions:
-      'lookup_* = one object in full · get_* = one aspect · find_*/list_* = a list · check_* = boolean, batchable · ' +
-      'search = ranked by text · resolve_* = id→text · isv_* = sealed-ISV metadata. ' +
-      'First call: d365_lookup_table when the name is known, d365_search when not; d365_check_field_exists before asserting a field. ' +
-      'Save tokens: limit / fields_like / custom_only, the modules filter, batch params (enum_names, tables), cursor paging. ' +
-      'Every data response carries its snapshot date and states what it does NOT cover; a not-found lists the closest names. ' +
-      'd365_raw_sql is last resort (LIMIT).',
+      'lookup_* = one object in full · get_* = one aspect · find_*/list_* = a list · check_* = boolean, batch · ' +
+      'preflight = exists+signature+CoC+collisions · knowledge = rulebook · ' +
+      'search = ranked text (object_type label = label text) · resolve_* = id→text · isv_* = sealed ISV. ' +
+      'First call: d365_lookup_table if known, else d365_search; d365_check_field_exists before asserting a field; d365_preflight before writing X++. ' +
+      'Save tokens: limit/fields_like/custom_only/modules, batch, cursor. ' +
+      'Responses carry the snapshot date and what they do NOT cover; not-found suggests names. d365_raw_sql last resort.',
   },
   xref: {
     name: 'd365fo-xref',

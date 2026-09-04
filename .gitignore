@@ -38,3 +38,6 @@ secanalysis*.zip
 
 # Skills package build output (rebuild with npm run pack:skills)
 dist/
+
+# plugin archives built for the claude.ai upload (rebuild with Compress-Archive on plugin/d365fo-mcp)
+local-deploy/*.zip

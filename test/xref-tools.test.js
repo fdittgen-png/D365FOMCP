@@ -106,6 +106,8 @@ before(async () => {
 
     -- Names: Tables
     INSERT INTO names VALUES (100, '/Tables/CustTable', 'CustTable', 0, 1, 1);
+    -- Label where-used (#122): labels are names under /Labels/
+    INSERT INTO names VALUES (190, '/Labels/@SYS1', '@SYS1', 0, 1, 2);
     INSERT INTO names VALUES (101, '/Tables/CustTable/Fields/AccountNum', 'AccountNum', 0, 1, 1);
     INSERT INTO names VALUES (102, '/Tables/CustTable/Fields/CustGroup', 'CustGroup', 0, 1, 1);
     INSERT INTO names VALUES (103, '/Tables/CustTable/Methods/find', 'find', 0, 1, 1);
@@ -169,6 +171,7 @@ before(async () => {
     -- ── Refs ──
     -- SalesFormLetter extends FormLetterService (kind=4)
     INSERT INTO refs VALUES (200, 210, 4, NULL, NULL);
+    INSERT INTO refs VALUES (201, 190, 2, 12, 4);
     -- SalesFormLetter_Invoice extends SalesFormLetter (kind=4)
     INSERT INTO refs VALUES (220, 200, 4, NULL, NULL);
     -- SalesFormLetter_PackingSlip extends SalesFormLetter (kind=4)
@@ -252,6 +255,39 @@ describe('xref_find_references', () => {
     const result = await callTool('xref_find_references', { object_name: '/Tables/CustTable', kind: 'All', limit: 100 });
     assert.ok(result.includes('References to'));
     assert.ok(result.includes('/Tables/CustTable'));
+  });
+
+  // #122: a bare label id resolves to /Labels/<id> — label where-used.
+  it('resolves a bare label id to /Labels/ and lists its where-used', async () => {
+    const r = await callToolFull('xref_find_references', { object_name: '@SYS1', kind: 'All', limit: 100 });
+    assert.equal(r.isError, undefined);
+    assert.equal(r.structuredContent.target_path, '/Labels/@SYS1');
+    assert.equal(r.structuredContent.result_count, 1);
+    assert.equal(r.structuredContent.references[0].path, '/Classes/SalesFormLetter/Methods/run');
+    assert.equal(r.structuredContent.references[0].kind, 'Read');
+  });
+
+  it('resolves a label id case-insensitively and misses cleanly on an unknown id', async () => {
+    const hit = await callToolFull('xref_find_references', { object_name: '@sys1', kind: 'All', limit: 100 });
+    assert.equal(hit.structuredContent.target_path, '/Labels/@SYS1');
+    const miss = await callToolFull('xref_find_references', { object_name: '@SYS999999', kind: 'All', limit: 100 });
+    assert.equal(miss.isError, true);
+  });
+
+  it('omits the isv key entirely when include_isv is off (rule #14, #122)', async () => {
+    const r = await callToolFull('xref_find_references', { object_name: 'CustTable', kind: 'All', limit: 100 });
+    assert.equal('isv' in r.structuredContent, false);
+  });
+});
+
+describe('xref_check_exists — labels (#122)', () => {
+  it('accepts @LabelId in the object grammar', async () => {
+    const r = await callToolFull('xref_check_exists', { objects: ['@SYS1', '@SYS999999'] });
+    assert.equal(r.structuredContent.found_count, 1);
+    assert.equal(r.structuredContent.objects[0].type, 'label');
+    assert.equal(r.structuredContent.objects[0].path, '/Labels/@SYS1');
+    assert.equal(r.structuredContent.not_found[0].name, '@SYS999999');
+    assert.deepEqual(r.structuredContent.not_found[0].suggestions, []);
   });
 });
 

@@ -67,6 +67,25 @@ describe('plugin manifests', () => {
     assert.equal(entry.source, './d365fo-mcp');
   });
 
+  // 2026-09-03: `/plugin marketplace add fdittgen-png/D365FOMCP` clones the repo and reads
+  // `<repo>/.claude-plugin/marketplace.json` — it does NOT look under plugin/. The root copy
+  // is what a GitHub install sees; the plugin/ copy serves the local `directory` marketplace
+  // (C:\working\MCP\plugin). Both must describe the same plugin.
+  it('a root .claude-plugin/marketplace.json exists for GitHub installs and matches the plugin/ copy', () => {
+    const rootPath = join(ROOT, '.claude-plugin', 'marketplace.json');
+    assert.ok(existsSync(rootPath), 'repo-root .claude-plugin/marketplace.json missing — GitHub `/plugin marketplace add` fails without it');
+    const root = JSON.parse(readFileSync(rootPath, 'utf8'));
+    const local = JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
+    assert.equal(root.name, local.name, 'marketplace name differs between root and plugin/ copies');
+    const rootEntry = root.plugins.find((p) => p.name === 'd365fo-mcp');
+    const localEntry = local.plugins.find((p) => p.name === 'd365fo-mcp');
+    assert.ok(rootEntry, 'd365fo-mcp entry missing in root marketplace.json');
+    assert.equal(rootEntry.source, './plugin/d365fo-mcp');
+    assert.equal(rootEntry.description, localEntry.description);
+    assert.equal(rootEntry.category, localEntry.category);
+    assert.ok(existsSync(join(ROOT, rootEntry.source, '.claude-plugin', 'plugin.json')), 'root source does not resolve to the plugin');
+  });
+
   it('ships NO .mcp.json — servers come from claude.ai connectors; a plugin server with the same URL hides the connector', () => {
     assert.ok(!existsSync(join(PLUGIN, '.mcp.json')), 'plugin/d365fo-mcp/.mcp.json must not exist (2026-08-25 "hidden — same URL as your server" incident)');
   });

@@ -106,7 +106,10 @@ const BUDGET = {
   // on 5 tools +697 inputSchema · coverage keys (partial_build on 17 schemas +
   // the field/provenance/ISV keys) +858 outputSchema · routing prose out of 8
   // descriptions −470. Ceiling 76,900.
-  kb: { maxBytes: 76_900, tools: 26 },
+  // #123–#128 (2026-09-03): six authoring-loop read tools (find_method_implementations,
+  // lookup_object, lookup_form, find_forms, preflight, knowledge) — measured after
+  // the change, ceiling re-set at ≤2% above it.
+  kb: { maxBytes: 93_700, tools: 32 },   // 91,916 measured 2026-09-03
   // xref 37,300 -> 38,600 (#83 objects[]); W1: 38,702 measured -> 35,047, ceiling 35,700.
   // Q2–Q5: 35,047 -> 36,800 (+1,753): xref_check_exists +1,599 (18 tools) ·
   // functional_context ×2 +280 · coverage keys +177 · description trims −304. Ceiling 37,500.
@@ -125,7 +128,7 @@ const BUDGET = {
 };
 // 160,800 B measured after Q2–Q5 (was 155,810): +4,990 = two preflight tools
 // +3,446 · functional_context ×9 +1,297 · coverage keys +1,035 · trims −790.
-const TOTAL_MAX_BYTES = 163_500;
+const TOTAL_MAX_BYTES = 180_800; // 2026-09-03: 177,349 measured after #123–#128 (six KB tools)
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {

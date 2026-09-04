@@ -96,6 +96,7 @@ const stats = {
   entities: 0, forms: 0, securityRoles: 0, securityDuties: 0,
   securityPrivileges: 0, menuItems: 0, views: 0, errors: 0, modelVersions: 0,
   tableExtensions: 0, enumExtensions: 0, formExtensions: 0, dataEntityExtensions: 0,
+  formControls: 0, objectsMeta: 0, labelRows: 0,
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -272,6 +273,85 @@ function readXmlFiles(dirPath) {
  * Populated during Phase 0 by scanning all en-US .label.txt files.
  */
 const labelMap = new Map();
+
+/**
+ * KB_LABEL_LANGUAGES (#127): comma list of language folder names to store
+ * (`en-US,de,fr,cs`). Default en-US only — byte-identical to the pre-v2 build
+ * apart from the two new columns. All ~40 languages on disk would add ~16M
+ * rows (~1 GB); the allow-list keeps the KB at rollout-language size.
+ */
+export function normalizeLabelLanguages(raw) {
+  const langs = String(raw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const seen = new Set();
+  const out = [];
+  for (const l of langs.length ? langs : ['en-US']) {
+    if (!seen.has(l.toLowerCase())) { seen.add(l.toLowerCase()); out.push(l); }
+  }
+  if (!seen.has('en-us')) out.unshift('en-US');
+  return out;
+}
+const labelLanguages = normalizeLabelLanguages(process.env.KB_LABEL_LANGUAGES);
+
+/**
+ * Every `.label.txt` under a package root with its language (the LabelResources
+ * sub-folder name as found on disk) and file prefix ('SYS' from 'SYS.en-us.label.txt').
+ */
+function findAllLabelFiles(basePath) {
+  const out = [];
+  const walk = (dir, depth, underResources) => {
+    if (depth > 8) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { console.warn('Warning:', e.message); return; }
+    for (const entry of entries) {
+      const p = join(dir, entry.name);
+      if (!isDirEntry(dir, entry)) {
+        if (underResources && entry.name.endsWith('.label.txt')) {
+          out.push({ path: p, language: basename(dir), prefix: entry.name.split('.')[0] });
+        }
+        continue;
+      }
+      if (entry.name === 'bin' || entry.name === 'node_modules' || entry.name === 'XppMetadata') continue;
+      if (underResources || entry.name === 'LabelResources') { walk(p, depth + 1, true); continue; }
+      if (entry.name === 'AxLabelFile' || depth < 3) walk(p, depth + 1, false);
+    }
+  };
+  walk(basePath, 0, false);
+  return out;
+}
+
+/** Parse one label file into [key, value] pairs (comment lines start with ' ;'). */
+function* labelLines(content) {
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(' ;') || line.startsWith('\t;')) continue;
+    const eqIdx = line.indexOf('=');
+    if (eqIdx < 1) continue;
+    const key = line.substring(0, eqIdx).trim();
+    const value = line.substring(eqIdx + 1);
+    if (key && value) yield [key, value];
+  }
+}
+
+/** Stream label rows for the allow-listed languages straight into `labels`. */
+function writeLabelRows(languages) {
+  const wanted = new Set(languages.map(l => l.toLowerCase()));
+  let rows = 0;
+  for (const basePath of packagesPaths) {
+    if (!existsSync(basePath)) continue;
+    for (const f of findAllLabelFiles(basePath)) {
+      if (!wanted.has(f.language.toLowerCase())) continue;
+      let content;
+      try { content = readFileSync(f.path, 'utf-8'); } catch (e) { console.warn('Warning:', e.message); continue; }
+      const moduleId = getModuleFromPath(f.path);
+      for (const [key, value] of labelLines(content)) {
+        const id = key.startsWith('@') ? key : `@${f.prefix}:${key}`;
+        stmts.insertLabel.run(id, f.language, value, f.prefix, moduleId);
+        rows++;
+      }
+    }
+  }
+  return rows;
+}
 
 /**
  * Scan all AxLabelFile/LabelResources/en-US/*.label.txt files and load into labelMap.
@@ -515,7 +595,36 @@ CREATE TABLE IF NOT EXISTS forms (
   module_id TEXT,
   label TEXT,
   data_sources_json TEXT,
-  file_path TEXT
+  file_path TEXT,
+  pattern TEXT,
+  pattern_version TEXT,
+  controls_count INTEGER DEFAULT 0
+);
+
+-- #124: form control tree (type, design pattern, data binding) — metadata only
+CREATE TABLE IF NOT EXISTS form_controls (
+  form_name TEXT NOT NULL,
+  control_name TEXT NOT NULL,
+  control_type TEXT,
+  pattern TEXT,
+  pattern_version TEXT,
+  data_source TEXT,
+  data_field TEXT,
+  parent_control TEXT,
+  PRIMARY KEY (form_name, control_name)
+);
+
+-- #123: the long tail of AOT types — query, report, map, macro, config_key,
+-- service, service_group, security_policy, menu. Name + module + label + a
+-- type-specific properties JSON; never source.
+CREATE TABLE IF NOT EXISTS objects_meta (
+  object_type TEXT NOT NULL,
+  object_name TEXT NOT NULL,
+  module_id TEXT,
+  label TEXT,
+  properties_json TEXT,
+  file_path TEXT,
+  PRIMARY KEY (object_type, object_name)
 );
 
 -- Views
@@ -614,9 +723,15 @@ CREATE TABLE IF NOT EXISTS object_paths (
 );
 
 -- Labels (resolved @SYS / @Module label IDs to text)
+-- Labels v2 (#84/#127): one row per (id, language); languages = KB_LABEL_LANGUAGES
+-- (default en-US). label_file is the file prefix ('SYS', 'LAC'), module the model.
 CREATE TABLE IF NOT EXISTS labels (
-  label_id TEXT PRIMARY KEY,
-  text TEXT NOT NULL
+  label_id TEXT NOT NULL,
+  language TEXT NOT NULL DEFAULT 'en-US',
+  text TEXT NOT NULL,
+  label_file TEXT,
+  module TEXT,
+  PRIMARY KEY (label_id, language)
 );
 
 -- Indexes for efficient querying
@@ -625,6 +740,14 @@ CREATE INDEX IF NOT EXISTS idx_indexes_table ON indexes_tbl(table_name);
 CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_table);
 CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(related_table);
 CREATE INDEX IF NOT EXISTS idx_methods_owner ON methods(owner_type, owner_name);
+-- #125: d365_find_method_implementations — mirrored in src/azure/kb-indexes.js (runtime self-heal)
+CREATE INDEX IF NOT EXISTS idx_methods_name_nocase ON methods(method_name COLLATE NOCASE);
+-- #123/#124 — mirrored in src/azure/kb-indexes.js
+CREATE INDEX IF NOT EXISTS idx_form_controls_form ON form_controls(form_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_form_controls_binding ON form_controls(data_source COLLATE NOCASE, data_field COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_forms_pattern ON forms(pattern COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_objects_meta_name ON objects_meta(object_name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_labels_module ON labels(module);
 CREATE INDEX IF NOT EXISTS idx_tables_module ON tables(module_id);
 CREATE INDEX IF NOT EXISTS idx_classes_module ON classes(module_id);
 CREATE INDEX IF NOT EXISTS idx_classes_extends ON classes(extends_class);
@@ -944,9 +1067,34 @@ function extractForm(parsed, filePath) {
     if (dataSources.length === 0) collectDataSources(f.FormDesign?.DataSources);
   } catch (e) { console.warn('Warning:', e.message); }
 
+  // #124: design pattern + the control tree (type, pattern, data binding).
+  // Metadata only — no method source, no properties beyond what the two
+  // form tools read. Control names are unique within a form (PK).
+  const design = f.Design || f.FormDesign || null;
+  const pattern = design?.Pattern ? String(design.Pattern) : null;
+  const patternVersion = design?.PatternVersion ? String(design.PatternVersion) : null;
+  let controlCount = 0;
+  const walkControls = (node, parent, depth) => {
+    if (!node || typeof node !== 'object' || depth > 40) return;
+    for (const c of ensureArray(node.AxFormControl || node)) {
+      if (!c || typeof c !== 'object' || c.Name === undefined || c.Name === null || c.Name === '') continue;
+      controlCount++;
+      try {
+        stmts.insertFormControl.run(
+          f.Name, String(c.Name), c['@_i:type'] ? String(c['@_i:type']) : null,
+          c.Pattern ? String(c.Pattern) : null, c.PatternVersion ? String(c.PatternVersion) : null,
+          c.DataSource ? String(c.DataSource) : null, c.DataField ? String(c.DataField) : null, parent,
+        );
+      } catch (e) { stats.errors++; }
+      if (c.Controls) walkControls(c.Controls, String(c.Name), depth + 1);
+    }
+  };
+  try { if (design?.Controls) walkControls(design.Controls, null, 0); } catch (e) { console.warn('Warning:', e.message); }
+  stats.formControls += controlCount;
+
   stmts.insertForm.run(
     f.Name, moduleId, resolveLabel(f.Label) || null,
-    JSON.stringify(dataSources), filePath
+    JSON.stringify(dataSources), filePath, pattern, patternVersion, controlCount
   );
   stats.forms++;
 
@@ -1034,6 +1182,111 @@ function extractMenuItem(parsed, filePath, menuType) {
     mi.ConfigurationKey || null
   );
   stats.menuItems++;
+}
+
+// ─── Object catalogue extractors (#123) ─────────────────────────────────────
+//
+// The long tail of AOT types the first-class tables never covered. Each
+// extractor stores name, module, label and a small type-specific properties
+// object — enough for d365_lookup_object / d365_preflight / d365_search, never
+// source. Add a type here AND to OBJECT_META_TYPES in authoring-tools.js.
+
+/** Every string value stored under `key` anywhere below `node` (deduped, in order). */
+function collectStrings(node, key, acc = [], depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 30) return acc;
+  for (const [k, v] of Object.entries(node)) {
+    if (k === key && (typeof v === 'string' || typeof v === 'number') && String(v) !== '' && !acc.includes(String(v))) acc.push(String(v));
+    else if (v && typeof v === 'object') collectStrings(v, key, acc, depth + 1);
+  }
+  return acc;
+}
+
+function insertObjectMeta(objectType, name, filePath, label, props) {
+  const moduleId = getModuleFromPath(filePath);
+  const clean = Object.fromEntries(Object.entries(props).filter(([, v]) => v !== null && v !== undefined && v !== ''));
+  stmts.insertObjectMeta.run(objectType, String(name), moduleId, label || null, JSON.stringify(clean), filePath);
+  stats.objectsMeta++;
+  try { stmts.insertObjectPath.run(objectType, String(name), filePath, statSync(filePath).size); } catch (e) { console.warn('Warning:', e.message); }
+}
+
+function extractQueryMeta(parsed, filePath) {
+  const o = parsed.AxQuery;
+  if (!o || !o.Name) return;
+  const tables = collectStrings(o.DataSources, 'Table');
+  insertObjectMeta('query', o.Name, filePath, resolveLabel(o.Title) || null, {
+    tables, data_source_count: tables.length, form: o.Form || null, query_type: o.QueryType || null,
+  });
+}
+
+function extractReportMeta(parsed, filePath) {
+  const o = parsed.AxReport;
+  if (!o || !o.Name) return;
+  const dataSets = ensureArray(o.DataSets?.AxReportDataSet).filter(d => d && d.Name).map(d => ({
+    name: String(d.Name), query: d.Query ? String(d.Query) : null, type: d.DataSourceType ? String(d.DataSourceType) : null,
+  }));
+  const designs = ensureArray(o.Designs?.AxReportDesign).filter(d => d && d.Name).map(d => String(d.Name));
+  insertObjectMeta('report', o.Name, filePath, null, { data_sets: dataSets, designs, design_count: designs.length });
+}
+
+function extractMapMeta(parsed, filePath) {
+  const o = parsed.AxMap;
+  if (!o || !o.Name) return;
+  const fields = ensureArray(o.Fields?.AxMapBaseField).filter(f => f && f.Name).map(f => String(f.Name));
+  const mapped = ensureArray(o.Mappings?.AxMapMapping).map(m => m && m.MappingTable).filter(Boolean).map(String);
+  insertObjectMeta('map', o.Name, filePath, resolveLabel(o.Label) || null, { field_count: fields.length, fields: fields.slice(0, 200), mapped_tables: mapped });
+}
+
+function extractMacroMeta(parsed, filePath) {
+  const o = parsed.AxMacroDictionary;
+  if (!o || !o.Name) return;
+  const src = o.Source != null ? String(o.Source) : '';
+  const defines = [...src.matchAll(/#(?:define|localmacro)\.(\w+)/g)].map(m => m[1]);
+  insertObjectMeta('macro', o.Name, filePath, null, { source_length: src.length, define_count: defines.length, defines: defines.slice(0, 200) });
+}
+
+function extractConfigKeyMeta(parsed, filePath) {
+  const o = parsed.AxConfigurationKey;
+  if (!o || !o.Name) return;
+  insertObjectMeta('config_key', o.Name, filePath, resolveLabel(o.Label) || null, { parent_key: o.ParentKey || null, license_code: o.LicenseCode || null });
+}
+
+function extractServiceMeta(parsed, filePath) {
+  const o = parsed.AxService;
+  if (!o || !o.Name) return;
+  const ops = ensureArray(o.ServiceOperations?.AxServiceOperation).filter(op => op && op.Name).map(op => ({ name: String(op.Name), method: op.Method ? String(op.Method) : null }));
+  insertObjectMeta('service', o.Name, filePath, resolveLabel(o.Description) || null, {
+    class: o.Class || null, namespace: o.Namespace || null, external_name: o.ExternalName || null, operations: ops,
+  });
+}
+
+function extractServiceGroupMeta(parsed, filePath) {
+  const o = parsed.AxServiceGroup;
+  if (!o || !o.Name) return;
+  const services = ensureArray(o.Services?.AxServiceGroupService).map(s => s && (s.Service || s.Name)).filter(Boolean).map(String);
+  insertObjectMeta('service_group', o.Name, filePath, resolveLabel(o.Description) || null, { auto_deploy: o.AutoDeploy || null, services });
+}
+
+function extractSecurityPolicyMeta(parsed, filePath) {
+  const o = parsed.AxSecurityPolicy;
+  if (!o || !o.Name) return;
+  const constrained = [
+    ...collectStrings(o.ConstrainedTables, 'Table'),
+    ...ensureArray(o.ConstrainedTables?.AxSecurityPolicyConstrainedTable).map(t => t && t.Name).filter(Boolean).map(String),
+  ].filter((v, i, a) => a.indexOf(v) === i);
+  insertObjectMeta('security_policy', o.Name, filePath, resolveLabel(o.Label) || null, {
+    primary_table: o.PrimaryTable || null, query: o.Query || null, constrained_tables: constrained,
+    operation: o.Operation || null, context_type: o.ContextType || null, role_name: o.RoleName || null,
+    context_string: o.ContextString || null, enabled: o.Enabled || null,
+  });
+}
+
+function extractMenuMeta(parsed, filePath) {
+  const o = parsed.AxMenu;
+  if (!o || !o.Name) return;
+  const items = collectStrings(o.Elements, 'MenuItemName');
+  insertObjectMeta('menu', o.Name, filePath, resolveLabel(o.Label) || null, {
+    menu_item_count: items.length, menu_items: items.slice(0, 300), config_key: o.ConfigurationKey || null,
+  });
 }
 
 // ─── Customization extractors (extension objects) ───────────────────────────
@@ -1238,7 +1491,7 @@ function prepareStatements() {
   stmts.insertMethod = db.prepare(`INSERT OR REPLACE INTO methods VALUES (?,?,?,?,?,?)`);
   stmts.insertEntity = db.prepare(`INSERT OR REPLACE INTO data_entities VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   stmts.insertEntityField = db.prepare(`INSERT OR REPLACE INTO entity_fields VALUES (?,?,?,?,?)`);
-  stmts.insertForm = db.prepare(`INSERT OR REPLACE INTO forms VALUES (?,?,?,?,?)`);
+  stmts.insertForm = db.prepare(`INSERT OR REPLACE INTO forms VALUES (?,?,?,?,?,?,?,?)`);
   stmts.insertView = db.prepare(`INSERT OR REPLACE INTO views VALUES (?,?,?,?,?,?)`);
   stmts.insertSecRole = db.prepare(`INSERT OR REPLACE INTO security_roles VALUES (?,?,?,?,?)`);
   stmts.insertSecDuty = db.prepare(`INSERT OR REPLACE INTO security_duties VALUES (?,?,?,?,?)`);
@@ -1251,7 +1504,9 @@ function prepareStatements() {
   stmts.insertHallTrap = db.prepare(`INSERT INTO hallucination_traps (object_name,trap_type,wrong_value,correct_value,explanation) VALUES (?,?,?,?,?)`);
   stmts.insertFieldRename = db.prepare(`INSERT OR REPLACE INTO field_renames VALUES (?,?,?)`);
   stmts.insertQueryTemplate = db.prepare(`INSERT INTO query_templates (title,description,sql_template,tables_used) VALUES (?,?,?,?)`);
-  stmts.insertLabel = db.prepare(`INSERT OR IGNORE INTO labels VALUES (?,?)`);
+  stmts.insertLabel = db.prepare(`INSERT OR IGNORE INTO labels VALUES (?,?,?,?,?)`);
+  stmts.insertFormControl = db.prepare(`INSERT OR REPLACE INTO form_controls VALUES (?,?,?,?,?,?,?,?)`);
+  stmts.insertObjectMeta = db.prepare(`INSERT OR REPLACE INTO objects_meta VALUES (?,?,?,?,?,?)`);
 }
 
 // sql.js uses a different API - we need a wrapper
@@ -1277,7 +1532,7 @@ function prepareStatementsForSqlJs() {
   stmts.insertMethod = wrap(`INSERT OR REPLACE INTO methods VALUES (?,?,?,?,?,?)`);
   stmts.insertEntity = wrap(`INSERT OR REPLACE INTO data_entities VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
   stmts.insertEntityField = wrap(`INSERT OR REPLACE INTO entity_fields VALUES (?,?,?,?,?)`);
-  stmts.insertForm = wrap(`INSERT OR REPLACE INTO forms VALUES (?,?,?,?,?)`);
+  stmts.insertForm = wrap(`INSERT OR REPLACE INTO forms VALUES (?,?,?,?,?,?,?,?)`);
   stmts.insertView = wrap(`INSERT OR REPLACE INTO views VALUES (?,?,?,?,?,?)`);
   stmts.insertSecRole = wrap(`INSERT OR REPLACE INTO security_roles VALUES (?,?,?,?,?)`);
   stmts.insertSecDuty = wrap(`INSERT OR REPLACE INTO security_duties VALUES (?,?,?,?,?)`);
@@ -1290,7 +1545,9 @@ function prepareStatementsForSqlJs() {
   stmts.insertHallTrap = wrap(`INSERT INTO hallucination_traps (object_name,trap_type,wrong_value,correct_value,explanation) VALUES (?,?,?,?,?)`);
   stmts.insertFieldRename = wrap(`INSERT OR REPLACE INTO field_renames VALUES (?,?,?)`);
   stmts.insertQueryTemplate = wrap(`INSERT INTO query_templates (title,description,sql_template,tables_used) VALUES (?,?,?,?)`);
-  stmts.insertLabel = wrap(`INSERT OR IGNORE INTO labels VALUES (?,?)`);
+  stmts.insertLabel = wrap(`INSERT OR IGNORE INTO labels VALUES (?,?,?,?,?)`);
+  stmts.insertFormControl = wrap(`INSERT OR REPLACE INTO form_controls VALUES (?,?,?,?,?,?,?,?)`);
+  stmts.insertObjectMeta = wrap(`INSERT OR REPLACE INTO objects_meta VALUES (?,?,?,?,?,?)`);
 }
 
 // ─── Processing Pipeline ─────────────────────────────────────────────────────
@@ -1408,6 +1665,23 @@ function buildFtsIndex() {
       stmts.insertFts.run('form', row[0], row[1] || '', `${row[2] || ''} ${dsTables}`);
     }
   }
+
+  // #123: object catalogue — searchable by name, label and string properties
+  // (query tables, report data sets, menu item names, policy tables...).
+  try {
+    const metas = db.exec(`SELECT object_type, object_name, module_id, label, properties_json FROM objects_meta`);
+    if (metas.length > 0) {
+      for (const row of metas[0].values) {
+        let propText = '';
+        try {
+          propText = Object.values(JSON.parse(row[4] || '{}')).flat()
+            .flatMap(v => (v && typeof v === 'object') ? Object.values(v) : [v])
+            .filter(v => typeof v === 'string').join(' ');
+        } catch (e) { console.warn('Warning:', e.message); }
+        stmts.insertFts.run(row[0], row[1], row[2] || '', `${row[3] || ''} ${propText}`);
+      }
+    }
+  } catch (e) { console.warn('Warning:', e.message); }
 
   // Issue #17: populate the FTS5 index from kb_search rows. This is the
   // same 'rebuild' command sec-builder uses to backfill sec_search_fts.
@@ -1604,16 +1878,16 @@ async function main() {
   loadLabels();
   console.log(`Phase 0 complete: ${((Date.now() - tLabels) / 1000).toFixed(1)}s`);
 
-  // Persist labels to database for MCP tool access
-  console.log('Writing labels to database...');
+  // Labels v2 (#84/#127): one row per (label_id, language) for every language
+  // in KB_LABEL_LANGUAGES (default en-US), streamed from the files — no
+  // per-language map in memory. Canonical ids only: '@SYS123' as-is, key 'K' of
+  // file 'LAC' as '@LAC:K'. The en-US labelMap above stays the build-time resolver.
+  console.log(`Writing labels to database (${labelLanguages.join(', ')})...`);
   db.run('BEGIN TRANSACTION');
-  let labelDbCount = 0;
-  for (const [key, value] of labelMap) {
-    stmts.insertLabel.run(key, value);
-    labelDbCount++;
-  }
+  const labelDbCount = writeLabelRows(labelLanguages);
   db.run('COMMIT');
-  console.log(`  ${labelDbCount.toLocaleString()} labels stored`);
+  stats.labelRows = labelDbCount;
+  console.log(`  ${labelDbCount.toLocaleString()} label rows stored`);
 
   // ── Phase 1: Extract metadata ──
   console.log('');
@@ -1653,6 +1927,18 @@ async function main() {
   processAxType('AxMenuItemDisplay', extractMenuItem, 'Display');
   processAxType('AxMenuItemAction', extractMenuItem, 'Action');
   processAxType('AxMenuItemOutput', extractMenuItem, 'Output');
+
+  // #123: object catalogue — metadata only for the long tail of AOT types.
+  console.log('[9b] Object catalogue: queries, reports, maps, macros, config keys, services, security policies, menus...');
+  processAxType('AxQuery', extractQueryMeta);
+  processAxType('AxReport', extractReportMeta);
+  processAxType('AxMap', extractMapMeta);
+  processAxType('AxMacroDictionary', extractMacroMeta);
+  processAxType('AxConfigurationKey', extractConfigKeyMeta);
+  processAxType('AxService', extractServiceMeta);
+  processAxType('AxServiceGroup', extractServiceGroupMeta);
+  processAxType('AxSecurityPolicy', extractSecurityPolicyMeta);
+  processAxType('AxMenu', extractMenuMeta);
 
   // Extensions (customizations) — must run AFTER base objects exist so they
   // merge into the right base table/enum, and BEFORE the FTS index is built
@@ -1695,7 +1981,9 @@ async function main() {
     `INSERT OR REPLACE INTO kb_metadata VALUES ('has_customizations', ?)`,
     [(customPackagesPaths.length > 0 || stats.tableExtensions > 0 || stats.enumExtensions > 0) ? '1' : '0']
   );
-  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.1')`);
+  // 1.2 (#123/#124/#127): objects_meta, form_controls, forms.pattern, labels.language
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('schema_version', '1.2')`);
+  db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('label_languages', ?)`, [labelLanguages.join(',')]);
   db.run(`INSERT OR REPLACE INTO kb_metadata VALUES ('model_versions_count', ?)`, [String(modelVersions.length)]);
 
   db.run('COMMIT');
@@ -1728,6 +2016,14 @@ async function main() {
   } catch (err) {
     console.log(`  kb_search_fts finalize skipped (${err.message}) — d365_search will use LIKE fallback`);
   }
+  // Labels v2 (#127): reverse label search index, same post-save mechanism.
+  try {
+    const { ensureLabelsFtsIndex } = await import('./add-kb-fts.js');
+    const n = ensureLabelsFtsIndex(outputPath);
+    console.log(`  labels_fts finalized via better-sqlite3 (${n} rows indexed)`);
+  } catch (err) {
+    console.log(`  labels_fts finalize skipped (${err.message}) — label search will use LIKE fallback`);
+  }
 
   const dbSizeMB = ((statSync(outputPath).size) / (1024 * 1024)).toFixed(1);
 
@@ -1756,6 +2052,9 @@ async function main() {
   console.log(`    Sec Duties:   ${stats.securityDuties}`);
   console.log(`    Sec Privs:    ${stats.securityPrivileges}`);
   console.log(`    Menu Items:   ${stats.menuItems}`);
+  console.log(`    Form ctrls:   ${stats.formControls} (#124 control tree)`);
+  console.log(`    Catalogue:    ${stats.objectsMeta} (#123 queries/reports/maps/macros/config keys/services/policies/menus)`);
+  console.log(`    Label rows:   ${stats.labelRows} (${labelLanguages.join(', ')})`);
   console.log(`    Customizations:`);
   console.log(`      Table ext:  ${stats.tableExtensions} (custom fields merged into base tables)`);
   console.log(`      Enum ext:   ${stats.enumExtensions} (custom values merged into base enums)`);

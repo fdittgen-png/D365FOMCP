@@ -35,6 +35,7 @@ import { z } from 'zod';
 import { isCustomFieldName } from './custom-fields.js';
 import { hasIsvData } from './isv-schema.js';
 import { registerEffectiveSchemaTools, queryTableFields } from './effective-schema-tools.js';
+import { registerAuthoringTools } from './authoring-tools.js';
 import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 import {
   resolveCustomFieldChecks,
@@ -159,15 +160,20 @@ export function registerKbTools(server, db, opts = {}) {
   // ── 1. d365_lookup_table ──────────────────────────────────────────────────
   const FIELD_LIMIT_DEFAULT = 200;
   const FIELD_LIMIT_MAX = 2000;
+  // C6 (2026-09-04): a response above this many JSON bytes (≈ 2k tokens) that
+  // was not narrowed by any parameter gets a one-line `shape_hint`.
+  const SHAPE_HINT_BYTES = 8000;
   server.registerTool(
     'd365_lookup_table',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Get complete metadata for a D365FO table: fields (name, type, EDT), primary key, indexes, and foreign key relations.',
+      description: 'Metadata for a D365FO table: fields (name, type, EDT), keys, indexes, relations. `sections` picks the blocks (default fields, indexes, relations_out; incoming relations are a count unless relations_in is asked for).',
       inputSchema: {
         table_name: z.string().min(1).max(500).describe('Table name (case-insensitive, e.g. CustInvoiceJour)'),
+        sections: z.array(z.enum(['fields', 'indexes', 'relations_out', 'relations_in'])).min(1).max(4).optional()
+          .describe('Blocks to return. Default fields,indexes,relations_out; custom_only alone → fields. Counts are always returned.'),
         fields_like: z.string().min(1).max(200).optional().describe('Only list fields whose name contains this text (case-insensitive).'),
-        custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Counts, indexes and relations are unaffected.'),
+        custom_only: z.boolean().optional().default(false).describe('Only list fields added by a table extension (custom/ISV) - the customisation surface. Without `sections` this returns the fields block only.'),
         field_limit: z.number().int().min(1).max(FIELD_LIMIT_MAX).optional().default(FIELD_LIMIT_DEFAULT).describe(`Max fields to list; field_count is always the whole table.`),
         include_provenance: z.boolean().optional().default(false).describe('Emit is_extension/source_module on every field. Default false: the pair is emitted only with custom_only, where every row is an extension.'),
         include_custom_fields: z.boolean().optional().default(false).describe('Also read UI custom fields (`_Custom` suffix) LIVE from the configured environment into a separate ui_custom_fields block. Off by default: makes a network call.'),
@@ -177,9 +183,18 @@ export function registerKbTools(server, db, opts = {}) {
       },
       outputSchema: d365LookupTableOutput.shape,
     },
-    async ({ table_name, fields_like, custom_only, field_limit, include_provenance, include_custom_fields, environment, functional_context, format }) => {
+    async ({ table_name, sections, fields_like, custom_only, field_limit, include_provenance, include_custom_fields, environment, functional_context, format }) => {
       const resolve = makeLabelResolver(db);
       const tn = table_name.trim();
+      // C1 (2026-09-04): which blocks this response carries. Canonical order so
+      // `sections` in the payload reads the same whatever order the caller used.
+      const SECTIONS_ALL = ['fields', 'indexes', 'relations_out', 'relations_in'];
+      const requested = Array.isArray(sections) ? sections.filter(s => SECTIONS_ALL.includes(s)) : [];
+      const secs = requested.length
+        ? SECTIONS_ALL.filter(s => requested.includes(s))
+        : (custom_only === true ? ['fields'] : ['fields', 'indexes', 'relations_out']);
+      const has = (s) => secs.includes(s);
+      const unfiltered = !requested.length && !(typeof fields_like === 'string' && fields_like.trim()) && custom_only !== true;
       // Defensive default - the test mock server bypasses Zod (contract rule #13).
       const fieldLimit = Number.isInteger(field_limit) && field_limit > 0
         ? Math.min(field_limit, FIELD_LIMIT_MAX) : FIELD_LIMIT_DEFAULT;
@@ -249,10 +264,16 @@ export function registerKbTools(server, db, opts = {}) {
       );
 
       const INCOMING_CAP = 20;
-      const inRelRows = q(
+      // Incoming rows only when asked for (C1); the count is always cheap and
+      // always present, and it is what the default view used to imply anyway
+      // (20 rows, truncated, cited by nobody — measured 892 tokens per lookup).
+      const inRelRows = has('relations_in') ? q(
         `SELECT source_table, relation_name, constraints_json FROM relations WHERE related_table = ? COLLATE NOCASE LIMIT ?`,
         [row.table_name, INCOMING_CAP]
-      );
+      ) : [];
+      const incomingCount = toNum(q(
+        `SELECT COUNT(*) AS n FROM relations WHERE related_table = ? COLLATE NOCASE`, [row.table_name]
+      )?.[0]?.n) ?? 0;
 
       function parseConstraints(jsonStr) {
         try {
@@ -264,6 +285,7 @@ export function registerKbTools(server, db, opts = {}) {
         } catch { return []; }
       }
 
+      /** @type {Record<string, any>} */
       const typed = {
         table_name: row.table_name,
         module_id: row.module_id ?? null,
@@ -275,14 +297,18 @@ export function registerKbTools(server, db, opts = {}) {
         replacement_key: row.replacement_key ?? null,
         field_count: fieldRows.length,
         fields_matched: matchedFieldRows.length,
-        fields_shown: shownFieldRows.length,
-        fields_truncated: matchedFieldRows.length > shownFieldRows.length,
+        fields_shown: has('fields') ? shownFieldRows.length : 0,
+        fields_truncated: has('fields') && matchedFieldRows.length > shownFieldRows.length,
         is_customized: Boolean(row.is_customized),
         custom_field_count: fieldRows.filter(f => f.is_extension).length,
         customization_modules: [...new Set(
           fieldRows.filter(f => f.is_extension && f.source_module).map(f => f.source_module)
         )],
-        fields: shownFieldRows.map(f => ({
+        sections: secs,
+        index_count: idxRows.length,
+        outgoing_count: outRelRows.length,
+        incoming_count: incomingCount,
+        ...(has('fields') ? { fields: shownFieldRows.map(f => ({
           name: f.field_name,
           type: f.field_type ?? null,
           edt: f.edt ?? null,
@@ -293,29 +319,47 @@ export function registerKbTools(server, db, opts = {}) {
             is_extension: Boolean(f.is_extension),
             source_module: f.source_module ?? null,
           } : {}),
-        })),
-        indexes: idxRows.map(i => ({
+        })) } : {}),
+        ...(has('indexes') ? { indexes: idxRows.map(i => ({
           name: i.index_name,
           is_unique: Boolean(i.is_unique),
           is_clustered: Boolean(i.is_clustered),
           fields: (() => {
             try { return JSON.parse(i.fields_json || '[]'); } catch { return []; }
           })(),
-        })),
-        outgoing_relations: outRelRows.map(r => ({
+        })) } : {}),
+        ...(has('relations_out') ? { outgoing_relations: outRelRows.map(r => ({
           relation_name: r.relation_name ?? null,
           related_table: r.related_table ?? null,
           join_fields: parseConstraints(r.constraints_json),
           relationship_type: r.relationship_type ?? null,
           on_delete: r.on_delete ?? null,
-        })),
-        incoming_relations: inRelRows.map(r => ({
-          source_table: r.source_table ?? null,
-          relation_name: r.relation_name ?? null,
-          join_fields: parseConstraints(r.constraints_json),
-        })),
-        incoming_relations_truncated: inRelRows.length >= INCOMING_CAP,
+        })) } : {}),
+        ...(has('relations_in') ? {
+          incoming_relations: inRelRows.map(r => ({
+            source_table: r.source_table ?? null,
+            relation_name: r.relation_name ?? null,
+            join_fields: parseConstraints(r.constraints_json),
+          })),
+          incoming_relations_truncated: inRelRows.length >= INCOMING_CAP,
+        } : {}),
       };
+
+      // C3: one line per relation instead of a five-column table (≈ ⅓ of the
+      // size in the text channel; the typed rows keep their object form).
+      const joinText = (pairs, keepUnbound) => pairs
+        .filter(c => c.field && (keepUnbound || c.related_field))
+        .map(c => `${c.field}->${c.related_field ?? ''}`)
+        .join(', ');
+      const outgoingLine = (r) => `- ${r.relation_name ?? '-'} → ${r.related_table ?? '-'} [${joinText(r.join_fields, false)}] ${r.relationship_type || '-'}`
+        + (r.on_delete ? `, delete ${r.on_delete}` : '');
+      const incomingLine = (r) => `- ${r.source_table ?? '-'}.${r.relation_name ?? '-'} → this [${joinText(r.join_fields, true)}]`;
+      const notIncluded = SECTIONS_ALL.filter(s => !has(s)).map(s => ({
+        fields: `fields (${typed.fields_matched})`,
+        indexes: `indexes (${typed.index_count})`,
+        relations_out: `relations_out (${typed.outgoing_count})`,
+        relations_in: `relations_in (${typed.incoming_count} incoming)`,
+      })[s]);
 
       // PM-05 step 2: render the Markdown fallback from the typed object.
       // Never re-query the DB — the typed object is the source of truth.
@@ -327,8 +371,9 @@ export function registerKbTools(server, db, opts = {}) {
           + (typed.customization_modules.length ? ` from ${typed.customization_modules.join(', ')}` : '')
           + '\n';
       }
-      out += '\n';
+      out += `_Sections: ${secs.join(', ')}` + (notIncluded.length ? ` · not included: ${notIncluded.join(', ')}` : '') + '_\n\n';
 
+      if (has('fields')) {
       out += `## Fields (${typed.field_count})\n`;
       out += formatMarkdownTable(
         typed.fields.map(f => ({
@@ -350,7 +395,9 @@ export function registerKbTools(server, db, opts = {}) {
       } else {
         out += '\n\n';
       }
+      }
 
+      if (has('indexes')) {
       out += '## Indexes\n';
       if (typed.indexes.length > 0) {
         out += formatMarkdownTable(
@@ -366,40 +413,21 @@ export function registerKbTools(server, db, opts = {}) {
         out += '_No indexes._';
       }
       out += '\n\n';
-
-      out += '## Relations (Foreign Keys)\n';
-      if (typed.outgoing_relations.length > 0) {
-        out += formatMarkdownTable(
-          typed.outgoing_relations.map(r => ({
-            Relation: r.relation_name,
-            'To Table': r.related_table,
-            'Join Fields': r.join_fields
-              .filter(c => c.field && c.related_field)
-              .map(c => `${c.field}->${c.related_field}`)
-              .join(', '),
-            Type: r.relationship_type || '-',
-            OnDelete: r.on_delete || '-',
-          })),
-          ['Relation', 'To Table', 'Join Fields', 'Type', 'OnDelete'],
-        );
-      } else {
-        out += '_No relations defined._';
       }
-      out += '\n';
 
-      if (typed.incoming_relations.length > 0) {
-        out += '\n## Incoming Relations (tables referencing this table)\n';
-        out += formatMarkdownTable(
-          typed.incoming_relations.map(r => ({
-            'From Table': r.source_table,
-            Relation: r.relation_name,
-            'Join Fields': r.join_fields
-              .filter(c => c.field)
-              .map(c => `${c.field}->${c.related_field}`)
-              .join(', '),
-          })),
-          ['From Table', 'Relation', 'Join Fields'],
-        );
+      if (has('relations_out')) {
+      out += `## Relations (Foreign Keys, ${typed.outgoing_count})\n`;
+      out += typed.outgoing_relations.length > 0
+        ? typed.outgoing_relations.map(outgoingLine).join('\n')
+        : '_No relations defined._';
+      out += '\n';
+      }
+
+      if (has('relations_in')) {
+        out += `\n## Incoming Relations (${typed.incoming_count} tables referencing this table)\n`;
+        out += typed.incoming_relations.length > 0
+          ? typed.incoming_relations.map(incomingLine).join('\n') + '\n'
+          : '_None._\n';
         if (typed.incoming_relations_truncated) out += truncationNote('hard', INCOMING_CAP);
       }
 
@@ -438,6 +466,11 @@ export function registerKbTools(server, db, opts = {}) {
             ? { count: typed.custom_field_count, total: typed.field_count, models: typed.customization_modules }
             : null,
           isv_not_scanned: !isvScanned,
+          // C6: large and unfiltered → say how to narrow it. 8 KB of JSON is
+          // roughly 2k tokens, the threshold the efficiency analysis named.
+          shape_hint: unfiltered && JSON.stringify(typed).length > SHAPE_HINT_BYTES
+            ? 'large unfiltered response — for structure pass sections (e.g. ["indexes","relations_out"]), for one field fields_like, or lower field_limit'
+            : null,
         }),
       });
     }
@@ -539,18 +572,49 @@ export function registerKbTools(server, db, opts = {}) {
   );
 
   // ── 3. d365_search ────────────────────────────────────────────────────────
+  // Labels v2 (#84/#127): the `labels` table gains language/module columns and
+  // an FTS5 twin. Detected once per registration so the same code serves a
+  // pre-migration snapshot (en-US only, LIKE scan).
+  const kbHasTable = (t) => { try { return q("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ?", [t]).length > 0; } catch { return false; } };
+  const kbHasColumn = (t, c) => { try { return q(`PRAGMA table_info(${t})`).some(col => col.name === c); } catch { return false; } };
+  const labelsHaveLanguage = kbHasTable('labels') && kbHasColumn('labels', 'language');
+  const labelsHaveModule = kbHasTable('labels') && kbHasColumn('labels', 'module');
+  const labelsHaveFts = kbHasTable('labels_fts');
+  /** Reverse label search rows in the kb_search row shape (object_type 'label'). */
+  const labelSearchRows = (terms, moduleFilter, limitProbe, offset) => {
+    const langCol = labelsHaveLanguage ? 'l.language' : "'en-US'";
+    const modCol = labelsHaveModule ? 'l.module' : 'NULL';
+    const modWhere = (labelsHaveModule && moduleFilter.length)
+      ? ` AND l.module COLLATE NOCASE IN (${moduleFilter.map(() => '?').join(', ')})` : '';
+    const modParams = (labelsHaveModule && moduleFilter.length) ? moduleFilter : [];
+    let rows;
+    if (labelsHaveFts) {
+      const ftsExpr = terms.map(t => `"${t.replace(/"/g, '""')}"*`).join(' AND ');
+      rows = q(`SELECT l.label_id, ${langCol} AS language, l.text, ${modCol} AS module
+                FROM labels_fts f JOIN labels l ON l.rowid = f.rowid
+                WHERE labels_fts MATCH ?${modWhere} ORDER BY l.rowid LIMIT ? OFFSET ?`, [ftsExpr, ...modParams, limitProbe, offset]);
+    } else {
+      const likeParts = terms.map(() => 'l.text LIKE ? COLLATE NOCASE').join(' AND ');
+      rows = q(`SELECT l.label_id, ${langCol} AS language, l.text, ${modCol} AS module
+                FROM labels l WHERE ${likeParts}${modWhere} ORDER BY l.rowid LIMIT ? OFFSET ?`,
+      [...terms.map(t => `%${t}%`), ...modParams, limitProbe, offset]);
+    }
+    return rows.map(r => ({ object_type: 'label', object_name: r.label_id, module_id: r.module ?? null, content: `${r.language}: ${r.text}` }));
+  };
+
   server.registerTool(
     'd365_search',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities) for discovery, e.g. "tables related to inventory". Scope with `modules` to specific models.',
+      description: 'Full-text search across all D365FO objects (tables, classes, enums, entities, forms) for discovery, e.g. "tables related to inventory"; `object_type: "label"` searches label TEXT (reverse label lookup). Scope with `modules` to specific models.',
       inputSchema: {
       query: z.string().min(1).max(1000).optional().describe('Search query (keywords). Use this or `queries`.'),
       queries: z.array(z.string().min(1).max(1000)).min(1).max(SEARCH_BATCH_MAX).optional()
         .describe(`Run several searches in one call (max ${SEARCH_BATCH_MAX}); object_type / modules / limit apply to each.`),
-      object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity'),
+      object_type: z.string().min(1).max(500).optional().describe('Optional filter: table, class, enum, entity, form, label (label = search label text)'),
       modules: modulesFilterParam,
       limit: z.number().int().min(1).max(500).optional().default(20).describe('Max results'),
+      include_context: z.boolean().optional().default(false).describe('Add a text snippet per hit. Off by default (C4: snippets cost ~60% of a search and were never cited).'),
       cursor: cursorParam,
       functional_context: functionalContextParam,
       format: formatTextParam,
@@ -559,8 +623,9 @@ export function registerKbTools(server, db, opts = {}) {
     },
     // `functional_context` is accepted for a uniform caller habit; a search
     // resolves no single object, so nothing is recorded (#115).
-    async ({ query: singleQuery, queries, object_type, modules, limit, cursor, format }) => {
+    async ({ query: singleQuery, queries, object_type, modules, limit, include_context, cursor, format }) => {
       const lim = Number.isInteger(limit) && limit > 0 ? limit : 20;
+      const includeContext = include_context === true;
       const moduleFilter = sanitizeModulesFilter(modules);
       const page = decodeCursor(cursor);
       if (!page.ok) return page.error;
@@ -592,10 +657,19 @@ export function registerKbTools(server, db, opts = {}) {
       const terms = searchQuery.trim().split(/\s+/).filter(Boolean);
       if (!terms.length) return { error: errorResult('invalid-input', 'Provide at least one search term.') };
 
+      // Labels v2 (#127): `object_type: 'label'` searches label TEXT, not the
+      // object index — same row shape, so rendering and paging are shared.
+      let rows;
+      if (typeof object_type === 'string' && object_type.toLowerCase() === 'label') {
+        try {
+          rows = labelSearchRows(terms, moduleFilter, probeLimit(lim), offset);
+        } catch (err) {
+          return { error: errorResult('db-error', 'Label search failed; try a shorter or more specific term.', err) };
+        }
+      } else
       // Issue #17: FTS5 MATCH first (10-50x faster on the ~1 GB KB), same
       // pattern as sec_search. Falls back to LIKE when the DB predates
       // kb_search_fts (older builds, sql.js-only environments).
-      let rows;
       try {
         // Each term becomes a quote-escaped prefix-match token.
         const ftsExpr = terms.map(t => `"${t.replace(/"/g, '""')}"*`).join(' AND ');
@@ -666,8 +740,9 @@ export function registerKbTools(server, db, opts = {}) {
             module_id: r.module_id ?? null,
             // Rule #12: center the snippet on the first matching term instead
             // of blindly taking the first 120 chars (matches beyond position
-            // 120 used to be invisible in the context column).
-            context: r.content != null ? contextAround(r.content, terms[0], 60) : null,
+            // 120 used to be invisible in the context column). C4: only when
+            // asked for — decided per response, so every row has the same keys.
+            ...(includeContext ? { context: r.content != null ? contextAround(r.content, terms[0], 60) : null } : {}),
           })),
         },
       };
@@ -677,7 +752,7 @@ export function registerKbTools(server, db, opts = {}) {
         object_type: r.object_type ?? '',
         object_name: r.object_name,
         module_id: r.module_id ?? '',
-        context: r.context ?? '',
+        ...(includeContext ? { context: r.context ?? '' } : {}),
       })));
 
       if (!batchMode) {
@@ -693,7 +768,11 @@ export function registerKbTools(server, db, opts = {}) {
         if (typed.modules) out += `_Scope: modules ${typed.modules.join(', ')}_\n\n`;
         out += renderRows(typed.results);
         if (typed.has_more) out += pageNote(typed.result_count, page.offset, typed.next_cursor);
-        return structuredResult(typed, out, format, { coverage: kbCov({ isv_not_scanned: !isvScanned }) });
+        return structuredResult(typed, out, format, { coverage: kbCov({
+          isv_not_scanned: !isvScanned,
+          shape_hint: !object_type && !moduleFilter.length && JSON.stringify(typed).length > SHAPE_HINT_BYTES
+            ? 'large unfiltered search — pass object_type or modules, or lower limit' : null,
+        }) });
       }
 
       // Batch mode: the shared scope is carried once in the envelope, each
@@ -1594,25 +1673,27 @@ export function registerKbTools(server, db, opts = {}) {
     'd365_get_entity_sources',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Data source chain and fields of a data entity, by AOT name, OData public name or collection name. Every field carries its model: `custom_only` returns the customisation surface; `fields_like` / `computed_only` / `limit` narrow it. Methods omitted unless `include_methods: true` (`method_count` always present).',
+      description: 'Data entity by AOT / OData / collection name. Default is a SUMMARY: header, data sources with field counts, method and custom-field counts (~300 tokens). Field rows come with `fields_like` / `custom_only` / `computed_only` / `limit` / `cursor` or `summary:false`; methods with `include_methods`.',
       inputSchema: {
         entity_name: z.string().min(1).max(500).describe('Data entity name: AOT name, OData public name, or OData collection name'),
+        summary: z.boolean().optional().describe('true = data-source breakdown only (default when no field filter, limit or cursor is passed); false = field rows.'),
         include_methods: z.boolean().optional().default(false).describe('Include entity method signatures (postLoad, validate*, OData actions). Default false - method_count is always returned.'),
         fields_like: z.string().min(1).max(200).optional().describe('Only fields whose name contains this text (case-insensitive)'),
         custom_only: z.boolean().optional().default(false).describe('Only fields added by a non-Microsoft model or by a table extension - the customisation surface'),
         computed_only: z.boolean().optional().default(false).describe('Only computed/virtual fields (no backing data field)'),
         include_provenance: z.boolean().optional().default(false).describe('Emit source_module/is_extension on EVERY field (default: only on extension fields — on standard fields it repeats the entity\'s module, ~27% of the response).'),
-        limit: z.number().int().min(1).max(1000).optional().default(500).describe('Max fields to return'),
+        limit: z.number().int().min(1).max(1000).optional().describe('Max fields to return (default 500). Passing it selects field-row mode.'),
         cursor: cursorParam,
         functional_context: functionalContextParam,
         format: formatTextParam,
       },
       outputSchema: d365GetEntitySourcesOutput.shape,
     },
-    async ({ entity_name, include_methods, fields_like, custom_only, computed_only, include_provenance, limit, cursor, functional_context, format }) => {
+    async ({ entity_name, summary, include_methods, fields_like, custom_only, computed_only, include_provenance, limit, cursor, functional_context, format }) => {
       const en = entity_name.trim();
       // Defensive defaults - the test mock server bypasses Zod (contract rule #13).
       const lim = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1000) : 500;
+      const limitGiven = limit !== undefined && limit !== null;
       const page = decodeCursor(cursor);
       if (!page.ok) return page.error;
       const wantMethods = include_methods === true;
@@ -1622,6 +1703,11 @@ export function registerKbTools(server, db, opts = {}) {
       const likeTerm = typeof fields_like === 'string' && fields_like.trim()
         ? fields_like.trim().toLowerCase()
         : null;
+      // C2 (2026-09-04): summary is the default shape. Any request for rows —
+      // a field filter, a page, an explicit limit — or `summary:false` switches
+      // to field rows; an explicit `summary:true` wins over a filter.
+      const summaryMode = summary === true
+        || (summary !== false && !likeTerm && !customOnly && !computedOnly && !cursor && !limitGiven && !wantProvenance);
 
       // Resolve the AOT name first, then the OData names a caller actually holds:
       // public_collection ("ReleasedProductsV2") and public_name ("ReleasedProductV2").
@@ -1767,6 +1853,15 @@ export function registerKbTools(server, db, opts = {}) {
         console.error('[kb-tools:d365_get_entity_sources methods]', err);
       }
 
+      // Data-source breakdown (C2): name + field count, largest first.
+      const dsCounts = new Map();
+      for (const f of allFields) dsCounts.set(f.data_source ?? null, (dsCounts.get(f.data_source ?? null) ?? 0) + 1);
+      const dataSources = [...dsCounts.entries()]
+        .map(([name, field_count]) => ({ name, field_count }))
+        .sort((a, b) => b.field_count - a.field_count || String(a.name).localeCompare(String(b.name)));
+      const customFieldCount = allFields.filter(f => f.is_extension === true).length;
+
+      /** @type {Record<string, any>} */
       const typed = {
         entity_name: r.entity_name,
         module_id: r.module_id ?? null,
@@ -1778,16 +1873,19 @@ export function registerKbTools(server, db, opts = {}) {
         staging_table: r.staging_table ?? null,
         config_key: r.config_key ?? null,
         field_count: allFields.length,
-        fields_matched: matched.length,
-        fields_returned: shownFields.length,
-        entity_fields: shownFields,
+        custom_field_count: customFieldCount,
+        ...(summaryMode
+          ? { summary: true, data_sources: dataSources }
+          : { fields_matched: matched.length, fields_returned: shownFields.length, entity_fields: shownFields }),
         method_count: methodCount,
         methods: methodRows.map(m => ({
           method_name: m.method_name,
           signature: m.signature ?? null,
           is_static: Boolean(m.is_static),
         })),
-        ...pageMeta(null, page.offset, shownFields.length, lim, page.offset + shownFields.length < matched.length),
+        ...(summaryMode
+          ? pageMeta(null, 0, 0, lim, false)
+          : pageMeta(null, page.offset, shownFields.length, lim, page.offset + shownFields.length < matched.length)),
       };
 
       const activeFilters = [
@@ -1805,6 +1903,12 @@ export function registerKbTools(server, db, opts = {}) {
       if (typed.staging_table) out += `Staging Table: ${typed.staging_table}\n`;
       out += '\n';
 
+      if (summaryMode) {
+        out += `## Data Sources (${typed.field_count} fields from ${dataSources.length} sources)\n`;
+        out += formatMarkdownTable(dataSources.map(d => ({ DataSource: d.name ?? '-', Fields: d.field_count })), ['DataSource', 'Fields']);
+        out += `\n\nCustom/extension fields: ${typed.custom_field_count} · Methods: ${typed.method_count}\n`;
+        out += '_Summary mode — pass summary:false, fields_like, custom_only or limit for field rows._\n';
+      } else {
       out += activeFilters.length
         ? `## Entity Fields (${typed.fields_matched} of ${typed.field_count} - ${activeFilters.join(', ')})\n`
         : `## Entity Fields (${typed.field_count})\n`;
@@ -1827,6 +1931,8 @@ export function registerKbTools(server, db, opts = {}) {
         if (customOnly || likeTerm) {
           out += '\n\n_Two classes of field are in no metadata model, and therefore in no KB snapshot: D365 UI custom fields (`*_Custom`, System administration > Custom fields) and fields from binary-only ISV models. For the latter, `d365_isv_lookup` confirms whether the owning object exists in a sealed ISV model — those models publish an element inventory but no field-level detail. Verify in the environment before concluding a field does not exist._';
         }
+      }
+
       }
 
       out += `\n\n## Methods (${typed.method_count})\n`;
@@ -1853,6 +1959,11 @@ export function registerKbTools(server, db, opts = {}) {
         coverage: kbCov({
           provenance_omitted: !emitProvenance && extFields.length > 0
             ? { count: extFields.length, total: allFields.length, models: [...new Set(extFields.map(f => f.source_module).filter(Boolean))] }
+            : null,
+          // C6: field rows without any narrowing, and large.
+          shape_hint: !summaryMode && !likeTerm && !customOnly && !computedOnly && !cursor
+            && JSON.stringify(typed).length > SHAPE_HINT_BYTES
+            ? 'large unfiltered field list — summary:true gives the data-source breakdown; fields_like / custom_only / limit narrow the rows'
             : null,
         }),
       });
@@ -2292,20 +2403,23 @@ export function registerKbTools(server, db, opts = {}) {
     'd365_resolve_label',
     {
       annotations: READ_ONLY_DB_ANNOTATIONS,
-      description: 'Resolve D365FO label IDs (like @SYS12345) to human-readable text.',
+      description: 'Resolve D365FO label IDs (@SYS12345, @LAC:Key) to text, in one or more languages (default en-US).',
       inputSchema: {
-      label_ids: z.array(z.string().regex(/^@[A-Za-z]+\d+$/, 'Label IDs must match the @LangPrefixNNNN pattern, e.g. "@SYS12345"'))
+      label_ids: z.array(z.string().regex(/^@[A-Za-z][A-Za-z0-9_]*(\d+|:[A-Za-z0-9_]+)$/, 'Label IDs must look like "@SYS12345" or "@Prefix:Key"'))
         .min(1, 'Provide at least one label ID.')
         .max(100, 'Max 100 label IDs per call.')
-        .describe('Array of label IDs to resolve, e.g. ["@SYS12345"]. Max 100 per call.'),
+        .describe('Label IDs to resolve, e.g. ["@SYS12345", "@LAC:InvoiceDate"]. Max 100 per call.'),
+      languages: z.array(z.string().min(2).max(10)).min(1).max(10).optional()
+        .describe('Language codes (en-US, de, fr…); default ["en-US"]. Ignored on a snapshot built without languages.'),
       format: formatTextParam,
     },
       outputSchema: d365ResolveLabelOutput.shape,
     },
-    async ({ label_ids, format }) => {
+    async ({ label_ids, languages, format }) => {
       // Dedupe before building the IN (...) clause so a caller passing 100 copies
       // of the same id doesn't inflate the placeholder list.
       const unique = [...new Set(label_ids)];
+      const langs = [...new Set((Array.isArray(languages) && languages.length ? languages : ['en-US']).map(String))];
       // Defensive default: Zod enforces .min(1), but the test mock server
       // bypasses Zod, so guard the empty-array case explicitly (contract item 13).
       if (!unique.length) {
@@ -2318,10 +2432,14 @@ export function registerKbTools(server, db, opts = {}) {
         });
       }
       const placeholders = unique.map(() => '?').join(', ');
-      const result = q(
-        `SELECT label_id, text FROM labels WHERE label_id IN (${placeholders}) COLLATE NOCASE`,
-        unique
-      );
+      // Labels v2 (#127): one row per (id, language) when the snapshot has
+      // languages; the pre-migration shape (id, text) otherwise — rule #14
+      // decides per response, so `language` is on every row or on none.
+      const result = labelsHaveLanguage
+        ? q(`SELECT label_id, language, text FROM labels
+             WHERE label_id IN (${placeholders}) COLLATE NOCASE AND language COLLATE NOCASE IN (${langs.map(() => '?').join(', ')})
+             ORDER BY label_id, language`, [...unique, ...langs])
+        : q(`SELECT label_id, text FROM labels WHERE label_id IN (${placeholders}) COLLATE NOCASE`, unique);
 
       if (!result || result.length === 0) {
         return emptyResult(`labels matching ${unique.join(', ')}`, {
@@ -2340,14 +2458,17 @@ export function registerKbTools(server, db, opts = {}) {
         requested_count: unique.length,
         resolved_count: result.length,
         not_found_count: missing.length,
-        resolved: result.map(r => ({ label_id: r.label_id, text: r.text })),
+        resolved: result.map(r => (labelsHaveLanguage
+          ? { label_id: r.label_id, language: String(r.language), text: r.text }
+          : { label_id: r.label_id, text: r.text })),
         not_found: missing,
       };
 
-      let out = '## Label Resolution\n\n|Label ID|Text|\n|---|---|\n';
-      for (const row of typed.resolved) {
-        out += `|${row.label_id}|${row.text}|\n`;
-      }
+      let out = '## Label Resolution\n\n';
+      out += formatMarkdownTable(typed.resolved.map(r => (labelsHaveLanguage
+        ? { 'Label ID': r.label_id, Language: r.language, Text: r.text }
+        : { 'Label ID': r.label_id, Text: r.text })));
+      out += '\n';
       if (typed.not_found_count > 0) {
         out += `\n**Not found:** ${typed.not_found.join(', ')}`;
       }
@@ -2360,4 +2481,7 @@ export function registerKbTools(server, db, opts = {}) {
   // tool-sets.js and every entry point stay untouched. `server` is already the
   // guarded proxy (installToolGuards is idempotent either way).
   registerEffectiveSchemaTools(server, db, { semanticDb });
+
+  // ── 19–24. Authoring-loop read tools (#123–#128) — same wiring. ──────────
+  registerAuthoringTools(server, db, { semanticDb });
 }

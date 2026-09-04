@@ -87,15 +87,21 @@ function kbDb() {
     CREATE TABLE fields (table_name TEXT, field_name TEXT, field_type TEXT, edt TEXT, enum_type TEXT, mandatory TEXT, label TEXT, source_module TEXT, is_extension INTEGER DEFAULT 0);
     CREATE TABLE tables (table_name TEXT, module_id TEXT);
     CREATE TABLE labels (label_id TEXT PRIMARY KEY, text TEXT);
+    CREATE TABLE forms (form_name TEXT PRIMARY KEY, module_id TEXT, label TEXT, data_sources_json TEXT, file_path TEXT, pattern TEXT, pattern_version TEXT, controls_count INTEGER);
     INSERT INTO data_entities VALUES ('PagedEntity','AS','Paged','Paged','Pageds',1,'PagedTable',NULL,NULL);
   `);
   const s = db.prepare('INSERT INTO kb_search VALUES (?,?,?,?)');
   const m = db.prepare('INSERT INTO methods VALUES (?,?,?,?,?,?)');
   const ef = db.prepare('INSERT INTO entity_fields VALUES (?,?,?,?,?)');
+  const f = db.prepare('INSERT INTO forms VALUES (?,?,?,?,?,?,?,?)');
   for (let i = 1; i <= 7; i++) {
     s.run('table', `PagedTable${pad(i)}`, 'AS', `PagedTable${pad(i)} paged content`);
     m.run('class', 'PagedClass', `method${pad(i)}`, `void method${pad(i)}()`, 0, 'x');
+    // #125: seven owners implementing the same method name
+    m.run('class', `PagedOwner${pad(i)}`, 'pagedMethod', 'public void pagedMethod()', 0, 'x\ny');
     ef.run('PagedEntity', `Field${pad(i)}`, `Field${pad(i)}`, 'PagedTable', 0);
+    // #124: seven forms sharing one pattern
+    f.run(`PagedForm${pad(i)}`, 'AS', null, '["PagedTable"]', null, 'PagedPattern', '1.0', 0);
   }
   return db;
 }
@@ -155,6 +161,8 @@ const PAGED = [
   ['kb', 'd365_search', { query: 'paged' }, t => t.results.map(x => x.object_name)],
   ['kb', 'd365_get_class_methods', { name: 'PagedClass' }, t => t.methods.map(x => x.method_name)],
   ['kb', 'd365_get_entity_sources', { entity_name: 'PagedEntity' }, t => t.entity_fields.map(x => x.field_name)],
+  ['kb', 'd365_find_method_implementations', { method_name: 'pagedMethod' }, t => t.implementations.map(x => x.owner_name)],
+  ['kb', 'd365_find_forms', { pattern: 'PagedPattern' }, t => t.forms.map(x => x.form_name)],
   ['xref', 'xref_find_references', { object_name: 'PagedTable' }, t => t.references.map(x => `${x.path}:${x.line}`)],
   ['xref', 'xref_find_usages', { object_name: 'PagedTable' }, t => t.usages.map(x => `${x.path}:${x.line}`)],
   ['sec', 'sec_search', { query: 'paged' }, t => t.results.map(x => x.object_name)],
