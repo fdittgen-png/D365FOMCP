@@ -5,6 +5,9 @@ argument-hint: <Object | Class.Method | Table.Field | EnumName>
 
 # D365 Impact Analysis
 
+> **Do not load `d365fo-mcp-tooling` for this command** — it carries its own calls. Measured 2026-09-04: the skill is ≈ 5.8k tokens of text, the data for this answer ≈ 2.6k.
+
+
 ## Task
 Analyze the downstream impact of modifying `$ARGUMENTS` before the change is made.
 **Done when:** the impact table, consumer list, and a clear recommendation (safe / caution / high risk) are presented, with confirmed data separated from inference.
