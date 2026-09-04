@@ -5,6 +5,9 @@ argument-hint: <TableName> [--full]
 
 # D365 Table Deep Dive
 
+> **Do not load `d365fo-mcp-tooling` for this command** — it carries its own calls. Measured 2026-09-04: the skill is ≈ 5.8k tokens of text, the data for this answer ≈ 2.6k.
+
+
 ## Task
 Analyze the D365 table `$ARGUMENTS` across structure, usage, security, and customizations.
 **Default is brief** (B5): keys, relations, customisation surface and usage counts — no field list. Only with `--full` in the arguments list the fields (`sections: ["fields","indexes","relations_out"]`, `field_limit` as needed). State the shape in one line before the first call.

@@ -5,6 +5,9 @@ argument-hint: <ClassName>
 
 # D365 Class Analysis
 
+> **Do not load `d365fo-mcp-tooling` for this command** — it carries its own calls. Measured 2026-09-04: the skill is ≈ 5.8k tokens of text, the data for this answer ≈ 2.6k.
+
+
 ## Task
 Analyze the class `$ARGUMENTS`: hierarchy, methods, extensions, callers, and extensibility points.
 **Done when:** the report covers the sections below from live MCP data, with inferred statements labeled as such.

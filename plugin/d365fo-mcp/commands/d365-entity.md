@@ -5,6 +5,9 @@ argument-hint: <EntityName | OData collection> [--fields]
 
 # D365 Entity Structure (brief)
 
+> **Do not load `d365fo-mcp-tooling` for this command** — it carries its own calls. Measured 2026-09-04: the skill is ≈ 5.8k tokens of text, the data for this answer ≈ 2.6k.
+
+
 ## Task
 Explain how the data entity `$ARGUMENTS` is built. **Brief by default**: shape, data sources, keys, relations, customisation, siblings. Field rows only when `--fields` is given or the user asks.
 **Done when:** every statement is backed by one of the three calls below, the customisation surface is named per model, and anything not queried (subtype tables, mandatory flags) is flagged as unverified.

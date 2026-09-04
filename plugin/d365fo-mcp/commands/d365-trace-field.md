@@ -5,6 +5,9 @@ argument-hint: <Table.Field>
 
 # D365 Field Trace
 
+> **Do not load `d365fo-mcp-tooling` for this command** — it carries its own calls. Measured 2026-09-04: the skill is ≈ 5.8k tokens of text, the data for this answer ≈ 2.6k.
+
+
 ## Task
 Trace `$ARGUMENTS` (parse into tableName and fieldName on the dot) across the D365 ecosystem.
 **Done when:** existence and type are confirmed via `d365_check_field_exists` (never asserted from memory), enum/FK details are resolved, and usage is reported.

@@ -107,7 +107,7 @@ Auth details: `docs/MCP-Entra-Auth-Setup.md`.
 3. **Freshness banner**: any data tool response carries `_KB snapshot: YYYY-MM-DD_` on the line after its heading; a stale date means the upload did not land or the app did not restart.
 4. **ISV data live**: `node local-deploy/verify-isv-live.cjs` (or call `d365_isv_list_models` through a client) — 17 sealed models expected.
 5. **Provenance**: `node local-deploy/verify-model-versions.cjs`.
-6. **Do not** verify Azure through the MCP tools of a Claude Code session: those are the **local stdio servers** reading the files under `~/.claude`. Verify with a direct HTTP call or the connectors in claude.ai.
+6. **Do not** verify Azure through the MCP tools of a Claude Code session: those are the **local stdio servers** reading the files under `~/.claude`. And do not verify a **code** change through them either: a stdio server is a process started with the session and serves the old code and environment until a new session (measured 2026-09-04: a same-session rerun of the entity recipe returned 92 KB from the pre-change servers against 10 KB from a fresh spawn). Verify with a fresh spawn (SDK `Client` + `StdioClientTransport`) or a new session. Verify with a direct HTTP call or the connectors in claude.ai.
 
 ## 6. App settings that matter
 
