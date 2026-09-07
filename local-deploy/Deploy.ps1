@@ -571,7 +571,8 @@ if (-not $SkipCode) {
         }
     }
     # Source tree (only Azure-targeted folders)
-    foreach ($sub in @('src\azure', 'src\functions', 'www', 'config', 'build', 'assets')) {
+    # src\trace added 2026-09-07: tool-sets.js imports ../trace/index.js — without it the worker indexes ZERO functions
+    foreach ($sub in @('src\azure', 'src\functions', 'src\trace', 'www', 'config', 'build', 'assets')) {
         $src = Join-Path $projectDir $sub
         if (Test-Path $src) {
             $dest = Join-Path $deployDir $sub
