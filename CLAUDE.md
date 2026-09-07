@@ -315,6 +315,28 @@ them on was tried first and broke 20 tests.
   `register*Tools()` calls, and double-wrapping would trip the loop threshold at
   half the intended count.
 
+## ERP trace capture (2026-09-07)
+
+`src/trace/` is the cross-ERP trace module (design `docs/ERP-Trace-Capture-TDD.md`, what actually
+shipped and why it deviates: `docs/ERP-Trace-Capture-Implementation-2026-09-07.md`). Two streams share
+one contract (`src/trace/contract/trace-record.v1.schema.json`): **`mcp`** = one call record per tool
+call (tool, replayable `args` under a policy per parameter, `result` kind/bytes/rows/has_more/duration,
+`touched` names — **never the response**); **`claude`** = the investigation lifecycle `open` (request
+as Claude interpreted it + `expected_entities` = functional-vocabulary ids) · `step` · `annotate` ·
+`close` (the final answer). `sanitize()` is the only producer of a record any writer accepts.
+Two capture paths: `withTrace` on the registration path in `tool-sets.js` (`MCP_TRACE=on`, default on
+for the local stdio servers, file sink `~/.claude/mcp-trace/<service>.ndjson`) and the plugin hook
+`plugin/d365fo-mcp/hooks/trace-capture.mjs` (UserPromptSubmit prints the trace protocol so Claude
+writes `Request:` / `Entities:` lines; PreToolUse/PostToolUse/Stop lift the rest from the transcript;
+records to `~/.claude/mcp-trace/hook.ndjson` and `POST /trace/ingest` on tis-d-claudetrace-func).
+`plugin/d365fo-mcp/hooks/lib/` is **generated** — `npm run gen:trace-hook` after changing a contract
+module, any tool's inputSchema or `config/semantic-vocabulary.json` (`test/trace-generated.test.js`).
+The vocabulary is v2: **D365FO is the pivot** — every functional entity carries `aliases[]` and its
+D365FO logical (`data_entities[]`) and physical (`primary_tables[]`, `key_fields[]`) reference; a source
+ERP maps onto it, an empty logical layer is a legitimate finding (`resource` has one today).
+Contract modules under `src/trace/contract/` import Node built-ins and siblings only; `src/azure`
+imports the module only through `src/trace/index.js` (static scans in `test/trace-contract.test.js`).
+
 ## Claude plugin
 
 `plugin/d365fo-mcp/` is the installable Claude Code plugin (20 commands, 8 skills; **deliberately no `.mcp.json`** — the 4 services are reached via the claude.ai connectors, because a plugin/local server with the same URL hides the connector, enforced by `test/plugin.test.js`); the repo is its own marketplace via **two** `marketplace.json` files that `test/plugin.test.js` keeps identical: `.claude-plugin/marketplace.json` at the repo root (source `./plugin/d365fo-mcp`) is the one a GitHub install reads — `/plugin marketplace add fdittgen-png/D365FOMCP` looks ONLY at the root and failed on 2026-09-03 while the file lived under `plugin/` — and `plugin/.claude-plugin/marketplace.json` (source `./d365fo-mcp`) serves the local directory marketplace at `C:\working\MCP\plugin`. Editing `plugin/` does not change the installed copy (cached per version under `~/.claude/plugins/cache/`): bump `plugin.json` `version` with every skill change, then `/plugin marketplace update` + `/plugin update` + a new session. `skills/d365fo-mcp-tooling/references/*-tools.md` are **generated** from the tool registrations — run `npm run gen:plugin-refs` after changing any `src/azure/*-tools.js` (`test/plugin.test.js` fails otherwise). Privacy scrub in that test: no personal paths, no e-mail other than the operator contact.

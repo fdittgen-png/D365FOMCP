@@ -33,7 +33,9 @@
     "gen:plugin-refs": "node build/gen-plugin-tool-refs.js",
     "pack:skills": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/Build-SkillsPackage.ps1",
     "typecheck": "tsc -p jsconfig.json",
-    "evals": "node --env-file-if-exists=.env scripts/run-evals.mjs"
+    "evals": "node --env-file-if-exists=.env scripts/run-evals.mjs",
+    "gen:trace-hook": "node build/gen-trace-hook.js",
+    "test:trace": "node --test test/trace-*.test.js"
   },
   "engines": {
     "node": ">=20.0.0 <21.0.0"

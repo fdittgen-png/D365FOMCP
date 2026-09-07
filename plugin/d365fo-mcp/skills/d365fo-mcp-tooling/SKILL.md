@@ -54,7 +54,7 @@ Decide what the answer must contain, say it in one line (*"Shape: data sources +
 5. **Batch same-kind targets** (`enum_names`, `tables`, `method_names`, `queries`, `object_names`, `objects`, `role_names`); run independent calls in parallel; heavy calls against one server one at a time (SQLite is synchronous — one slow query blocks the host).
 6. **raw_sql: aggregate, then ≤ 5 rows per group.** Never a > 50-row dump.
 7. **Every factual claim has a call behind it.** Label inferences — a purpose read from a label or module name is an inference until fields or methods were queried. A confident unbacked sentence is what these tools exist to prevent.
-8. **Pass `functional_context`** (vocabulary id such as `vendor`, `sales_order`) on the lookup tools.
+8. **Pass `functional_context`** (vocabulary id such as `vendor`, `sales_order`) on the lookup tools — it also becomes the investigation's `expected_entities` in the trace when you wrote no `Entities:` line (§8).
 9. **A "you are repeating this call" note means stop**, not retry.
 10. **A `/d365-*` command carries its calls — do not load this skill on top of it** (the skill is ≈ 5.8k tokens of text against ≈ 2.6k of data for an entity question).
 
@@ -85,3 +85,13 @@ Decide what the answer must contain, say it in one line (*"Shape: data sources +
 ## 7. Privacy and scope
 
 Metadata and configuration only — never customer or vendor party data, through any tool or `raw_sql`; stop and say so if a request needs real records. `d365sec` user data is internal staff information: analyse, do not paste into external documents. Never repeat e-mail addresses from tool output.
+
+## 8. Trace protocol (hook-captured since 2026-09-07)
+
+Every D365 KB/XRef investigation in Claude Code is recorded as a cross-ERP trace: the request as **you** interpreted it, your strategy lines, every MCP call with its replayable arguments (never the response), the final answer. The hook reads it all from the transcript — you only have to write three things well:
+
+- **`Request:` line first**, before the first MCP call: the ask restated ERP-neutrally, so it can be replayed against another ERP's metadata service — no person names, no data values, no object names (*"Explain the logical structure of the vendor entity and its backing table"*, not *"look at VendTable for the key user"*). It becomes `request.interpreted` and the cross-ERP join key.
+- **`Entities:` line second**: the functional entities in business terms (*vendor, postal address*) — aliases resolve to vocabulary ids (`supplier` → `vendor`); `none` when there is none. Without it the hook falls back to the first call's `functional_context`, then to a vocabulary match on your request line.
+- **One short strategy line before each group of calls** (*"Now the backing table with its indexes"*). Each becomes a `step`; calls without a preceding line attach to the previous step.
+
+Three levels live in the pivot vocabulary and in the trace: **functional** (vocabulary id, `expected_entities`) → **logical** (D365FO data entity, `touched.kind = data_entity`) → **physical** (table, `touched.kind = table`). An empty logical layer is a finding, not a gap — `resource` has none in D365FO itself. Write nothing sensitive in strategy lines: a line with an e-mail or IBAN-like token is dropped from the trace (the answer is unaffected). Records land in `~/.claude/mcp-trace/hook.ndjson`; the `annotate` phase (source/target roles, counterparts, expectations) is not automated — state those observations in the answer.

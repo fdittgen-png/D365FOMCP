@@ -87,9 +87,9 @@ describe('schema', () => {
 });
 
 describe('vocabulary', () => {
-  it('the checked-in file is v1, ≤60 snake_case entities, process-grouped, relations resolve', () => {
+  it('the checked-in file is v2 (D365FO pivot), ≤60 snake_case entities, process-grouped, relations resolve', () => {
     const json = JSON.parse(readFileSync(join(__dirname, '..', 'config', 'semantic-vocabulary.json'), 'utf-8'));
-    assert.equal(json.version, '1.0.0');
+    assert.equal(json.version, '2.0.0');
     assert.ok(json.entities.length <= 60, `too many entities: ${json.entities.length}`);
     assert.ok(json.entities.length >= 30);
     const ids = new Set();
@@ -113,7 +113,7 @@ describe('vocabulary', () => {
     const r2 = loadVocabulary(db, readVocabularyFile());
     assert.equal(r1.entities, r2.entities);
     assert.equal(db.prepare('SELECT COUNT(*) n FROM sem_vocabulary').get().n, r1.entities);
-    assert.equal(getVocabularyEntry(db, 'SALES_ORDER').version, '1.0.0');
+    assert.equal(getVocabularyEntry(db, 'SALES_ORDER').version, '2.0.0');
     assert.equal(ensureVocabulary(db), null, 'already loaded → no-op');
     assert.ok(suggestEntities(db, 'sales').includes('sales_order'));
     assert.ok(suggestEntities(db, 'sales_ord').includes('sales_order'), 'an underscore in the term is a literal, not a stripped char (#115)');

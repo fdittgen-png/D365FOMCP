@@ -25,6 +25,7 @@ Full recipes with call sequences: **`references/workflows-catalog.md`** — read
 | 12 | Caching / Timing Bug | fails once, retry succeeds |
 | 13 | Migration-Defect RCA | DMF entity validation depth |
 | 14 | Who wipes / writes this field | system overwrites a user value |
+| 15 | Cross-ERP pivot mapping | a source-ERP object → functional entity → D365FO data entity → table, names verified in batches |
 | — | Raw SQL guardrails, KB raw-SQL schema notes | before any `*_raw_sql` |
 
 ### Most-used recipe inline — 7a "structure of entity X" (≤ 4 calls, ≤ 4k MCP tokens)
@@ -131,10 +132,13 @@ This skill defines efficient multi-tool workflows for the 5 MCP service families
 20. **Decide the answer shape before the first call and name it in one line** (A2); **offer a new session at a topic switch before any work** (A1).
 22. **After a deploy or server code change, verify with a fresh stdio spawn or a new session** — the session's own MCP servers still run the old code (measured 2026-09-04: 92 KB vs 10 KB for the same recipe). **A `/d365-*` command carries its calls: do not load the tooling skill on top of it.**
 21. **One `WebFetch` beats a subagent for a single documentation page** (E2, measured: 49 k tokens of subagent for four facts one fetch gives); **when a deploy script is likely to hit the classifier, run the publish steps directly from the start** (E3).
+23. **Write the trace protocol lines** (2026-09-07): a `Request:` line (ERP-neutral, no names or values) and an `Entities:` line (business terms) before the first D365 MCP call, then one strategy line per group of calls — the hook turns them into the investigation's `open` and `step` records; a group of calls without a line has no step. Never put party data in a strategy line: that line is dropped from the trace.
+24. **Write code files with the editor tool and smoke-load them before testing** (2026-09-07): a bash heredoc silently lost a backslash in a regex and the module failed to parse; for anything longer than a few lines use the Write/Edit tool, then `node --check` or a one-line import.
 16. **Pass `functional_context`** (`sales_order`, `vendor_invoice`, …) on the lookup tools when the business entity is known — a hit records the mapping for later sessions, a miss returns the objects already mapped to that entity
 
 ---
 
+*Version: 2.1 | Date: 2026-09-07 | Added: Workflow 15 (cross-ERP pivot mapping — vocabulary v2 with D365FO logical/physical references, batch preflight recipe, empty logical layer as a finding), cost rules 23–24 (trace protocol lines; Write tool + smoke load for code files after a heredoc corrupted a regex).*
 *Version: 2.0 | Date: 2026-09-04 | Split: Workflows 1–14 + raw-SQL notes moved to `references/workflows-catalog.md` (48 KB → index + 7a inline + anti-patterns + cost rules); loaded per session only what steers behaviour.*
 *Version: 1.10 | Date: 2026-09-04 | Workflow 7a step 4 (`custom_only` when customisation/migration is in scope), replayed measurement 9.8 k → 2.2 k tokens, label-derived sibling descriptions are inferences.*
 *Version: 1.9 | Date: 2026-09-04 | Added: Workflow 7a (entity structure in 3 calls — summary default, `sections`, sibling query), rules 17–21 (counts before lists, provenance once, no discovery search, answer shape + new-session offer, WebFetch over subagent) from `MCP_Communication_Efficiency_Improvements_2026-09-04`.*

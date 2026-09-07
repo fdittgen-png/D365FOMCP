@@ -38,6 +38,7 @@ import { withFreshnessBanner } from './shared.js';
 import { registerResources } from './resources.js';
 import { registerSemanticTools } from './semantic-tools.js';
 import { openSemanticDb } from './semantic-store.js';
+import { withTrace } from '../trace/index.js';
 
 /* ── Semantic layer (W7, #111) ────────────────────────────────────────────── */
 
@@ -126,7 +127,11 @@ export function withRegistrationPolicy(server, { service = 'snapshot', db = null
     if (!toolInProfile(name, profile)) { stats.skipped.push(name); return undefined; }
     stats.registered += 1;
     const cfg = withoutOutputSchema(withTitle(name, config));
-    return server.registerTool(name, cfg, withStructuredPolicy(withFreshness(name, handler, config, db, service)));
+    // TRACE (Stream 1, ERP-Trace-Capture-TDD WI-07): innermost, so the call record
+    // reads the handler's own result (`_meta.kind`, structuredContent size) before
+    // the banner and the structured-content strip. No-op unless MCP_TRACE=on.
+    const traced = withTrace(name, handler, config, { service, db });
+    return server.registerTool(name, cfg, withStructuredPolicy(withFreshness(name, traced, config, db, service)));
   };
   return view;
 }

@@ -31,6 +31,7 @@ Verified domain knowledge for analysing Microsoft Dynamics 365 Finance & Operati
 | Extension points and CoC targets in the product/ECM area | `references/extension-points.md` |
 | Common ECM/product symptoms and their causes | `references/troubleshooting-guide.md` |
 | Short D365FO-specific reminders (not generic best practices) | `references/best-practices.md` |
+| Mapping a source ERP (Infor M3, SAP, legacy) onto D365FO — which functional entity, which data entity, which table | the pivot vocabulary below; the plugin ships it as `hooks/lib/vocabulary.json` |
 
 Load **one** file per question; they are self-contained. If two areas intersect (e.g. "VAT number on a sales confirmation printed via Lasernet"), read the tax-journal file first, then the document-impact file.
 
@@ -41,3 +42,21 @@ Load **one** file per question; they are self-contained. If two areas intersect 
 - Enum values in SQL are integers; resolve them with `d365_get_enum` rather than guessing.
 - Dates use `1900-01-01` as the null sentinel, not `NULL`.
 - Field names changed between AX2012 and D365FO in several posting tables — the `d365fo-sql-direct-queries` skill has the rename list; `d365_field_renames` has it live.
+
+## The pivot vocabulary — D365FO is the reference structure for every migration (2026-09-07)
+
+D365FO is always the **target**; other ERPs are sources. The 60 functional entities of the vocabulary (`customer`, `vendor`, `item`, `sales_order`, … grouped by process) are the ERP-neutral layer, and since v2 every entity carries its D365FO reference on three levels:
+
+| Level | Vocabulary key | D365FO meaning | Example (`vendor`) |
+|---|---|---|---|
+| functional | `entity_id`, `aliases[]` | business concept, source-ERP synonyms | `vendor` ← supplier, creditor, payee |
+| logical | `d365fo.data_entities[]` | AOT data entities (DMF / OData), canonical first | `VendVendorV2Entity` |
+| physical | `d365fo.primary_tables[]`, `d365fo.key_fields[]` | AOT tables and natural keys | `VendTable`, `VendTable.AccountNum` |
+
+Rules that came out of building it (every name verified against the KB/XRef snapshots):
+
+- **An empty logical layer is legitimate.** `resource` has tables (`WrkCtrTable`) but no data entity; posted `InventTrans`, `AssetTrans`, `Proj*Trans` have only BI/CDR or journal entities. Expect the same on a source ERP — map the physical level and say the logical level is missing, do not invent one.
+- **Canonical entity choices are judgement calls — say which one you chose and why.** Customers V3 over the definitions/details pair; released product over shared product; `CompanyInfoEntity` for the legal entity; sites are `OMOperatingUnitEntity` (no site master entity); warehouse = `InventLocation`, location = `WMSLocation`.
+- **Preflight names in one batch before quoting them**: `xref_check_exists` on `/Tables/X` and `/DataEntityViews/Y`, `d365_check_field_exists` for the keys — about 20 calls covered all 60 entities. Kernel tables (`UserInfo`, `DataArea`) have no field rows in the KB: their keys cannot be verified there.
+- **Aliases are for free text, so they must not collide**: generic words (order, entity, location, account, position, job) were removed; a word that names two entities is useless as a hint.
+- Pass the vocabulary id as `functional_context` on the lookup tools; it tags the call and the trace with the functional level.
