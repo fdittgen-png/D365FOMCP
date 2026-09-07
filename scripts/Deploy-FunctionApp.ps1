@@ -218,6 +218,14 @@ if (Test-Path $funcDir) {
     New-Item -ItemType Directory -Path (Join-Path $deployDir 'src\functions') -Force | Out-Null
     Copy-Item "$funcDir\*" (Join-Path $deployDir 'src\functions') -Recurse
 }
+# src\trace (ERP trace module, 2026-09-07): tool-sets.js imports ../trace/index.js. A package
+# without it makes the worker index ZERO functions while Easy Auth still answers 401 — only
+# the anonymous /api/ping probe reveals that. Every src/<dir> a function imports must be staged.
+$traceDir = Join-Path $projectDir 'src\trace'
+if (Test-Path $traceDir) {
+    New-Item -ItemType Directory -Path (Join-Path $deployDir 'src\trace') -Force | Out-Null
+    Copy-Item "$traceDir\*" (Join-Path $deployDir 'src\trace') -Recurse
+}
 
 # Copy www/ directory (test UIs for Task Recorder, Security upload)
 $wwwDir = Join-Path $projectDir 'www'
