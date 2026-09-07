@@ -1,0 +1,440 @@
+{
+ "d365_check_field_exists": {
+  "table_name": "identifier",
+  "field_names": "identifier[]",
+  "format": "identifier"
+ },
+ "d365_custom_fields": {
+  "table_name": "identifier",
+  "entity_name": "identifier",
+  "field_name": "identifier",
+  "environment": "identifier",
+  "refresh": "boolean",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "d365_effective_schema": {
+  "table_name": "identifier",
+  "include_isv": "boolean",
+  "modules": "identifier[]",
+  "field_limit": "number",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_field_renames": {
+  "table_name": "identifier",
+  "format": "identifier"
+ },
+ "d365_find_forms": {
+  "pattern": "term",
+  "table": "identifier",
+  "modules": "identifier[]",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "d365_find_method_implementations": {
+  "method_name": "identifier",
+  "owner_type": "identifier",
+  "modules": "identifier[]",
+  "exclude_extensions": "boolean",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "d365_find_referencing_tables": {
+  "table_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "d365_get_class_methods": {
+  "name": "identifier",
+  "filter": "identifier",
+  "include_source": "boolean",
+  "limit": "number",
+  "cursor": "identifier",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_get_entity_sources": {
+  "entity_name": "identifier",
+  "summary": "boolean",
+  "include_methods": "boolean",
+  "fields_like": "identifier",
+  "custom_only": "boolean",
+  "computed_only": "boolean",
+  "include_provenance": "boolean",
+  "limit": "number",
+  "cursor": "identifier",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_get_enum": {
+  "enum_name": "identifier",
+  "enum_names": "identifier[]",
+  "format": "identifier"
+ },
+ "d365_get_join_keys": {
+  "table1": "identifier",
+  "table2": "identifier",
+  "format": "identifier"
+ },
+ "d365_get_method_source": {
+  "owner_name": "identifier",
+  "method_name": "identifier",
+  "method_names": "identifier[]",
+  "format": "identifier"
+ },
+ "d365_get_module_summary": {
+  "module_name": "identifier",
+  "table_limit": "number",
+  "class_limit": "number",
+  "format": "identifier"
+ },
+ "d365_graph_traverse": {
+  "start_node": "identifier",
+  "max_depth": "number",
+  "edge_type": "identifier",
+  "format": "identifier"
+ },
+ "d365_hallucination_check": {
+  "table_name": "identifier",
+  "format": "identifier"
+ },
+ "d365_isv_extension_points": {
+  "target": "identifier",
+  "module": "identifier",
+  "limit": "number",
+  "include_signatures": "boolean",
+  "format": "identifier"
+ },
+ "d365_isv_list_models": {
+  "format": "identifier"
+ },
+ "d365_isv_lookup": {
+  "name": "identifier",
+  "element_type": "identifier",
+  "modules": "identifier[]",
+  "prefix_match": "boolean",
+  "search_properties": "boolean",
+  "include_signatures": "boolean",
+  "include_il_command": "boolean",
+  "format": "identifier"
+ },
+ "d365_knowledge": {
+  "topic": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "d365_list_modules": {
+  "origin": "identifier",
+  "layer": "identifier",
+  "publisher": "identifier",
+  "include_counts": "boolean",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "d365_lookup_form": {
+  "form_name": "identifier",
+  "include_controls": "boolean",
+  "controls_like": "identifier",
+  "control_limit": "number",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_lookup_object": {
+  "object_type": "identifier",
+  "object_name": "identifier",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_lookup_table": {
+  "table_name": "identifier",
+  "sections": "identifier[]",
+  "fields_like": "identifier",
+  "custom_only": "boolean",
+  "field_limit": "number",
+  "include_provenance": "boolean",
+  "include_custom_fields": "boolean",
+  "environment": "identifier",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_preflight": {
+  "object_type": "identifier",
+  "object_name": "identifier",
+  "method_name": "identifier",
+  "proposed_names": "identifier[]",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_raw_sql": {
+  "sql": "sql_shape",
+  "format": "identifier"
+ },
+ "d365_resolve_label": {
+  "label_ids": "identifier[]",
+  "languages": "identifier[]",
+  "format": "identifier"
+ },
+ "d365_search": {
+  "query": "term",
+  "queries": "term",
+  "object_type": "identifier",
+  "modules": "identifier[]",
+  "limit": "number",
+  "include_context": "boolean",
+  "cursor": "identifier",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_sql_template": {
+  "scenario": "identifier",
+  "format": "identifier"
+ },
+ "sec_check_exists": {
+  "roles": "identifier[]",
+  "duties": "identifier[]",
+  "privileges": "identifier[]",
+  "entry_points": "identifier[]",
+  "format": "identifier"
+ },
+ "sec_company_users": {
+  "company_id": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_compare_roles": {
+  "role1": "identifier",
+  "role2": "identifier",
+  "list_limit": "number",
+  "format": "identifier"
+ },
+ "sec_effective_permissions": {
+  "user_id": "redacted",
+  "role_name": "identifier",
+  "object_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_find_roles_by_duty": {
+  "duty_name": "identifier",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "sec_find_roles_by_privilege": {
+  "privilege_name": "identifier",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "sec_find_users_by_role": {
+  "role_name": "identifier",
+  "company_id": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_licence_assessment": {
+  "user_id": "redacted",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_lookup_duty": {
+  "duty_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_lookup_privilege": {
+  "privilege_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_lookup_role": {
+  "role_name": "identifier",
+  "role_names": "identifier[]",
+  "include_entity_permissions": "boolean",
+  "entity_permission_limit": "number",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "sec_lookup_user": {
+  "user_id": "redacted",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_object_access": {
+  "object_name": "identifier",
+  "limit": "number",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "sec_permission_trace": {
+  "role_name": "identifier",
+  "object_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_raw_sql": {
+  "sql": "sql_shape",
+  "format": "identifier"
+ },
+ "sec_role_hierarchy": {
+  "role_name": "identifier",
+  "direction": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "sec_search": {
+  "query": "term",
+  "object_type": "identifier",
+  "modules": "identifier[]",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "sec_stats": {
+  "include_model_versions": "boolean",
+  "format": "identifier"
+ },
+ "sec_what_if": {
+  "user_id": "redacted",
+  "add_roles": "identifier[]",
+  "remove_roles": "identifier[]",
+  "format": "identifier"
+ },
+ "taskrecorder_to_document": {
+  "file_url": "identifier",
+  "file_content": "payload_ref",
+  "repro_url": "identifier",
+  "repro_content": "payload_ref",
+  "docx_url": "identifier",
+  "docx_content": "payload_ref",
+  "file_name": "identifier",
+  "output_path": "identifier",
+  "include_users": "redacted",
+  "company": "identifier",
+  "max_users_per_role": "redacted",
+  "return_inline": "boolean",
+  "include_xml": "payload_ref"
+ },
+ "taskrecorder_to_markdown": {
+  "file_url": "identifier",
+  "file_content": "payload_ref",
+  "file_name": "identifier"
+ },
+ "xref_check_exists": {
+  "objects": "name_list",
+  "format": "identifier"
+ },
+ "xref_class_hierarchy": {
+  "class_name": "identifier",
+  "direction": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_cross_module_deps": {
+  "module_name": "identifier",
+  "direction": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_find_event_handlers": {
+  "object_name": "identifier",
+  "method_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_find_extensions": {
+  "object_name": "identifier",
+  "object_type": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_find_field_usages": {
+  "table_name": "identifier",
+  "field_name": "identifier",
+  "kind": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_find_method_callers": {
+  "object_name": "identifier",
+  "method_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_find_references": {
+  "object_name": "identifier",
+  "objects": "identifier[]",
+  "kind": "identifier",
+  "limit": "number",
+  "include_isv": "boolean",
+  "cursor": "identifier",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "xref_find_usages": {
+  "object_name": "identifier",
+  "kind": "identifier",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "xref_impact_analysis": {
+  "object_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_interface_implementors": {
+  "interface_name": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_isv_find_usages": {
+  "object_name": "identifier",
+  "object_type": "identifier",
+  "modules": "identifier[]",
+  "kind": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_list_modules": {
+  "origin": "identifier",
+  "layer": "identifier",
+  "publisher": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_method_references": {
+  "object_name": "identifier",
+  "method_name": "identifier",
+  "kind": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_module_objects": {
+  "module_name": "identifier",
+  "object_type": "identifier",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_object_summary": {
+  "object_name": "identifier",
+  "object_names": "identifier[]",
+  "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "xref_raw_sql": {
+  "sql": "sql_shape",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "xref_search_names": {
+  "pattern": "term",
+  "object_type": "identifier",
+  "modules": "identifier[]",
+  "limit": "number",
+  "format": "identifier"
+ }
+}

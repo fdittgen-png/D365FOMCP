@@ -21,6 +21,9 @@ import { resolvePreferences, setProcessRequestContext } from '../azure/request-c
 // test or a batch script would be caught by loop detection it never asked for.
 // See src/azure/tool-guards.js. Set MCP_TOOL_GUARDS=off to disable.
 process.env.MCP_TOOL_GUARDS ??= 'on';
+// ERP trace, Stream 1 (ERP-Trace-Capture-TDD §7.2): file sink on stdio, ~/.claude/mcp-trace/<service>.ndjson
+process.env.MCP_TRACE ??= 'on';
+process.env.TRACE_SINK ??= 'file';
 
 
 const require = createRequire(import.meta.url);

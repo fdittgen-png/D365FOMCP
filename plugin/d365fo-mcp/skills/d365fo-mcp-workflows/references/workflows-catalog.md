@@ -470,3 +470,16 @@ Hard-won this session — a raw_sql call blew the token limit **three times** an
 
 ---
 
+## Workflow 15: Cross-ERP Pivot Mapping (source object → functional entity → D365FO data entity → table)
+
+**Scenario**: a source-ERP object (an Infor M3 file, an SAP table, a legacy view) must be placed against D365FO for a migration or a data-quality comparison. D365FO is the pivot: the mapping goes through the functional vocabulary, never directly table-to-table.
+
+**Recipe (≤ 6 MCP calls per entity, ~20 for the whole vocabulary — measured 2026-09-07)**:
+
+1. **Functional level — pick the vocabulary entity** from the business term (aliases resolve: supplier → `vendor`, article → `item`, company code → `legal_entity`). If no entity fits, say so: the vocabulary is capped at 60 and grows by PR, not by ad-hoc additions.
+2. **Logical level — the vocabulary's `d365fo.data_entities[]`** is the candidate list, canonical first. Verify the names in ONE batch: `xref_check_exists(objects=[{name:'VendVendorV2Entity', type:'data_entity'}, …])`. A miss with suggestions is data; an entity with **no** data entity is a legitimate finding (`resource`, posted `InventTrans`).
+3. **Physical level — `d365fo.primary_tables[]` and `key_fields[]`**: `xref_check_exists` on the tables in the same batch, `d365_check_field_exists(tables=[…])` for the keys. Kernel tables (`UserInfo`, `DataArea`) have no field rows in the KB — say "key not verifiable in the snapshot".
+4. **Structure of the D365FO side** only if the mapping needs field-level detail: `d365_lookup_table(sections: ["indexes","relations_out"], functional_context: <entity_id>)` — one call per table, then `d365_get_entity_sources` summary for the data entity's data sources.
+5. **State the mapping in three rows** (functional / logical / physical) with the counterpart on the source side and the verification date; label every judgement call (Customers V3 vs V2, released vs shared product) as a choice, not a fact.
+
+**Anti-patterns**: mapping source table → D365 table without naming the functional entity (the comparison across a third ERP is then impossible); inventing a data entity because "there must be one"; verifying names one call at a time.
