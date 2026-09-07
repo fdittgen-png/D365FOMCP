@@ -163,6 +163,18 @@ in ~15 s when nothing changed.
   binaries that change on an ISV upgrade, not on an X++ compile, so the per-compile path
   leaves them alone (`--isv` opts in).
 
+## Azure code deploy — the staging list and how to read the health block
+
+Both deploy scripts (`scripts/Deploy-FunctionApp.ps1`, `local-deploy/Deploy.ps1` — **tracked**, not
+gitignored) assemble the package from an EXPLICIT folder list (`src\azure`, `src\functions`, `src\trace`,
+`www`, `config`, `build`, `assets`). A new `src/<dir>` that Azure code imports must be added to both, or
+the worker indexes **zero** functions (2026-09-07: `src/trace` missing → every tool down for 15 min).
+`test/deploy-staging.test.js` walks the imports of `src/azure` + `src/functions` and fails when a reached
+folder is not staged by the repo script. Reading the Phase-5 health block: `/api/ping` 200 = the host is
+alive; the seven `Expect=401` lines only prove Easy Auth is alive — they were all green during the outage.
+When in doubt, `GET /admin/functions` with the master key (`az functionapp keys list … --query masterKey`)
+lists what the host actually loaded.
+
 ## Tool-list economy and agent guardrails
 
 `src/azure/tool-guards.js` wraps every tool registered by `registerKbTools` /

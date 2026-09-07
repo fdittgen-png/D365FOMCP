@@ -79,6 +79,7 @@ Decide what the answer must contain, say it in one line (*"Shape: data sources +
 ## 6. Session hygiene (measured 2026-09-04)
 
 - **Stale servers.** Local stdio MCP servers are processes started with the session; after a deploy or a server code change they serve the OLD code and env until a new session (a same-session rerun paid 92 KB instead of 10 KB). Verify server changes with a fresh spawn or a new session — never through the session's own MCP tools, and never verify Azure through local stdio.
+- **A green deploy is proven by `/api/ping` = 200, not by the 401s.** Easy Auth answers 401 before the Functions host is reached, so every authenticated health check passes even when the host loaded zero functions (2026-09-07: a new `src/` folder missing from the deploy's staging list took every tool down for 15 minutes while seven checks stayed green). Read the health block as: ping 200 = host alive, 401 = only the auth layer alive; when in doubt the host's `/admin/functions` (master key) lists what it actually loaded.
 - **Skill versions.** Skills are snapshotted per session; after a plugin change run `/plugin marketplace update`, `/plugin update`, then start a new session.
 - **Targets per investigation:** ≤ 5k MCP tokens per answered question · ≤ 5 calls for a structure question · no response section > 1k tokens with zero citations · ≤ 80k context at the start of build work, else a new session.
 
