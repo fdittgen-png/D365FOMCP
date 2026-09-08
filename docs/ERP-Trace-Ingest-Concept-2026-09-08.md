@@ -45,8 +45,8 @@ the machine. That is the gap this concept closes.
 
 ```
 producers ──POST /trace/ingest──▶ ingest core ──┬─▶ Blob   trace-landing/<erp>/<yyyy-mm>/<yyyy-mm-dd>.ndjson   one append per batch — the archive, scan source
-  hook (per developer)                          ├─▶ Table  traces    PK = investigation_id (or session:<key>), RK = <ts>|<id>, full record   → dossier
-  stdio servers via Push-LocalTraces.ps1        ├─▶ Table  requests  PK = request.key, RK = <erp>|<investigation_id>, the `open` record     → comparison set
+  hook (per developer)                          ├─▶ Table  tracerecords  PK = investigation_id (or session:<key>), RK = <ts>|<id>, full record   → dossier
+  stdio servers via Push-LocalTraces.ps1        ├─▶ Table  tracerequests PK = request.key, RK = <erp>|<investigation_id>, the `open` record     → comparison set
   Azure MCP apps (later, TRACE_SINK=http, MI)   └─▶ Blob   trace-deadletter/<erp>/<yyyy-mm-dd>.ndjson  (id, reason, field, hash — no body)
 ```
 
@@ -65,7 +65,7 @@ scan cannot serve, the landing zone is re-ingested into whatever store fits then
 
 | Store | Operations | Per month | New resource / role |
 |---|---|---|---|
-| Table Storage (two tables, entity-group batches per partition) | ≈ 300 k transactions | ≈ €0.01 + storage €0.05/GB | none |
+| Table Storage (`tracerecords`, `tracerequests`; entity-group batches per partition) | ≈ 300 k transactions | ≈ €0.01 + storage €0.05/GB | none |
 | Blob landing + dead-letter (one append per batch) | ≈ 30–60 k writes | ≈ €0.2–0.3 + storage €0.02/GB | none |
 | Cosmos serverless (TDD) | ≈ 3 M RU | ≈ €0.8 + storage €0.25/GB | account + SQL role assignment (step-up) + indexing policy |
 
@@ -97,7 +97,7 @@ Per record, in order (stop at the first failure, the failure is the dead-letter 
 | 4 | `sanitize(record)` — the same producer function; `s.ok === false` → | `privacy` (+ `field`) — the record is *not* masked-and-kept: a producer that ships an unsanitized record has a defect, and silently fixing it hides the defect |
 | 5 | Enrich: `month` (from `ts`, `yyyy-mm`), `_ingested_at`, `_ingest_version` (package version), `source_app_id` (§5) | — |
 | 6 | Landing: one `AppendBlock` per batch with all valid lines to `trace-landing/<erp.system>/<month>/<yyyy-mm-dd>.ndjson` (append blob; a block is atomic, so lines never interleave with another instance's block) | `store` (5xx to the caller, nothing claimed) |
-| 7 | Table `traces`: `InsertOrReplace` entities grouped per partition (`investigation_id`, else `session:<session_key>`), RK `<ts>\|<id>`, the record JSON in one property (≤ 8 KB, far under the 64 KB property limit); on `phase = open` also `requests` (PK `request.key`, RK `<erp>\|<investigation_id>`) | `store` |
+| 7 | Table `tracerecords`: `InsertOrReplace` entities grouped per partition (`investigation_id`, else `session:<session_key>`), RK `<ts>\|<id>`, the record JSON in one property (≤ 8 KB, far under the 64 KB property limit); on `phase = open` also `tracerequests` (PK `request.key`, RK `<erp>\|<investigation_id>`) | `store` |
 
 Dead letters go to `trace-deadletter/<erp.system>/<yyyy-mm-dd>.ndjson` (blob lifecycle rule: delete after 30 d). If step 7
 fails after step 6 succeeded, the response is `500` for the whole batch (the TDD: "nothing claimed accepted"); the
