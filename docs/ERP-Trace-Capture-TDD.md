@@ -178,6 +178,13 @@ Additive optional keys → minor; removal/rename/tightening → major (new schem
 | `http` | M3 bridge, push script | `POST api/trace/ingest`, bearer for `TRACE_INGEST_SCOPE` |
 | `memory`, `null` | tests, `MCP_TRACE=off` | |
 
+> **Amended 2026-09-08 — §7.3 and §7.4 are superseded by `docs/ERP-Trace-Ingest-Concept-2026-09-08.md`.**
+> The app is `tis-d-claudetrace-func` (routes `trace/ingest`, `health`, no `api/` prefix); the store is a blob
+> NDJSON landing zone plus two Table Storage indexes (`tracerecords` by investigation, `tracerequests` by request
+> key) in the Function's own storage account — **no Cosmos DB**. Function key for the hook; the bearer / `appid`
+> allow-list / 503 fail-closed path stays for server-to-server (phase 3). What survives from below: 1 MB / 100
+> records, schema + denylist re-validation, six-key dead letters (30 d), 200/207/400/413, no TTL on the archive.
+
 ### 7.3 Ingest Function App (`tis-d-mcptrace-func`)
 `ingestBatch(records)`: validate (schema + denylist) → upsert valid into `traces` with `month`, `_ingested_at`, `_ingest_version`, `source_app_id` (an application, never a user) → dead-letter invalid as `{ id, ts, reason, field, source_app_id, sha256(record) }`. Routes self-prefix `api/` (`host.json` `routePrefix ''`). HTTP: Easy Auth, principal `appid` ∈ `TRACE_ALLOWED_APP_IDS`, **503 when unauthenticated and `REQUIRE_AUTH` unset** (fail closed, as `mcp-auth.js`), 413 on `Content-Length` > 1 MB before parsing, 400 on > 100 records, 207 on a mixed batch. Queue trigger: same core; undecodable message → dead-letter, no throw. `GET api/trace/health` anonymous (Easy Auth `excludedPaths`).
 

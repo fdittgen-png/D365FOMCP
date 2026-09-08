@@ -17,7 +17,8 @@ describe('generated hook library', () => {
   });
   it('arg-policies.json matches the current tool registrations and covers every D365 tool with a policy per parameter', () => {
     const r = generate({ write: false });
-    assert.equal(readFileSync(join(HOOK_LIB, 'arg-policies.json'), 'utf8'), r.policiesJson, 'arg-policies.json is stale — run npm run gen:trace-hook');
+    // compared as LF text: with core.autocrlf=true the checked-out JSON is CRLF while the generator emits LF
+    assert.equal(readFileSync(join(HOOK_LIB, 'arg-policies.json'), 'utf8').replace(/\r\n/g, '\n'), r.policiesJson, 'arg-policies.json is stale — run npm run gen:trace-hook');
     assert.ok(r.toolCount >= 60, `only ${r.toolCount} tools`);
     for (const t of ['d365_lookup_table', 'd365_get_entity_sources', 'd365_search', 'd365_raw_sql', 'xref_find_references', 'xref_check_exists', 'sec_lookup_role', 'taskrecorder_to_markdown']) {
       assert.ok(r.policies[t], `${t} has no policy table`);

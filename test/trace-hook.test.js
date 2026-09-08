@@ -225,6 +225,36 @@ describe('trace-capture hook — edge cases', () => {
     assert.ok(!readFileSync(ndjson, 'utf8').includes('example.com'));
   });
 
+  it('a 207 from the sink is logged as dead letters (id/reason/field), never as an HTTP error', async () => {
+    const { spawn } = await import('node:child_process');
+    const server = spawn(process.execPath, ['-e', `
+      const http = require('node:http');
+      const s = http.createServer((req, res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+        const n = JSON.parse(b).length;
+        res.writeHead(207, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ received: n, accepted: n - 1, dead_lettered: [{ id: 'claude_01TESTDEADLETTER0000000000', reason: 'privacy', field: 'request.interpreted' }] }));
+      }); });
+      s.listen(0, '127.0.0.1', () => process.stdout.write(String(s.address().port) + '\\n'));
+    `], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const port = await new Promise((resolve) => server.stdout.once('data', (d) => resolve(String(d).trim())));
+    const cfgPath = join(home, '.claude', 'claude-trace.config.json');
+    const saved = readFileSync(cfgPath, 'utf8');
+    try {
+      writeFileSync(cfgPath, JSON.stringify({ ...JSON.parse(saved), transport: 'both', url: `http://127.0.0.1:${port}`, key: 'k' }));
+      const t = 400;
+      userPrompt('trace the item entity', t);
+      assistant([{ type: 'text', text: 'Request: item master structure\nEntities: item' }, { type: 'tool_use', id: 'tu207', name: 'mcp__d365kb__d365_lookup_table', input: { table_name: 'InventTable' } }], t + 1);
+      const r = run('PreToolUse', { tool_name: 'mcp__d365kb__d365_lookup_table', tool_use_id: 'tu207', tool_input: { table_name: 'InventTable' }, prompt_id: 'p-207', session_id: 'sess-207' });
+      assert.equal(r.status, 0);
+      const log = readFileSync(logFile, 'utf8');
+      assert.match(log, /\/trace\/ingest 207: 1 dead-lettered \(privacy request\.interpreted\)/);
+      assert.equal(/HTTP 207/.test(log), false, 'a 207 is not an error line');
+    } finally {
+      writeFileSync(cfgPath, saved);
+      server.kill();
+    }
+  });
+
   it('tracing disabled → nothing written, no stdout', () => {
     writeFileSync(join(home, '.claude', 'claude-trace.config.json'), JSON.stringify({ enabled: false }));
     const before = records().length;

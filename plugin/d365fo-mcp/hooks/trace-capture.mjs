@@ -200,7 +200,12 @@ async function emit(cfg, records) {
         signal: ctrl.signal,
       });
       debug('POST', cfg.ingest_route, res.status);
-      if (res.status >= 300) log(`${cfg.ingest_route} HTTP ${res.status}`);
+      if (res.status === 207) {
+        // the sink stored the rest and dead-lettered these: a producer defect to look at, not a transport error
+        let dead = [];
+        try { dead = (await res.json())?.dead_lettered ?? []; } catch { /* body optional */ }
+        log(`${cfg.ingest_route} 207: ${dead.length} dead-lettered (${dead.map((d) => `${d.reason} ${d.field}`).join(', ')})`);
+      } else if (res.status >= 300) log(`${cfg.ingest_route} HTTP ${res.status}`);
     } catch (e) {
       log(`${cfg.ingest_route} ${e.name}: ${e.message}`);
     } finally {

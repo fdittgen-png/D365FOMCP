@@ -35,5 +35,10 @@ export function traceValidator() {
 export function validateRecord(record) {
   const v = traceValidator();
   if (v(record)) return { ok: true };
-  return { ok: false, errors: (v.errors ?? []).map((e) => `${e.instancePath || '/'} ${e.message}`) };
+  // `additionalProperties` errors name the offending key only in params — append it so a
+  // consumer (the ingest dead letter) can say WHICH key, never its value.
+  return {
+    ok: false,
+    errors: (v.errors ?? []).map((e) => `${e.instancePath || '/'} ${e.message}${e.params?.additionalProperty ? ` '${e.params.additionalProperty}'` : ''}`),
+  };
 }
