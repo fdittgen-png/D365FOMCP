@@ -76,6 +76,7 @@ ${MODEL_VERSIONS_SCHEMA}
 export const LABELS_FINALIZE = `
 CREATE INDEX IF NOT EXISTS idx_label_meta_module ON label_meta(module COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_label_meta_file   ON label_meta(label_file COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_label_meta_id_nc  ON label_meta(label_id COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_labels_lang       ON labels(language COLLATE NOCASE);
 CREATE VIRTUAL TABLE IF NOT EXISTS labels_fts USING fts5(text, content='labels', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2');
 CREATE TRIGGER IF NOT EXISTS labels_ai AFTER INSERT ON labels BEGIN
