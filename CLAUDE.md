@@ -343,6 +343,14 @@ writes `Request:` / `Entities:` lines; PreToolUse/PostToolUse/Stop lift the rest
 records to `~/.claude/mcp-trace/hook.ndjson` and `POST /trace/ingest` on tis-d-claudetrace-func).
 `plugin/d365fo-mcp/hooks/lib/` is **generated** — `npm run gen:trace-hook` after changing a contract
 module, any tool's inputSchema or `config/semantic-vocabulary.json` (`test/trace-generated.test.js`).
+**The message sink** (`C:\working\ClaudeTrace`, `tis-d-claudetrace-func`, `POST /trace/ingest`) carries a second
+generated copy of the contract — `npm run gen:trace-ingest` writes `src/contract/*` + `CONTRACT.sha256` into
+`$TRACE_INGEST_REPO` (default `../ClaudeTrace`); `test/trace-ingest-generated.test.js` fails here when that copy is
+stale, the sink's own `test/contract-copy.test.js` fails there when a copy was hand-edited. The sink re-validates
+(schema + `sanitize()` + a term scan of `tool.args`), archives to blob NDJSON (`trace-landing/<erp>/<month>/<day>.ndjson`),
+indexes into Table Storage (`tracerecords` PK investigation, `tracerequests` PK request key) and dead-letters six keys,
+never a body — design and the expectations register: `docs/ERP-Trace-Ingest-Concept-2026-09-08.md`. Stdio file sinks
+reach it through `scripts/Push-LocalTraces.ps1` (idempotent by record id; renames to `.sent`).
 The vocabulary is v2: **D365FO is the pivot** — every functional entity carries `aliases[]` and its
 D365FO logical (`data_entities[]`) and physical (`primary_tables[]`, `key_fields[]`) reference; a source
 ERP maps onto it, an empty logical layer is a legitimate finding (`resource` has one today).
