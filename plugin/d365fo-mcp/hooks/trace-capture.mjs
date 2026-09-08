@@ -38,7 +38,7 @@ import { matchEntities, parseDeclaredEntities } from './lib/vocabulary-match.js'
 import { sanitize } from './lib/sanitize.js';
 import { callRecord, claudeRecord, sessionKey } from './lib/record.js';
 import { proseViolation, maskDigitRuns } from './lib/privacy.js';
-import { readTranscriptRecords, currentTurn, parseProtocolLines, firstParagraph } from './lib/transcript.js';
+import { readTranscriptRecords, currentTurn, parseProtocolLines, parseEntityLine, firstParagraph } from './lib/transcript.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.CLAUDE_TRACE_HOME || homedir();
@@ -54,9 +54,11 @@ const NOISE_RE = /^\s*(<task-notification>|<task-id>|<system-reminder>|\[SYSTEM 
 
 export const INSTRUCTION =
   'Trace protocol (active): if this turn will query ERP metadata through the D365 KB or XRef MCP tools, ' +
-  'begin your reply with two lines — `Request: <ERP-neutral restatement of the ask; no person names, no data values>` ' +
+  'make the FIRST text of your reply (before any tool call) these two lines — `Request: <ERP-neutral restatement of the ask; no person names, no data values>` ' +
   'and `Entities: <functional entities named in business terms, e.g. vendor, postal address, sales order — or none>` — ' +
-  'then write one short strategy line before each group of MCP calls. Otherwise ignore this note.';
+  'then write one short strategy line before each group of MCP calls. In the final answer you may add ' +
+  '`Entity: <kind> <Name> as <source|target|related|excluded> [= <functional entity>] [~ <erp>:<Name>]` and `Expect: <entity ids>` lines; ' +
+  'they become the dossier\'s annotation. Otherwise ignore this note.';
 
 /* ── small I/O helpers ─────────────────────────────────────────────────────── */
 
@@ -385,6 +387,44 @@ function onPostToolUse(cfg, input, failed) {
   return out;
 }
 
+/**
+ * The annotate body from the turn's protocol lines, or null when no valid
+ * `Entity:` line exists. Entities dedupe on kind+name+role; `Expect:` tokens
+ * resolve against the vocabulary (unknown ids dropped); a `Note:` with party
+ * data is dropped alone — the record survives without it.
+ */
+export function collectAnnotation(texts) {
+  const seen = new Set();
+  const entities = [];
+  const expectTokens = [];
+  let note = null;
+  for (const text of texts) {
+    const p = parseProtocolLines(text);
+    for (const line of p.entity) {
+      const e = parseEntityLine(line);
+      if (!e || !isIdentifier(e.kind) || !isIdentifier(e.name)) continue;
+      if (e.functional_entity && !isIdentifier(e.functional_entity)) delete e.functional_entity;
+      if (e.counterpart && !(isIdentifier(e.counterpart.erp) && isIdentifier(e.counterpart.name))) delete e.counterpart;
+      const key = `${e.kind}|${e.name}|${e.role}`.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entities.push(e);
+    }
+    expectTokens.push(...p.expect);
+    if (note == null && p.note) note = p.note;
+  }
+  if (!entities.length) return null;
+  const body = { entities: entities.slice(0, 50) };
+  const expects = parseDeclaredEntities(expectTokens.join(', '), vocabulary());
+  if (expects.length) body.expects = expects;
+  if (note) {
+    const { text } = maskDigitRuns(note);
+    const clean = text.replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (clean && !proseViolation(clean)) body.note = clean;
+  }
+  return body;
+}
+
 function onStop(cfg, input) {
   if (input.stop_hook_active) return [];
   const now = new Date().toISOString();
@@ -397,13 +437,14 @@ function onStop(cfg, input) {
       state.emitted += 1;
     }
     state.calls = {};
-    let summary = typeof input.last_assistant_message === 'string' ? input.last_assistant_message : '';
-    if (!summary) {
-      const turn = currentTurn(readTranscriptRecords(input.transcript_path));
-      summary = turn ? turn.texts.map((t) => t.text).join('\n\n') : '';
-    }
-    summary = parseProtocolLines(summary).rest || summary;
+    const turn = currentTurn(readTranscriptRecords(input.transcript_path));
+    const last = typeof input.last_assistant_message === 'string' ? input.last_assistant_message : '';
+    let summary = last || (turn ? turn.texts.map((t) => t.text).join('\n\n') : '');
     const ctx = context(cfg, state, state.service || 'kb');
+    // annotate: every Entity:/Expect:/Note: line of the turn (transcript texts + the final message), before the close
+    const annotation = collectAnnotation([...(turn ? turn.texts.map((t) => t.text) : []), last]);
+    if (annotation) out.push(claudeRecord(ctx, 'annotate', annotation, now));
+    summary = parseProtocolLines(summary).rest || summary;
     out.push(claudeRecord(ctx, 'close', { conclusion: { summary: summary || '(no final message captured)', outcome: summary ? 'answered' : 'partial' }, calls: state.emitted }, now));
     state.closed = true;
     clearCurrent(state);
