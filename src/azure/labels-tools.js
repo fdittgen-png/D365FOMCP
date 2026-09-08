@@ -76,6 +76,23 @@ function metaValue(db, key) {
   try { return db.prepare('SELECT value FROM labels_metadata WHERE key = ?').get(key)?.value ?? null; } catch { return null; }
 }
 
+/**
+ * The search SQL. `CROSS JOIN` pins the join order so the FTS5 MATCH (or the
+ * LIKE scan) always drives: with a `language`/`origin` filter the planner
+ * otherwise starts from the 355k-row language slice of `labels` and probes the
+ * FTS per row — measured as a 60 s timeout on the 26M-row snapshot, against
+ * 1–4 ms when labels_fts drives. Exported for the query-plan test.
+ */
+export function labelsSearchSql(hasFts, extra = '') {
+  return hasFts
+    ? `SELECT l.label_id, l.language, l.text, m.label_file, m.module, m.description
+       FROM labels_fts f CROSS JOIN labels l ON l.rowid = f.rowid CROSS JOIN label_meta m ON m.label_id = l.label_id
+       WHERE labels_fts MATCH ?${extra} ORDER BY f.rank, l.rowid LIMIT ? OFFSET ?`
+    : `SELECT l.label_id, l.language, l.text, m.label_file, m.module, m.description
+       FROM labels l CROSS JOIN label_meta m ON m.label_id = l.label_id
+       WHERE l.text LIKE ? ESCAPE '\\'${extra} ORDER BY l.rowid LIMIT ? OFFSET ?`;
+}
+
 /** Half-open range that the BINARY `idx_names_path` can serve: `P`, `P/…`, `P?…`. */
 function pathRangeClause(prefixes) {
   return { sql: `(${prefixes.map(() => '(n2.path >= ? AND n2.path < ?)').join(' OR ')})`, params: prefixes.flatMap(p => [p, `${p}~`]) };
@@ -202,15 +219,9 @@ export function registerLabelsTools(server, db, { xrefDb = null } = {}) {
       try {
         if (hasFts) {
           const ftsExpr = term.split(/\s+/).filter(Boolean).map(t => `"${t.replace(/"/g, '""')}"*`).join(' ');
-          rows = q(`SELECT l.label_id, l.language, l.text, m.label_file, m.module, m.description
-                    FROM labels_fts f JOIN labels l ON l.rowid = f.rowid JOIN label_meta m ON m.label_id = l.label_id
-                    WHERE labels_fts MATCH ?${extra} ORDER BY f.rank, l.rowid LIMIT ? OFFSET ?`,
-          [ftsExpr, ...params, probeLimit(lim), page.offset]);
+          rows = q(labelsSearchSql(true, extra), [ftsExpr, ...params, probeLimit(lim), page.offset]);
         } else {
-          rows = q(`SELECT l.label_id, l.language, l.text, m.label_file, m.module, m.description
-                    FROM labels l JOIN label_meta m ON m.label_id = l.label_id
-                    WHERE l.text LIKE ? ESCAPE '\\'${extra} ORDER BY l.rowid LIMIT ? OFFSET ?`,
-          [`%${term.replace(/[\\%_]/g, '\\$&')}%`, ...params, probeLimit(lim), page.offset]);
+          rows = q(labelsSearchSql(false, extra), [`%${term.replace(/[\\%_]/g, '\\$&')}%`, ...params, probeLimit(lim), page.offset]);
         }
       } catch (err) {
         return errorResult('db-error', 'Try a shorter or more specific search text.', err);
@@ -340,8 +351,10 @@ export function registerLabelsTools(server, db, { xrefDb = null } = {}) {
 
       let rows;
       try {
-        rows = xq(`SELECT n2.path AS source, n.path AS label_path FROM refs r
-                   JOIN names n2 ON n2.id = r.source_id JOIN names n ON n.id = r.target_id
+        // CROSS JOIN: the object's path range (idx_names_path) drives, then its
+        // outbound refs (idx_refs_source), then the target names — never a refs scan.
+        rows = xq(`SELECT n2.path AS source, n.path AS label_path FROM names n2
+                   CROSS JOIN refs r ON r.source_id = n2.id CROSS JOIN names n ON n.id = r.target_id
                    WHERE ${range.sql} AND n.path >= '/Labels/' AND n.path < '/Labels0'
                    ORDER BY n2.path LIMIT ?`, [...range.params, 5000]);
       } catch (err) {

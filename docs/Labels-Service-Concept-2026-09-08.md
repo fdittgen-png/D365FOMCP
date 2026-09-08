@@ -6,7 +6,9 @@ description** (the ` ;` comment line under each label, e.g. `Duty`, `[SecurityDu
 because the description is the only hint in the label file about where a label is meant
 to be used. It joins the KB (which object carries the label) and XRef (where the label is
 referenced, on which property). Written 2026-09-08 from an investigation of the repo,
-the local snapshots and the label files on disk. **Concept only — nothing implemented.**
+the local snapshots and the label files on disk. **Status 2026-09-08: implemented on
+branch `feat/labels-service` (PR #143) — builder, four tools, fifth server, pipeline hooks,
+deploy scripts; first real build measured in §4.** Plan: `docs/superpowers/plans/2026-09-08-labels-service.md`.
 
 ## 1. What exists today (measured)
 
@@ -196,11 +198,27 @@ surfacing as the existing `partial_build` coverage line.
 
 ## 4. Sizing and risks
 
+**Measured on the first real build (2026-09-08, dev box, all languages):**
+
+| Item | Estimate (before) | Measured |
+|---|---|---|
+| Label files / language folders | ~330 per language, 76 folders | 60,022 files, 77 folders → **75 languages** (the `en-US` / `en-us` / `en-Us` folders are one language — 335 + 480 + 2 files; the builder now canonicalises with `Intl.getCanonicalLocales`) |
+| Text rows / label ids | 25–29M / ~383k | **26,010,416 / 390,174** (en-US 389,713 labels, 817 files) |
+| Origins | — | microsoft 372,248 · custom 10,920 · isv 7,006 (sealed stores, 153,054 rows, no description) |
+| Ids with a description | ~64–95% per file | **305,870 of 390,174 (78%)** |
+| Description disagreements across language files | 0 assumed | **857 (0.28%)** — recorded in `labels_metadata`; the first language file's comment is kept |
+| File size | 1.5–2.5 GB | **5.0 GB** (text 26M rows + BINARY unique index + FTS5) |
+| Full build time | 5–10 min | **26.6 min** (1,596 s; I/O bound on 2.9 GB of text + FTS rebuild) |
+| tools/list | ≤ 12 KB | **8,256 B** (~2,064 tk), core profile 2,044 B |
+| `labels_lookup` 1 id, 3 languages / all 75 | — | 8 ms, 932 chars / 2 ms, 4,207 chars (~1k tk) |
+| `labels_search` "Kreditor sperren" (de) | — | **14 ms** — after pinning the join order with `CROSS JOIN`; the planner otherwise started from the language slice and timed out at 60 s (regression test asserts the plan) |
+| `labels_where_used` @SYS154828 / `labels_for_object` CustTable | — | 3 ms / 453 ms against the 3.3 GB XRef |
+
 | Item | Estimate | Mitigation |
 |---|---|---|
-| Rows, all 76 languages | 25–29M text rows, ~383k meta rows | `WITHOUT ROWID` PK table; FTS only on `text`; build in 50k-row transactions |
-| File size | 1.5–2.5 GB | same class as XRef; `LABELS_LANGUAGES` allow-list for a small local build |
-| Full build time | 5–10 min for 2.9 GB of text (I/O bound) | runs after the KB build, non-fatal; delta path is per model |
+| Rows, all languages | 26M text rows, 390k meta rows | rowid table + UNIQUE(label_id, language); FTS only on `text`; one transaction per file |
+| File size | 5.0 GB | same class as XRef (3.3 GB); `LABELS_LANGUAGES` allow-list for a small local build |
+| Full build time | ~27 min | runs after the KB build, non-fatal; delta path is per model |
 | Kudu upload | 2 GB file | Deploy.ps1 already streams XRef 3.3 GB; add the integrity check the 2026-04 0-byte outage asked for |
 | One slow query blocks the Function App | FTS with a 2-char term over 29M rows | `.min(2)` + LIKE fallback only with `language` set; `runWithBudget` like raw_sql |
 | Description assumption (language-independent) | measured on 2 files | builder asserts it and reports disagreements; schema fallback documented in §3.1 |

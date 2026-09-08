@@ -100,6 +100,18 @@ export function normalizeLabelIdInput(s) {
   return t.startsWith('@') ? t : `@${t}`;
 }
 
+/**
+ * Canonical BCP-47 casing for a language folder name: on disk the same language
+ * appears as `en-US` (335 files), `en-us` (480) and `en-Us` (2) — three folders,
+ * one language. `Intl.getCanonicalLocales` gives `en-US`, `zh-Hans`, `nb-NO`;
+ * an unparseable name is returned as written.
+ */
+export function canonicalLanguage(name) {
+  const s = String(name ?? '').trim();
+  if (!s) return s;
+  try { return Intl.getCanonicalLocales(s)[0] ?? s; } catch { return s; }
+}
+
 /** `SYS.en-us.label.txt` → `{ prefix: 'SYS', language: 'en-us' }`, else null. */
 export function splitLabelFileName(fileName) {
   const m = /^([^.]+)\.([^.]+)\.label\.txt$/i.exec(String(fileName ?? ''));
@@ -135,7 +147,7 @@ export function findLabelFiles(root, warn = () => {}) {
           const split = splitLabelFileName(entry.name);
           out.push({
             path: p,
-            language: basename(dir),
+            language: canonicalLanguage(basename(dir)),
             prefix: split ? split.prefix : entry.name.split('.')[0],
             module: ctx.module,
             package: ctx.package,

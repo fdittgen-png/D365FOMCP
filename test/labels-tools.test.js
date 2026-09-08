@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
 import { buildLabelsDb } from '../build/build-labels.js';
-import { registerLabelsTools, parseXrefSourcePath } from '../src/azure/labels-tools.js';
+import { registerLabelsTools, parseXrefSourcePath, labelsSearchSql } from '../src/azure/labels-tools.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -204,6 +204,12 @@ describe('labels tools', () => {
       const r = await call(tools, 'labels_for_object', { object_type: 'duty', object_name: 'VendMaintainDuty', languages: ['fr'] });
       assert.deepEqual(r.structuredContent.labels, [{ element: null, property: 'Label', label_id: '@AccountsPayable:VendMaintain', language: 'fr', text: null, description: 'Duty' }]);
     });
+  });
+
+  it('labels_search query plan: the FTS index drives even with a language filter (26M-row regression, 2026-09-08)', () => {
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${labelsSearchSql(true, ' AND l.language = ? COLLATE NOCASE AND m.origin = ?')}`).all('"x"', 'de', 'microsoft', 21, 0);
+    // SQLite prints the alias: "SCAN f VIRTUAL TABLE INDEX 0:M1" — f is labels_fts.
+    assert.match(plan[0].detail, /^SCAN f VIRTUAL TABLE INDEX/, `first step must be the FTS scan, got: ${plan.map(p => p.detail).join(' | ')}`);
   });
 
   it('parseXrefSourcePath covers the three path shapes', () => {

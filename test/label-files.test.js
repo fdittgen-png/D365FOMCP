@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  parseLabelFile, labelLines, canonicalLabelId, normalizeLabelIdInput, findLabelFiles, splitLabelFileName,
+  parseLabelFile, labelLines, canonicalLabelId, normalizeLabelIdInput, findLabelFiles, splitLabelFileName, canonicalLanguage,
 } from '../build/label-files.js';
 
 const BOM = '﻿';
@@ -69,6 +69,12 @@ describe('label ids', () => {
     assert.equal(normalizeLabelIdInput(null), null);
   });
 
+  it('canonicalLanguage: folder casing variants collapse to one BCP-47 tag', () => {
+    assert.equal(canonicalLanguage('en-us'), 'en-US'); assert.equal(canonicalLanguage('en-Us'), 'en-US');
+    assert.equal(canonicalLanguage('zh-hans'), 'zh-Hans'); assert.equal(canonicalLanguage('de'), 'de');
+    assert.equal(canonicalLanguage('not a tag!'), 'not a tag!');
+  });
+
   it('splitLabelFileName: prefix + language from the file name', () => {
     assert.deepEqual(splitLabelFileName('SYS.en-us.label.txt'), { prefix: 'SYS', language: 'en-us' });
     assert.deepEqual(splitLabelFileName('HSAPAC.en-US.label.txt'), { prefix: 'HSAPAC', language: 'en-US' });
@@ -83,6 +89,8 @@ describe('findLabelFiles', () => {
     const res = join(root, 'Pkg', 'Model', 'AxLabelFile', 'LabelResources');
     mkdirSync(join(res, 'en-US'), { recursive: true });
     mkdirSync(join(res, 'de'), { recursive: true });
+    mkdirSync(join(res, 'en-us'), { recursive: true });
+    writeFileSync(join(res, 'en-us', 'Y.en-us.label.txt'), 'B=b\n');
     writeFileSync(join(res, 'en-US', 'X.en-US.label.txt'), 'A=a\n');
     writeFileSync(join(res, 'de', 'X.de.label.txt'), 'A=b\n');
     writeFileSync(join(res, 'de', 'notes.txt'), 'ignored');
@@ -94,10 +102,11 @@ describe('findLabelFiles', () => {
 
   it('returns path, language (folder) and prefix, skipping bin/', () => {
     const files = findLabelFiles(root).sort((a, b) => a.language.localeCompare(b.language));
-    assert.deepEqual(files.map(f => ({ language: f.language, prefix: f.prefix, module: f.module })), [
+    assert.deepEqual(files.map(f => ({ language: f.language, prefix: f.prefix, module: f.module })).sort((a, b) => a.prefix.localeCompare(b.prefix) || a.language.localeCompare(b.language)), [
       { language: 'de', prefix: 'X', module: 'Model' },
       { language: 'en-US', prefix: 'X', module: 'Model' },
-    ]);
+      { language: 'en-US', prefix: 'Y', module: 'Model' },
+    ], 'the en-us folder is the same language as en-US');
     assert.ok(files.every(f => f.path.endsWith('.label.txt')));
   });
 
