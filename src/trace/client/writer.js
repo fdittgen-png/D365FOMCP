@@ -96,15 +96,43 @@ export function fileSink(filePath) {
   };
 }
 
-/** POST the batch as a JSON array. 4xx → not retryable (`dropped_invalid`). */
-export function httpSink({ url, key = '', bearer = '', timeoutMs = 3000, fetchImpl = globalThis.fetch }) {
+/**
+ * Bearer tokens for the sink from a credential (`DefaultAzureCredential` on
+ * the Azure MCP apps = the Function's managed identity), cached until 60 s
+ * before expiry. `TRACE_INGEST_SCOPE` is the sink's app-registration scope,
+ * e.g. `api://tis-d-claudetrace-api/.default` — a managed identity cannot be
+ * an audience itself (AADSTS100040), so the registration is an Entra-admin
+ * prerequisite. `credential` / `now` are test seams.
+ */
+export function identityTokenProvider(scope, { credential = null, now = Date.now } = {}) {
+  let cached = null; // { token, expiresOnTimestamp }
+  let cred = credential;
+  return async () => {
+    if (cached && cached.expiresOnTimestamp - 60_000 > now()) return cached.token;
+    if (!cred) {
+      const { DefaultAzureCredential } = await import('@azure/identity');
+      cred = new DefaultAzureCredential();
+    }
+    const got = await cred.getToken(scope);
+    if (!got?.token) throw new Error('token provider returned no token');
+    cached = { token: got.token, expiresOnTimestamp: Number(got.expiresOnTimestamp) || now() + 5 * 60_000 };
+    return cached.token;
+  };
+}
+
+/** POST the batch as a JSON array. 4xx → not retryable (`dropped_invalid`); a failing token provider is retryable. */
+export function httpSink({ url, key = '', bearer = '', getToken = null, timeoutMs = 3000, fetchImpl = globalThis.fetch }) {
   return async (batch) => {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const headers = { 'content-type': 'application/json' };
       if (key) headers['x-functions-key'] = key;
-      if (bearer) headers.authorization = `Bearer ${bearer}`;
+      let token = bearer;
+      if (getToken) {
+        try { token = await getToken(); } catch (e) { throw Object.assign(new Error(`token provider failed: ${e?.message ?? e}`), { retryable: true }); }
+      }
+      if (token) headers.authorization = `Bearer ${token}`;
       const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(batch), signal: ctrl.signal });
       if (res.status >= 500 || res.status === 429) throw Object.assign(new Error(`HTTP ${res.status}`), { retryable: true });
       if (res.status >= 400) throw Object.assign(new Error(`HTTP ${res.status}`), { retryable: false });
@@ -122,12 +150,19 @@ export function traceEnabled(env = process.env) {
   return env.MCP_TRACE === 'on';
 }
 
-/** `TRACE_SINK` = file (default on stdio) | http | memory | null. Lazy: a dry run creates no file. */
-export function traceWriter(service, env = process.env) {
+/**
+ * `TRACE_SINK` = file (default on stdio) | http | memory | null. Lazy: a dry run creates no file.
+ * http: `TRACE_INGEST_URL` (+ `TRACE_INGEST_KEY` function key and/or `TRACE_INGEST_SCOPE` for a
+ * managed-identity bearer). `tokenProvider(scope)` is a test seam for the identity provider.
+ */
+export function traceWriter(service, env = process.env, { tokenProvider = identityTokenProvider } = {}) {
   if (singleton) return singleton;
   const kind = env.TRACE_SINK || 'file';
   let sink;
-  if (kind === 'http' && env.TRACE_INGEST_URL) sink = httpSink({ url: env.TRACE_INGEST_URL, key: env.TRACE_INGEST_KEY || '' });
+  if (kind === 'http' && env.TRACE_INGEST_URL) {
+    const getToken = env.TRACE_INGEST_SCOPE ? tokenProvider(env.TRACE_INGEST_SCOPE) : null;
+    sink = httpSink({ url: env.TRACE_INGEST_URL, key: env.TRACE_INGEST_KEY || '', getToken });
+  }
   else if (kind === 'memory') sink = memorySink();
   else if (kind === 'null') sink = nullSink();
   else {

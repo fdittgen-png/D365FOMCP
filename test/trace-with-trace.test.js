@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
-import { withTrace, TraceWriter, memorySink, resultSummary, currentInvestigation, validateRecord } from '../src/trace/index.js';
+import { withTrace, TraceWriter, memorySink, resultSummary, currentInvestigation, validateRecord, httpSink, traceWriter, resetTraceWriter, identityTokenProvider } from '../src/trace/index.js';
 
 const config = { inputSchema: { table_name: z.string(), field_limit: z.number().optional(), sql: z.string().optional(), user_id: z.string().optional() } };
 const env = (extra = {}) => ({ MCP_TRACE: 'on', TRACE_SESSION_SALT: 'test', ...extra });
@@ -99,5 +99,47 @@ describe('withTrace', () => {
     assert.equal(w.stats.retried, 1);
     assert.equal(w.stats.sent, 1);
     await w.close();
+  });
+});
+
+describe('httpSink bearer from a token provider (phase 3: the Azure MCP apps post with their managed identity)', () => {
+  it('httpSink calls getToken per batch and sends it as the Authorization bearer next to the function key', async () => {
+    const calls = [];
+    let n = 0;
+    const sink = httpSink({ url: 'https://sink.example/trace/ingest', key: 'fk', getToken: async () => `tok${++n}`, fetchImpl: async (url, init) => { calls.push({ url, headers: init.headers }); return { status: 200 }; } });
+    await sink([{ id: 'a' }]);
+    await sink([{ id: 'b' }]);
+    assert.deepEqual(calls.map((c) => c.headers.authorization), ['Bearer tok1', 'Bearer tok2']);
+    assert.equal(calls[0].headers['x-functions-key'], 'fk');
+  });
+
+  it('a token provider that fails makes the batch retryable (5xx-like), never a crash', async () => {
+    const sink = httpSink({ url: 'https://sink.example/trace/ingest', getToken: async () => { throw new Error('IMDS unavailable'); }, fetchImpl: async () => { throw new Error('must not be called'); } });
+    await assert.rejects(sink([{ id: 'a' }]), (e) => e.retryable === true && /token/.test(e.message));
+  });
+
+  it('traceWriter: TRACE_SINK=http + TRACE_INGEST_SCOPE selects the identity token provider for that scope', async () => {
+    resetTraceWriter();
+    const seen = [];
+    const w = traceWriter('kb', { MCP_TRACE: 'on', TRACE_SINK: 'http', TRACE_INGEST_URL: 'https://sink.example/trace/ingest', TRACE_INGEST_SCOPE: 'api://tis-d-claudetrace-api/.default' }, {
+      tokenProvider: (scope) => { seen.push(scope); return async () => 'mi-token'; },
+    });
+    assert.equal(w.sinkKind, 'http');
+    assert.deepEqual(seen, ['api://tis-d-claudetrace-api/.default']);
+    resetTraceWriter();
+  });
+
+  it('identityTokenProvider caches a token until shortly before it expires', async () => {
+    let minted = 0;
+    const now = { t: 1_000_000 };
+    const provider = identityTokenProvider('api://x/.default', {
+      credential: { getToken: async () => ({ token: `t${++minted}`, expiresOnTimestamp: now.t + 10 * 60_000 }) },
+      now: () => now.t,
+    });
+    assert.equal(await provider(), 't1');
+    assert.equal(await provider(), 't1', 'cached');
+    now.t += 9 * 60_000 + 30_000; // inside the 60 s safety margin
+    assert.equal(await provider(), 't2', 'refreshed before expiry');
+    assert.equal(minted, 2);
   });
 });
