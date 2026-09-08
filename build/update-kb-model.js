@@ -88,6 +88,21 @@ export async function updateKbForModels({
     const { mergeCustomKb } = await import('./merge-kb-custom.js');
     summary.merged = mergeCustomKb(kbDbPath, customDb, (m) => logger(`  ${m}`));
 
+    // Labels service: same models, same run — a compiled model's label files are
+    // re-ingested into d365fo_labels.sqlite (DELETE + INSERT, fixes the
+    // INSERT-OR-IGNORE staleness the KB merge has). Non-fatal; skipped when no
+    // labels DB exists yet (LABELS_SCAN=off or never built).
+    try {
+      const { refreshLabelsModules, DEFAULT_LABELS_DB } = await import('./build-labels.js');
+      const labelsDb = process.env.LABELS_DB_PATH || DEFAULT_LABELS_DB();
+      if (process.env.LABELS_SCAN?.toLowerCase() !== 'off' && existsSync(labelsDb)) {
+        logger('  refreshing the labels DB for the same models...');
+        summary.labels = await refreshLabelsModules({ dbPath: labelsDb, modules: scope.models, packagesPaths: [modelStoreFolder], log: (m) => logger(`  ${m}`) });
+      }
+    } catch (err) {
+      logger(`  labels DB refresh skipped: ${err.message}`);
+    }
+
     if (isv) {
       // Sealed ISV models are vendor binaries: they change on an ISV upgrade,
       // not when someone compiles iExtension. Opt-in on purpose — the weekly

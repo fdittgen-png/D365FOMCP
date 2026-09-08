@@ -22,6 +22,7 @@ import {
 } from '../src/azure/model-descriptors.js';
 import { refreshIsvMetadata } from './isv-scan.js';
 import { findLabelFiles as findAllLabelFiles, labelLines } from './label-files.js';
+import { refreshLabelsAfterKb } from './build-labels.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -2073,7 +2074,10 @@ export async function buildKnowledgeBase({ packagesPaths: pp, outputPath: op } =
 const invokedDirectly = process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
-  main().catch(err => {
+  // Labels service: the labels DB rides along with the FULL KB build (CLI path
+  // only — the per-model delta scopes buildKnowledgeBase() to a junction tree and
+  // must not rebuild the labels DB from two models). Non-fatal; LABELS_SCAN=off.
+  main().then(() => refreshLabelsAfterKb({ packagesPaths })).catch(err => {
     console.error('FATAL ERROR:', err);
     process.exit(1);
   });
