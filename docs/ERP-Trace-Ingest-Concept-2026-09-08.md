@@ -1,6 +1,6 @@
 # ERP Trace — Message Sink (Ingest) Implementation Concept
 
-**Date:** 2026-09-08 · **Status:** decision 1 CONFIRMED and **phase 1 IMPLEMENTED 2026-09-08** (ClaudeTrace v0.2.0, commits 8789187…; MCP branch `feat/trace-ingest-sink`); code deploy pending an active PIM role · **Scope:** WI-11 (ingest service),
+**Date:** 2026-09-08 · **Status:** decision 1 CONFIRMED and **phase 1 IMPLEMENTED 2026-09-08** (ClaudeTrace v0.2.0, commits 8789187…; MCP branch `feat/trace-ingest-sink`); **DEPLOYED and VERIFIED 2026-09-08 09:17 UTC** — smoke `received=0 accepted=0`, backfill 15 records (14 hook + 1 server) → 2 landing files, 15 entities in 3 dossier partitions, 3 request keys, 0 dead letters · **Scope:** WI-11 (ingest service),
 WI-12 (its infrastructure), WI-13 (local push) of `ERP-Trace-Capture-TDD.md`; the client side (WI-01…WI-10, WI-15)
 shipped with PR #134 and is verified end to end on 2026-09-08 (§1). **Repos:** the sink lives in
 `C:\working\ClaudeTrace` (Function App `tis-d-claudetrace-func`); the contract it validates against lives here
