@@ -27,6 +27,7 @@ import { registerWikiTools } from '../src/azure/wiki-tools.js';
 import { registerIsvKbTools } from '../src/azure/isv-kb-tools.js';
 import { registerCustomFieldTools } from '../src/azure/custom-fields-tools.js';
 import { registerIsvXrefTools } from '../src/azure/isv-xref-tools.js';
+import { registerLabelsTools } from '../src/azure/labels-tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_OUT = join(__dirname, '..', 'plugin', 'd365fo-mcp', 'skills', 'd365fo-mcp-tooling', 'references');
@@ -126,6 +127,7 @@ export function generate() {
   registerCustomFieldTools(kb, stubDb);
   const xref = captureServer(); registerXrefTools(xref, stubDb); registerIsvXrefTools(xref, stubDb);
   const sec = captureServer(); registerSecTools(sec, stubDb);
+  const labels = captureServer(); registerLabelsTools(labels, stubDb);
   const tr = captureServer(); registerTaskRecorderTools(tr);
   const wiki = captureServer(); registerWikiTools(wiki, { name: '<wiki>', title: '<Wiki title>', description: '<wiki description>', container: 'wiki', pagesPrefix: '' }, { serviceClient: stubServiceClient });
 
@@ -136,6 +138,8 @@ export function generate() {
       intro: 'Compiler cross-reference snapshot: who calls, reads, writes, extends, implements or references what. Start with `xref_object_summary` for counts, then drill. Coverage = compiled models in the snapshot (Microsoft + listed ISV/custom models); `xref_list_modules` shows exactly which.' },
     { file: 'sec-tools.md', key: 'd365sec', title: 'd365sec — D365FO Security Model', source: 'src/azure/sec-tools.js', tools: sec.tools,
       intro: 'Security configuration snapshot (AOT roles/duties/privileges + user/role assignments from DMF): resolution role → sub-role → duty → privilege → entry point with Deny-wins. Permission cells render ✓ Grant / ✗ Deny / — None. User data is internal-staff information — keep it inside the analysis.' },
+    { file: 'labels-tools.md', key: 'd365labels', title: 'd365labels — D365FO Labels', source: 'src/azure/labels-tools.js', tools: labels.tools,
+      intro: 'Every label in every shipped language, always with its developer description (the " ;" comment that says what the label is for). `labels_lookup` for ids (any casing, with or without @), `labels_search` for a UI string, `labels_where_used` for the objects and properties that carry it (needs the XRef snapshot), `labels_for_object` for the labels one object carries.' },
     { file: 'taskrecorder-tools.md', key: 'd365taskrecorder', title: 'd365taskrecorder — Task Recorder converter', source: 'src/azure/taskrecorder-tools.js', tools: tr.tools,
       intro: 'Stateless converters for Task Recorder output: `.axtr` (server recording) to structured Markdown, or recording + client reproReport/DOCX screenshots to an enriched, self-contained MHTML document with KB technical detail and role-based security — optionally with a contract XML validated against `schemas/task-recording-document.xsd`.' },
     { file: 'wiki-tools.md', key: 'wiki-<name>', title: 'wiki-* — blob-backed wiki MCPs', source: 'src/azure/wiki-tools.js', tools: wiki.tools,

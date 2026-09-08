@@ -54,6 +54,7 @@ param(
     [string]$KbDbPath,
     [string]$XrefDbPath,
     [string]$SecDbPath,
+    [string]$LabelsDbPath,
     [string]$Subscription = 'TIS.D365FO'   # Azure subscription owning the MCP resource group
 )
 
@@ -76,6 +77,7 @@ $zipPath    = Join-Path $projectDir '.deploy.zip'
 if (-not $KbDbPath)   { $KbDbPath   = Join-Path $env:USERPROFILE '.claude\d365fo_kb.sqlite' }
 if (-not $XrefDbPath) { $XrefDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite' }
 if (-not $SecDbPath)  { $SecDbPath  = Join-Path $env:USERPROFILE '.claude\d365fo_sec.sqlite' }
+if (-not $LabelsDbPath) { $LabelsDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_labels.sqlite' }
 
 Write-Host "================================================================" -ForegroundColor Cyan
 Write-Host "  D365FO MCP Services - Function App Deployment" -ForegroundColor Cyan
@@ -120,6 +122,14 @@ if (-not $SkipDbUpload) {
         Write-Host "  Sec database:  not found (optional, skipping)" -ForegroundColor DarkGray
     }
 
+    $hasLabelsDb = Test-Path $LabelsDbPath
+    if ($hasLabelsDb) {
+        $labelsSize = [math]::Round((Get-Item $LabelsDbPath).Length / 1MB)
+        Write-Host "  Labels database: $labelsSize MB" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  Labels database: not found (optional, skipping)" -ForegroundColor DarkGray
+    }
+
     # Get Kudu publishing credentials
     $credsJson = cmd /c "az functionapp deployment list-publishing-credentials --resource-group $rg --name $funcName --query `"{user:publishingUserName, pass:publishingPassword}`" -o json 2>nul"
     $creds = $credsJson | ConvertFrom-Json
@@ -157,6 +167,15 @@ if (-not $SkipDbUpload) {
             -Headers @{ Authorization = "Basic $kuduAuth"; 'If-Match' = '*' } `
             -InFile $SecDbPath -ContentType 'application/octet-stream'
         Write-Host "  [OK] Security database uploaded." -ForegroundColor Green
+    }
+
+    # Upload Labels database (optional, Labels service)
+    if ($hasLabelsDb) {
+        Write-Host "  Uploading Labels database ($labelsSize MB)..." -ForegroundColor Yellow
+        Invoke-RestMethod -Uri "$kuduBase/api/vfs/data/d365fo_labels.sqlite" -Method PUT `
+            -Headers @{ Authorization = "Basic $kuduAuth"; 'If-Match' = '*' } `
+            -InFile $LabelsDbPath -ContentType 'application/octet-stream'
+        Write-Host "  [OK] Labels database uploaded." -ForegroundColor Green
     }
 } else {
     Write-Host "`n  [SKIP] Database upload skipped." -ForegroundColor DarkGray

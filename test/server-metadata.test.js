@@ -28,7 +28,7 @@ describe('server-metadata: service identities', () => {
   it('machine names are stable (clients key sessions/permissions on them)', () => {
     assert.deepEqual(
       Object.fromEntries(Object.entries(SERVICES).map(([k, v]) => [k, v.name])),
-      { kb: 'd365fo-kb', xref: 'd365fo-xref', sec: 'd365fo-sec', taskrecorder: 'd365fo-taskrecorder' },
+      { kb: 'd365fo-kb', xref: 'd365fo-xref', sec: 'd365fo-sec', labels: 'd365fo-labels', taskrecorder: 'd365fo-taskrecorder' },
     );
   });
 
@@ -99,7 +99,7 @@ describe('server-metadata: instructions are true against the registered tool set
     const db = new Database(':memory:'); dbs.push(db);
     return serviceToolNames(svc, db);
   };
-  const PREFIX = { kb: 'd365', xref: 'xref', sec: 'sec', taskrecorder: 'taskrecorder' };
+  const PREFIX = { kb: 'd365', xref: 'xref', sec: 'sec', labels: 'labels', taskrecorder: 'taskrecorder' };
 
   // Verbs (the token after the service prefix) that the one-line contract does
   // NOT spell out, each with the reason. A new tool with a new verb either joins
@@ -123,13 +123,14 @@ describe('server-metadata: instructions are true against the registered tool set
       licence: 'sec_licence_assessment — one-purpose assessment',
       what: 'sec_what_if — one-purpose simulation',
     },
+    labels: {},
     taskrecorder: {},
   };
 
   for (const svc of Object.keys(SERVICES)) {
     it(`${svc}: every tool name mentioned exists`, () => {
       const names = new Set(toolsOf(svc));
-      const mentioned = [...new Set(SERVICES[svc].instructions.match(/\b(?:d365|xref|sec|taskrecorder)_[a-z0-9_]+/g) ?? [])];
+      const mentioned = [...new Set(SERVICES[svc].instructions.match(/\b(?:d365|xref|sec|labels|taskrecorder)_[a-z0-9_]+/g) ?? [])];
       assert.ok(mentioned.length >= 2, `${svc}: the first-call rule names at least two tools`);
       const missing = mentioned.filter(n => !names.has(n));
       assert.deepEqual(missing, [], `${svc}: instructions mention tools that are not registered`);
@@ -149,18 +150,18 @@ describe('server-metadata: instructions are true against the registered tool set
   }
 
   it('the four structural claims are present in every snapshot-backed service', () => {
-    for (const svc of ['kb', 'xref', 'sec']) {
+    for (const svc of ['kb', 'xref', 'sec', 'labels']) {
       const t = SERVICES[svc].instructions;
       assert.match(t, /lookup_\*|find_\*/, `${svc}: verb contract line`);
       assert.match(t, /First call/, `${svc}: first-call rule`);
       assert.match(t, /limit/, `${svc}: the limit habit`);
-      assert.match(t, /modules/, `${svc}: the modules habit`);
+      if (svc !== 'labels') assert.match(t, /modules/, `${svc}: the modules habit`);
       assert.match(t, /cursor/, `${svc}: the cursor habit`);
       assert.match(t, /(do(es)? not|NOT) cover/, `${svc}: the boundary line`);
     }
     assert.match(SERVICES.xref.instructions, /leading %.*path miss, not absence/, 'the xref_search_names path-miss trap is stated');
     // The freshness sentence must be TRUE: the banner is wired centrally (tool-sets.js).
-    for (const svc of ['kb', 'sec']) assert.match(SERVICES[svc].instructions, /snapshot date/, `${svc}: freshness sentence`);
+    for (const svc of ['kb', 'sec', 'labels']) assert.match(SERVICES[svc].instructions, /snapshot date/, `${svc}: freshness sentence`);
   });
 });
 

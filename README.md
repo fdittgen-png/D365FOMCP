@@ -107,6 +107,7 @@ src/
     d365kb.js             KB MCP endpoint (/api/d365kb)
     d365xref.js           XRef MCP endpoint (/api/d365xref)
     d365sec.js            Security MCP endpoint (/api/d365sec)
+    d365labels.js         Labels MCP endpoint (/api/d365labels) — every label, every language, with description
     d365sec-upload.js     Sec DB upload endpoint (sync + async URL-download)
     d365taskrecorder.js   Task Recorder MCP + upload endpoint (/api/d365taskrecorder)
     d365health.js         Health endpoint (/api/health)
@@ -176,6 +177,7 @@ Environments: `d` (development), `p` (production).
 | Development | KB | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Development | XRef | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365xref` |
 | Development | Security | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Development | Labels | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365labels` |
 | Development | Task Recorder | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 | Development | Task Recorder UI | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder/upload` |
 | Development | Wiki catalog | `https://tis-d-mcpd365fo-func.azurewebsites.net/api/wiki-mcp` |
@@ -183,6 +185,7 @@ Environments: `d` (development), `p` (production).
 | Production | KB | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365kb` |
 | Production | XRef | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365xref` |
 | Production | Security | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365sec` |
+| Production | Labels | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365labels` |
 | Production | Task Recorder | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder` |
 | Production | Task Recorder UI | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/d365taskrecorder/upload` |
 | Production | Wiki catalog | `https://tis-p-mcpd365fo-func.azurewebsites.net/api/wiki-mcp` |

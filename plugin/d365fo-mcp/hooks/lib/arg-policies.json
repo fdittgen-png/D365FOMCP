@@ -192,6 +192,37 @@
   "scenario": "identifier",
   "format": "identifier"
  },
+ "labels_for_object": {
+  "object_type": "identifier",
+  "object_name": "identifier",
+  "languages": "identifier[]",
+  "properties": "identifier[]",
+  "limit": "number",
+  "format": "identifier"
+ },
+ "labels_lookup": {
+  "label_ids": "identifier[]",
+  "languages": "identifier[]",
+  "format": "identifier"
+ },
+ "labels_search": {
+  "text": "term",
+  "language": "identifier",
+  "label_file": "payload_ref",
+  "modules": "identifier[]",
+  "origin": "identifier",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
+ "labels_where_used": {
+  "label_id": "identifier",
+  "property": "identifier",
+  "object_type": "identifier",
+  "limit": "number",
+  "cursor": "identifier",
+  "format": "identifier"
+ },
  "sec_check_exists": {
   "roles": "identifier[]",
   "duties": "identifier[]",

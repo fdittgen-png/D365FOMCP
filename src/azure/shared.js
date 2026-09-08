@@ -39,7 +39,7 @@ export const formatTextParam = z
   // Carries ONLY what the enum itself cannot: which value is the default, and
   // when to override it. Everything else the model reads off the value list.
   // test/tool-schema-budget.test.js fails above 4,000 B of duplication.
-  .describe('auto (default) = smallest; markdown when quoting verbatim.');
+  .describe('auto (default) = smallest; markdown to quote verbatim.');
 
 // Standard per-model scope filter. Add `modules: modulesFilterParam` to a
 // search tool's inputSchema to let callers limit the investigation to specific

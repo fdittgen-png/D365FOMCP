@@ -125,7 +125,7 @@ try {
         # -SkipCode: this is a DATA publish. Code ships on its own cadence.
         # -SkipRoles: role assignment is the usual Conditional Access step-up
         #             trigger and an unattended task cannot answer one.
-        $deployArgs = @('-SkipCode', '-SkipRoles', '-Databases', 'kb', 'xref')
+        $deployArgs = @('-SkipCode', '-SkipRoles', '-Databases', 'kb', 'xref', 'labels')
         if ($Environment) { $deployArgs += @('-Environment', $Environment) }
 
         Write-Log "Publishing: Deploy.ps1 $($deployArgs -join ' ')"

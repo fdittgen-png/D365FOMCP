@@ -262,6 +262,8 @@ export const CORE_TOOLS = new Set([
   // Sec — can this user do this thing (check_exists: the preflight, #118)
   'sec_check_exists', 'sec_search', 'sec_lookup_user', 'sec_object_access',
   'sec_effective_permissions', 'sec_lookup_role', 'sec_permission_trace', 'sec_stats',
+  // Labels — id → every language + description (the where-used tools stay in full)
+  'labels_lookup',
 ]);
 
 /**

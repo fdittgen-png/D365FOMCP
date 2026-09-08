@@ -126,6 +126,23 @@ export const SERVICES = Object.freeze({
       'limit, modules, batch role_names, cursor. Responses carry snapshot date and state what they do not cover; ' +
       'verify with a trace; raw_sql last resort.',
   },
+  labels: {
+    name: 'd365fo-labels',
+    title: 'D365 F&O Labels',
+    description:
+      'Every Dynamics 365 F&O label of the Trelleborg TOC365 solution in every shipped language (76 language folders, ' +
+      'Microsoft + ISV + custom models), each label id always paired with its developer description — the ' +
+      '" ;" comment line that says what the label is for (e.g. "Duty", "[SecurityDuty FIM]"). Reverse text search, ' +
+      'where-used by object and property (Label, HelpText, Caption, …) from the cross-reference graph, and the labels ' +
+      'an object carries. Read-only snapshot refreshed with the Knowledge Base; every data response carries its snapshot date.',
+    instructions:
+      'lookup_* = ids → every stored language + description/file/module/origin (batch ≤100; @SYS154828, SYS154828, @File:Key) · ' +
+      'search = label TEXT → ids, any language · where_used = XRef usages by object + property (Label/HelpText/Caption/Code) · ' +
+      'for_object = the labels one object carries. ' +
+      'First call: labels_lookup for an id, labels_search for a UI string, labels_for_object for an object; labels_where_used before changing a label. ' +
+      'limit + cursor on lists, languages[] to narrow. Responses carry the snapshot date and state what they do not cover ' +
+      '(where-used needs the XRef snapshot).',
+  },
   taskrecorder: {
     name: 'd365fo-taskrecorder',
     title: 'D365 F&O Task Recorder',

@@ -68,7 +68,7 @@
     since nothing would be uploaded.
 
 .PARAMETER Databases
-    Which databases to upload. Subset of {'kb','xref','sec'}. Default: all
+    Which databases to upload. Subset of {'kb','xref','sec','labels'}. Default: all
     three (whichever local files exist).
 
 .PARAMETER SkipRoles
@@ -127,12 +127,13 @@ param(
     [switch]$SkipRoles,
     [switch]$SkipValidation,
 
-    [ValidateSet('kb', 'xref', 'sec')]
-    [string[]]$Databases = @('kb', 'xref', 'sec'),
+    [ValidateSet('kb', 'xref', 'sec', 'labels')]
+    [string[]]$Databases = @('kb', 'xref', 'sec', 'labels'),
 
     [string]$KbDbPath,
     [string]$XrefDbPath,
     [string]$SecDbPath,
+    [string]$LabelsDbPath,
 
     [switch]$RefreshIsv,
 
@@ -294,6 +295,7 @@ trap {
 if (-not $KbDbPath)   { $KbDbPath   = Join-Path $env:USERPROFILE '.claude\d365fo_kb.sqlite' }
 if (-not $XrefDbPath) { $XrefDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite' }
 if (-not $SecDbPath)  { $SecDbPath  = Join-Path $env:USERPROFILE '.claude\d365fo_sec.sqlite' }
+if (-not $LabelsDbPath) { $LabelsDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_labels.sqlite' }
 
 # Derive Environment from RG name when not explicit
 if (-not $Environment) {
@@ -789,6 +791,7 @@ if (-not $SkipDb) {
     if ('kb'   -in $Databases -and (Test-Path $KbDbPath))   { $uploadPlan += @{ Name='KB';   Local=$KbDbPath;   Remote='d365fo_kb.sqlite'   } }
     if ('xref' -in $Databases -and (Test-Path $XrefDbPath)) { $uploadPlan += @{ Name='XRef'; Local=$XrefDbPath; Remote='d365fo_xref.sqlite' } }
     if ('sec'  -in $Databases -and (Test-Path $SecDbPath))  { $uploadPlan += @{ Name='Sec';  Local=$SecDbPath;  Remote='d365fo_sec.sqlite'  } }
+    if ('labels' -in $Databases -and (Test-Path $LabelsDbPath)) { $uploadPlan += @{ Name='Labels'; Local=$LabelsDbPath; Remote='d365fo_labels.sqlite' } }
 
     if (-not $uploadPlan) {
         Write-Host '  [SKIP] No databases to upload (none found at requested paths).' -ForegroundColor DarkGray
@@ -898,6 +901,7 @@ if (-not $SkipValidation) {
         @{ Label='d365kb';                   Path='api/d365kb';                 Expect=401 }
         @{ Label='d365xref';                 Path='api/d365xref';               Expect=401 }
         @{ Label='d365sec';                  Path='api/d365sec';                Expect=401 }
+        @{ Label='d365labels';               Path='api/d365labels';             Expect=401 }
         @{ Label='d365taskrecorder';         Path='api/d365taskrecorder';       Expect=401 }
         @{ Label='d365sec/upload page';      Path='api/d365sec/upload';         Expect=401 }
         @{ Label='d365taskrecorder/upload';  Path='api/d365taskrecorder/upload'; Expect=401 }
@@ -958,6 +962,7 @@ Write-Host ''
 Write-Host '  Endpoints:' -ForegroundColor Cyan
 Write-Host "    KB MCP:           $funcUrl/api/d365kb"
 Write-Host "    XRef MCP:         $funcUrl/api/d365xref"
+Write-Host "    Labels MCP:       $funcUrl/api/d365labels"
 Write-Host "    Sec MCP:          $funcUrl/api/d365sec"
 Write-Host "    Sec upload page:  $funcUrl/api/d365sec/upload"
 Write-Host "    TaskRecorder MCP: $funcUrl/api/d365taskrecorder"

@@ -125,10 +125,12 @@ const BUDGET = {
   // W1: 13,287 measured -> 8,131 (descriptions 1,755+755 chars and 2.7 KB of
   // output prose on taskrecorder_to_document), ceiling 8,290.
   taskrecorder: { maxBytes: 8_290, tools: 2 },
+  // Labels service (2026-09-08): four tools, measured on first registration, ceiling ≤2% above.
+  labels: { maxBytes: 8_420, tools: 4 },   // 8,256 measured 2026-09-08
 };
 // 160,800 B measured after Q2–Q5 (was 155,810): +4,990 = two preflight tools
 // +3,446 · functional_context ×9 +1,297 · coverage keys +1,035 · trims −790.
-const TOTAL_MAX_BYTES = 180_800; // 2026-09-03: 177,349 measured after #123–#128 (six KB tools)
+const TOTAL_MAX_BYTES = 190_600; // 2026-09-08: 186,857 measured after the Labels service (+8,256 B, four tools)
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {
@@ -136,6 +138,7 @@ const ENTRY_POINTS = {
   xref: { files: ['local/mcp-server-xref.js', 'functions/d365xref.js'], via: 'registerAllXrefTools' },
   sec: { files: ['local/mcp-server-sec.js', 'functions/d365sec.js'], via: 'registerAllSecTools' },
   taskrecorder: { files: ['local/mcp-server-taskrecorder.js', 'functions/d365taskrecorder.js'], via: 'registerAllTaskRecorderTools' },
+  labels: { files: ['local/mcp-server-labels.js', 'functions/d365labels.js'], via: 'registerAllLabelsTools' },
 };
 
 // `title` (W5.B, #109): derived on the registration path for every tool that

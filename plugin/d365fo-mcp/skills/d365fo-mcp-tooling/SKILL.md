@@ -5,7 +5,7 @@ description: How to use the D365FO MCP services (d365kb, d365xref, d365sec, d365
 
 # D365FO MCP tooling — core (full text and measurements: `references/tooling-full.md`)
 
-Three read-only **snapshot** servers (`d365kb`, `d365xref`, `d365sec`) and a Task Recorder converter. They return facts; you supply the reasoning. Match on **tool names** — the server label varies by host (`D365 KB`, `plugin_d365fo-mcp_kb`, `mcp__d365kb__…`). A server that is not connected is a gap to report, never a detour through another server's `raw_sql` or memory.
+Four read-only **snapshot** servers (`d365kb`, `d365xref`, `d365sec`, `d365labels`) and a Task Recorder converter. They return facts; you supply the reasoning. Match on **tool names** — the server label varies by host (`D365 KB`, `plugin_d365fo-mcp_kb`, `mcp__d365kb__…`). A server that is not connected is a gap to report, never a detour through another server's `raw_sql` or memory.
 
 ## 1. First tool by need
 
@@ -29,7 +29,7 @@ Three read-only **snapshot** servers (`d365kb`, `d365xref`, `d365sec`) and a Tas
 | Model inventory, custom vs Microsoft | `d365_list_modules` / `xref_list_modules` with `origin: "custom"` | `d365_get_module_summary` |
 | Anything the typed tools cannot express | `*_raw_sql` — read `references/kb-raw-sql-schema.md` first | `LIMIT` always, `COLLATE NOCASE`, never `SELECT *` on XRef |
 
-Parameter tables, generated from the code: `references/kb-tools.md`, `references/xref-tools.md`, `references/sec-tools.md`, `references/taskrecorder-tools.md`, `references/wiki-tools.md`. Contract details (structuredContent, error categories, truncation kinds): `references/response-format.md`. Full former text with every measurement: `references/tooling-full.md`.
+Parameter tables, generated from the code: `references/kb-tools.md`, `references/xref-tools.md`, `references/sec-tools.md`, `references/labels-tools.md`, `references/taskrecorder-tools.md`, `references/wiki-tools.md`. Contract details (structuredContent, error categories, truncation kinds): `references/response-format.md`. Full former text with every measurement: `references/tooling-full.md`.
 
 ## 2. Answer shape before the first call
 
@@ -64,7 +64,7 @@ Decide what the answer must contain, say it in one line (*"Shape: data sources +
 - Coverage lines directly under the banner say what the response does NOT cover: `field_limit_hit`, `provenance_omitted`, `isv_not_scanned`, `isv_excluded` (exact count), `partial_build`. Carry them into the deliverable instead of asserting completeness.
 - `_Hint: …_` means the response was large and unnarrowed; pass the named parameter (`sections`, `summary`, `fields_like`, `object_type`) next time.
 - Empty result = valid object, zero rows. Not-found (`isError`) lists the closest names — pick one, do not spend a search on it.
-- A raw `@SYS…` id is a data gap, not a label to invent. Leave `format` at its default; `markdown` only when quoting verbatim.
+- A raw `@SYS…` id is a data gap, not a label to invent — `d365_resolve_label` for the en-US text in a KB answer, `labels_lookup` (d365labels) when the question is the label itself: every language, the developer description, `labels_where_used` for where it is shown. Leave `format` at its default; `markdown` only when quoting verbatim.
 
 ## 5. Verify before you assert
 
