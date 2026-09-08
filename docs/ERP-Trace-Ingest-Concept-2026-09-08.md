@@ -261,9 +261,9 @@ Every expectation the two TDDs (`ERP-Trace-Module-TDD.md` v1.3, `ERP-Trace-Captu
 | # | Expectation | Source | Status | Evidence / note |
 |---|---|---|---|---|
 | E19 | Hook capture is the primary Claude Code path: UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop; transcript-derived; dependency-free; exits 0 always; dedupe survives double registration | Capture §3, §8, WI-15 | **met** | `trace-capture.mjs`, `hooks.json` in plugin 1.4.x; state per session under a dir lock |
-| E20 | Claude compiles the request: `Request:` / `Entities:` lines after a ~90-token protocol note → `open.request.source = declared` | decision 2026-09-07 | **partly** | works only when the lines are the **first assistant text of the turn**; written after a tool call they are ignored and the opening paragraph becomes `interpretation` (observed 2026-09-08). Fix: scan the whole turn for the lines, or reword the protocol note |
+| E20 | Claude compiles the request: `Request:` / `Entities:` lines after a ~90-token protocol note → `open.request.source = declared` | decision 2026-09-07 | **partly — harness limit, documented** | the hook already scans every persisted text of the turn; the 2026-09-08 miss was a text block that Claude Code **never wrote to the transcript** (the only mid-turn text of that turn that vanished; an empty `thinking` record sits where it belongs). Cannot be fixed hook-side. The protocol note and both skills now say: the two lines are the FIRST text of the reply, before any tool call (plugin 1.5.0) |
 | E21 | `expected_entities` required at `open` (may be `[]`) + `entities_from: prompt \| functional_context \| vocabulary_match \| none` | Module R11 | **met** | today's probe: `[]` / `none` |
-| E22 | `step` = strategy line verbatim; `annotate` = entities/expectations/process/lifecycle/counterpart; `close.conclusion.summary` ≤ 6000 verbatim | Module §5.3 | **partly** | `open`/`step`/`close` emitted; **`annotate` has no emitter** — contract only |
+| E22 | `step` = strategy line verbatim; `annotate` = entities/expectations/process/lifecycle/counterpart; `close.conclusion.summary` ≤ 6000 verbatim | Module §5.3 | **met (2026-09-08, plugin 1.5.0)** | `annotate` emitted at Stop from `Entity: <kind> <Name> as <role> [= <functional_entity>] [~ <erp>:<Name>] [@ level]`, `Expect: <ids>`, `Note:` lines anywhere in the turn (deduped, vocabulary-filtered, note dropped alone on party data); stripped from the conclusion. `process[]`/`lifecycle[]` stay contract-only — no line grammar yet |
 | E23 | `trace_investigation` tool as the claude.ai fallback (four phases) | Capture WI-08 | **open** | not built; connector sessions produce Stream 1 only once E27 is on |
 | E24 | Server-side `withTrace` on the registration path, innermost, `MCP_TRACE=on`; result returned by reference; `structuredContent` byte-identical; p95 ≤ 2 ms | Capture §7.1, WI-07 | **met** | golden test unchanged; default `on` for the three stdio servers |
 | E25 | Task Recorder and Sec calls traced | Capture matchers | **deviated (approved)** | KB + XRef only for now (Florian, 2026-09-07); `payload_ref` policy exists for Task Recorder when it is turned on |
@@ -305,10 +305,9 @@ Every expectation the two TDDs (`ERP-Trace-Module-TDD.md` v1.3, `ERP-Trace-Captu
 
 ### B8. Reading the register
 
-- 45 expectations: 24 met · 8 partly · 7 open · 5 deviated · 1 expected (cost, E38). Four deviations are approved or
+- 45 expectations: 25 met · 7 partly · 7 open · 5 deviated · 1 expected (cost, E38). Four deviations are approved or
   harmless; the fifth (E31, no Cosmos) is Part A decision 1 and awaits Florian's confirmation.
 - The **open** items cluster in one place: everything server-side of `POST /trace/ingest` (E11, E29, E32) plus the
   three deliberately deferred correlation/coverage items (E15, E23, E28). Part A is the plan for the first cluster; the
   second waits for a connector-trace consumer.
-- The two **partly** items that are defects rather than limits: E20 (declared request lines only in the first text of a
-  turn) and E22 (no `annotate` emitter). Both are hook changes in the MCP repo, independent of the sink.
+- E22 (annotate emitter) is closed; E20 turned out to be a transcript-persistence limit of Claude Code, not a hook defect, and is handled by protocol wording.

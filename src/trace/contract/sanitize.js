@@ -165,6 +165,7 @@ function sanitizeClaude(rec) {
         if (e.counterpart) { if (!isIdentifier(e.counterpart.erp) || !isIdentifier(e.counterpart.name)) return fail('identifier grammar', 'entities[].counterpart'); row.counterpart = { erp: e.counterpart.erp, name: e.counterpart.name }; }
         out.entities.push(row);
       }
+      if (rec.expects != null) { const e = identifierList(rec.expects, 'expects', 20, true); if (e.error) return e.error; out.expects = e.list; }
       if (rec.note != null) { const p = prose(rec.note, PROSE_CAPS.note, 'note'); if (p.error) return p.error; out.note = p.text; }
       break;
     }

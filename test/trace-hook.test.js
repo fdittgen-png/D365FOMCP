@@ -255,6 +255,62 @@ describe('trace-capture hook — edge cases', () => {
     }
   });
 
+  it('Stop emits an annotate record from Entity:/Expect:/Note: lines before the close; malformed lines are ignored, a note with party data is dropped alone', () => {
+    const t = 500;
+    const sess = { prompt_id: 'p-ann', session_id: 'sess-ann' };
+    userPrompt('how does the vendor entity map', t);
+    assistant([{ type: 'text', text: 'Request: vendor entity structure and its backing table\nEntities: vendor' }, { type: 'tool_use', id: 'tuA', name: 'mcp__d365kb__d365_lookup_table', input: { table_name: 'VendTable' } }], t + 1);
+    let r = run('PreToolUse', { tool_name: 'mcp__d365kb__d365_lookup_table', tool_use_id: 'tuA', tool_input: { table_name: 'VendTable' }, ...sess });
+    assert.equal(r.status, 0);
+    toolResult('tuA', t + 2);
+    r = run('PostToolUse', { tool_name: 'mcp__d365kb__d365_lookup_table', tool_use_id: 'tuA', tool_input: { table_name: 'VendTable' }, tool_response: '{"table_name":"VendTable"}', ...sess });
+    assert.equal(r.status, 0);
+    const final = [
+      'The vendor entity is a composite over the party model.',
+      '',
+      'Entity: table VendTable as source = vendor ~ M3:CIDMAS',
+      'Entity: data_entity VendVendorV2Entity as source = vendor',
+      'Entity: table DirPartyTable as related',
+      'Entity: table LogisticsPostalAddress as excluded @ physical',
+      'Entity: table Broken as nobody',
+      'Expect: vendor, address, none-such-id, item',
+      'Note: the party link is the join the migration must keep; contact someone@example.org for details',
+      '',
+      'Conclusion: VendTable carries the vendor, the party model carries the identity.',
+    ].join('\n');
+    assistant([{ type: 'text', text: final }], t + 3);
+    r = run('Stop', { last_assistant_message: final, ...sess });
+    assert.equal(r.status, 0);
+
+    const recs = records().filter((x) => x.investigation_id === 'inv-p-ann');
+    assert.deepEqual(recs.map((x) => x.phase ?? x.tool.name), ['open', 'd365_lookup_table', 'annotate', 'close']);
+    const ann = recs[2];
+    assert.deepEqual(validateRecord(ann), { ok: true });
+    assert.deepEqual(ann.entities, [
+      { kind: 'table', name: 'VendTable', level: 'physical', functional_entity: 'vendor', role: 'source', counterpart: { erp: 'M3', name: 'CIDMAS' } },
+      { kind: 'data_entity', name: 'VendVendorV2Entity', level: 'logical', functional_entity: 'vendor', role: 'source' },
+      { kind: 'table', name: 'DirPartyTable', level: 'physical', role: 'related' },
+      { kind: 'table', name: 'LogisticsPostalAddress', level: 'physical', role: 'excluded' },
+    ]);
+    assert.deepEqual(ann.expects, ['vendor', 'address', 'item'], 'unknown vocabulary ids are dropped');
+    assert.equal(ann.note, undefined, 'a note with an e-mail is dropped, the record stays');
+    const close = recs[3];
+    assert.equal(/Entity:|Expect:|Note:/.test(close.conclusion.summary), false, 'protocol lines never reach the conclusion');
+    assert.match(close.conclusion.summary, /party model carries the identity/);
+    assert.equal(readFileSync(logFile, 'utf8').includes('example.org'), false);
+  });
+
+  it('Stop without annotate lines emits no annotate record', () => {
+    const t = 600;
+    const sess = { prompt_id: 'p-noann', session_id: 'sess-noann' };
+    userPrompt('quick check', t);
+    assistant([{ type: 'text', text: 'Request: does the item table exist\nEntities: item' }, { type: 'tool_use', id: 'tuB', name: 'mcp__d365xref__xref_check_exists', input: { objects: [{ name: 'InventTable' }] } }], t + 1);
+    run('PreToolUse', { tool_name: 'mcp__d365xref__xref_check_exists', tool_use_id: 'tuB', tool_input: { objects: [{ name: 'InventTable' }] }, ...sess });
+    run('Stop', { last_assistant_message: 'Yes, it exists.', ...sess });
+    const recs = records().filter((x) => x.investigation_id === 'inv-p-noann');
+    assert.deepEqual(recs.map((x) => x.phase ?? x.tool.name), ['open', 'xref_check_exists', 'close']);
+  });
+
   it('tracing disabled → nothing written, no stdout', () => {
     writeFileSync(join(home, '.claude', 'claude-trace.config.json'), JSON.stringify({ enabled: false }));
     const before = records().length;

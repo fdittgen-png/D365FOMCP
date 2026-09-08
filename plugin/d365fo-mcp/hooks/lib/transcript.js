@@ -75,18 +75,53 @@ export function currentTurn(records) {
   return { prompt_text: promptText(prompt), prompt_ts: prompt.timestamp || null, texts };
 }
 
-/** `Request:` / `Entities:` protocol lines Claude declared, and the text without them. */
+const PROTOCOL_LINE_RE = /^\s*(?:[-*>]\s*)?\*{0,2}(Request|Entities|Entity|Expect|Note)\*{0,2}\s*:\s*\*{0,2}(.+?)\*{0,2}\s*$/i;
+
+/**
+ * Protocol lines Claude declared, and the text without them. `Request:` /
+ * `Entities:` open the investigation (first occurrence wins); `Entity:` /
+ * `Expect:` / `Note:` lines (any number, anywhere in the turn) feed the
+ * `annotate` record at Stop. None of them ever becomes a step or a conclusion.
+ */
 export function parseProtocolLines(text) {
   let request = null;
   let entities = null;
+  let note = null;
+  const entity = [];
+  const expect = [];
   const rest = [];
   for (const line of String(text ?? '').split('\n')) {
-    const m = /^\s*(?:[-*>]\s*)?\*{0,2}(Request|Entities)\*{0,2}\s*:\s*\*{0,2}(.+?)\*{0,2}\s*$/i.exec(line);
-    if (m && m[1].toLowerCase() === 'request' && request == null) request = m[2].trim();
-    else if (m && m[1].toLowerCase() === 'entities' && entities == null) entities = m[2].trim();
-    else rest.push(line);
+    const m = PROTOCOL_LINE_RE.exec(line);
+    if (!m) { rest.push(line); continue; }
+    const key = m[1].toLowerCase();
+    const value = m[2].trim();
+    if (key === 'request') { if (request == null) request = value; }
+    else if (key === 'entities') { if (entities == null) entities = value; }
+    else if (key === 'entity') entity.push(value);
+    else if (key === 'expect') expect.push(value);
+    else if (note == null) note = value;
   }
-  return { request, entities, rest: rest.join('\n').trim() };
+  return { request, entities, entity, expect, note, rest: rest.join('\n').trim() };
+}
+
+const ENTITY_LINE_RE = /^(\S+)\s+(\S+)\s+as\s+(source|target|related|excluded)(?:\s*=\s*(\S+))?(?:\s*~\s*([^\s:]+):(\S+))?(?:\s*@\s*(functional|logical|physical))?$/i;
+const PHYSICAL_KINDS = new Set(['table', 'field', 'index', 'relation', 'edt', 'enum', 'class', 'method', 'form', 'menu_item', 'view', 'map', 'query']);
+
+/**
+ * One `Entity:` line → an annotate entity, or null when malformed.
+ * Grammar: `<kind> <Name> as <source|target|related|excluded> [= <functional_entity>] [~ <erp>:<Name>] [@ <level>]`.
+ * Level defaults from the kind: `data_entity` → logical, AOT kinds → physical, `functional` → functional.
+ */
+export function parseEntityLine(value) {
+  const m = ENTITY_LINE_RE.exec(String(value ?? '').trim());
+  if (!m) return null;
+  const kind = m[1].toLowerCase();
+  const e = { kind, name: m[2], role: m[3].toLowerCase() };
+  const level = m[7] ? m[7].toLowerCase() : kind === 'data_entity' ? 'logical' : PHYSICAL_KINDS.has(kind) ? 'physical' : kind === 'functional' ? 'functional' : null;
+  if (level) e.level = level;
+  if (m[4]) e.functional_entity = m[4];
+  if (m[5] && m[6]) e.counterpart = { erp: m[5], name: m[6] };
+  return e;
 }
 
 /** First paragraph of a text (≤ `max` chars), for interpretation / step lines. */
