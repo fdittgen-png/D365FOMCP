@@ -21,6 +21,7 @@ import {
   MODEL_VERSIONS_SCHEMA,
 } from '../src/azure/model-descriptors.js';
 import { refreshIsvMetadata } from './isv-scan.js';
+import { findLabelFiles as findAllLabelFiles, labelLines } from './label-files.js';
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -292,45 +293,7 @@ export function normalizeLabelLanguages(raw) {
 }
 const labelLanguages = normalizeLabelLanguages(process.env.KB_LABEL_LANGUAGES);
 
-/**
- * Every `.label.txt` under a package root with its language (the LabelResources
- * sub-folder name as found on disk) and file prefix ('SYS' from 'SYS.en-us.label.txt').
- */
-function findAllLabelFiles(basePath) {
-  const out = [];
-  const walk = (dir, depth, underResources) => {
-    if (depth > 8) return;
-    let entries;
-    try { entries = readdirSync(dir, { withFileTypes: true }); } catch (e) { console.warn('Warning:', e.message); return; }
-    for (const entry of entries) {
-      const p = join(dir, entry.name);
-      if (!isDirEntry(dir, entry)) {
-        if (underResources && entry.name.endsWith('.label.txt')) {
-          out.push({ path: p, language: basename(dir), prefix: entry.name.split('.')[0] });
-        }
-        continue;
-      }
-      if (entry.name === 'bin' || entry.name === 'node_modules' || entry.name === 'XppMetadata') continue;
-      if (underResources || entry.name === 'LabelResources') { walk(p, depth + 1, true); continue; }
-      if (entry.name === 'AxLabelFile' || depth < 3) walk(p, depth + 1, false);
-    }
-  };
-  walk(basePath, 0, false);
-  return out;
-}
-
-/** Parse one label file into [key, value] pairs (comment lines start with ' ;'). */
-function* labelLines(content) {
-  for (const rawLine of content.split('\n')) {
-    const line = rawLine.trimEnd();
-    if (!line || line.startsWith(' ;') || line.startsWith('\t;')) continue;
-    const eqIdx = line.indexOf('=');
-    if (eqIdx < 1) continue;
-    const key = line.substring(0, eqIdx).trim();
-    const value = line.substring(eqIdx + 1);
-    if (key && value) yield [key, value];
-  }
-}
+// Discovery + parser live in build/label-files.js (shared with build-labels.js).
 
 /** Stream label rows for the allow-listed languages straight into `labels`. */
 function writeLabelRows(languages) {
