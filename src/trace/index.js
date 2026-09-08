@@ -12,5 +12,5 @@ export { envelope, callRecord, claudeRecord, sessionKey, hourToken } from './con
 export { validateRecord, traceValidator, traceSchema, SCHEMA_PATH } from './contract/validate.js';
 export { argTypes, argPolicies } from './client/zod-arg-types.js';
 export { traceIdentity } from './client/identity.js';
-export { TraceWriter, fileSink, httpSink, memorySink, nullSink, traceWriter, traceEnabled, resetTraceWriter } from './client/writer.js';
+export { TraceWriter, fileSink, httpSink, memorySink, nullSink, traceWriter, traceEnabled, resetTraceWriter, identityTokenProvider } from './client/writer.js';
 export { withTrace, resultSummary, currentInvestigation, currentInvestigationPath } from './client/with-trace.js';
