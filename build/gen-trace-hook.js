@@ -27,6 +27,7 @@ import { registerTaskRecorderTools } from '../src/azure/taskrecorder-tools.js';
 import { registerIsvKbTools } from '../src/azure/isv-kb-tools.js';
 import { registerCustomFieldTools } from '../src/azure/custom-fields-tools.js';
 import { registerIsvXrefTools } from '../src/azure/isv-xref-tools.js';
+import { registerLabelsTools } from '../src/azure/labels-tools.js';
 import { argPolicies } from '../src/trace/client/zod-arg-types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,7 +54,7 @@ function captureServer() {
 /** `{ tool: { param: policy } }` for every tool of the four D365FO services. */
 export function deriveAllArgPolicies() {
   const server = captureServer();
-  for (const register of [registerKbTools, registerIsvKbTools, registerCustomFieldTools, registerXrefTools, registerIsvXrefTools, registerSecTools]) register(server, stubDb);
+  for (const register of [registerKbTools, registerIsvKbTools, registerCustomFieldTools, registerXrefTools, registerIsvXrefTools, registerSecTools, registerLabelsTools]) register(server, stubDb);
   registerTaskRecorderTools(server);
   const out = {};
   for (const t of server.tools.sort((a, b) => a.name.localeCompare(b.name))) {

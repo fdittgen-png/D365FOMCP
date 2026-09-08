@@ -25,7 +25,7 @@ const REFS = join(PLUGIN, 'skills', 'd365fo-mcp-tooling', 'references');
 
 const APPROVED_EMAIL = 'florian.dittgen@trelleborg.com';
 const APPROVED_REPO_ORG = 'fdittgen-png'; // GitHub org of the public homepage URL
-const EXPECTED_SERVERS = ['d365kb', 'd365xref', 'd365sec', 'd365taskrecorder'];
+const EXPECTED_SERVERS = ['d365kb', 'd365xref', 'd365sec', 'd365labels', 'd365taskrecorder'];
 
 function walk(dir, acc = []) {
   for (const e of readdirSync(dir)) {
@@ -196,7 +196,7 @@ describe('generated tool references', () => {
 
   it('cover every service the tooling skill points at', () => {
     const skill = readFileSync(join(PLUGIN, 'skills', 'd365fo-mcp-tooling', 'SKILL.md'), 'utf8');
-    for (const ref of ['kb-tools.md', 'xref-tools.md', 'sec-tools.md', 'taskrecorder-tools.md', 'wiki-tools.md', 'kb-raw-sql-schema.md', 'response-format.md']) {
+    for (const ref of ['kb-tools.md', 'xref-tools.md', 'sec-tools.md', 'labels-tools.md', 'taskrecorder-tools.md', 'wiki-tools.md', 'kb-raw-sql-schema.md', 'response-format.md']) {
       assert.ok(skill.includes(`references/${ref}`), `SKILL.md does not mention references/${ref}`);
       assert.ok(existsSync(join(REFS, ref)), `${ref} missing`);
     }

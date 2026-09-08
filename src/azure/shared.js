@@ -7,6 +7,7 @@
 
 import { createRequire } from 'module';
 import { z } from 'zod';
+import { existsSync } from 'node:fs';
 // resolve not needed — paths come from env vars or default mount path
 
 const require = createRequire(import.meta.url);
@@ -38,7 +39,7 @@ export const formatTextParam = z
   // Carries ONLY what the enum itself cannot: which value is the default, and
   // when to override it. Everything else the model reads off the value list.
   // test/tool-schema-budget.test.js fails above 4,000 B of duplication.
-  .describe('auto (default) = smallest; markdown when quoting verbatim.');
+  .describe('auto (default) = smallest; markdown to quote verbatim.');
 
 // Standard per-model scope filter. Add `modules: modulesFilterParam` to a
 // search tool's inputSchema to let callers limit the investigation to specific
@@ -97,6 +98,7 @@ export function queryModelVersions(q, moduleId = null) {
 let kbDb;
 let xrefDb;
 let secDb;
+let labelsDb;
 
 function openDb(filePath, mmapSize = 3221225472) {
   const db = new Database(filePath, { readonly: true });
@@ -129,6 +131,26 @@ export function getXrefDb() {
     xrefDb = openDb(dbPath);
   }
   return xrefDb;
+}
+
+/** d365fo_labels.sqlite — the Labels service snapshot (docs/Labels-Service-Concept-2026-09-08.md). */
+export function getLabelsDb() {
+  if (!labelsDb) {
+    const dbPath = process.env.LABELS_DB_PATH || '/home/data/d365fo_labels.sqlite';
+    labelsDb = openDb(dbPath);
+  }
+  return labelsDb;
+}
+
+/**
+ * The XRef handle for the Labels service's where-used tools, or null when the
+ * XRef snapshot is not on this host (a labels-only stdio server): the tools then
+ * say so instead of crashing at registration.
+ */
+export function tryGetXrefDb() {
+  const dbPath = process.env.XREF_DB_PATH || '/home/data/d365fo_xref.sqlite';
+  if (!existsSync(dbPath)) return null;
+  try { return getXrefDb(); } catch { return null; }
 }
 
 export function getSecDb() {
@@ -470,7 +492,7 @@ export function summaryText(typed, markdownText) {
  */
 export function readBuildDate(db) {
   if (!db || typeof db.prepare !== 'function') return null;
-  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata']) {
+  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata', 'labels_metadata']) {
     try {
       const row = db.prepare(`SELECT value FROM ${table} WHERE key = 'build_date'`).get();
       if (row?.value) {
@@ -497,7 +519,7 @@ export function snapshotDate(db) {
   return iso;
 }
 
-const SERVICE_LABELS = Object.freeze({ kb: 'KB', xref: 'XRef', sec: 'Sec' });
+const SERVICE_LABELS = Object.freeze({ kb: 'KB', xref: 'XRef', sec: 'Sec', labels: 'Labels' });
 
 /**
  * The freshness banner of rule #4: `_KB snapshot: 2026-08-14_`. Empty string
@@ -748,7 +770,11 @@ export function coverageNotes(signals = {}) {
   const pb = s.partial_build;
   if (pb) {
     const since = typeof pb === 'object' && pb.since ? String(pb.since).slice(0, 10) : 'the last full build';
-    lines.push(`_KB is a delta-merged snapshot; kb_search may be stale for base tables extended since ${since}._`);
+    if (typeof pb === 'object' && pb.service === 'labels') {
+      lines.push(`_Labels DB is a delta-refreshed snapshot (models re-ingested since ${since}); the weekly full build re-baselines it._`);
+    } else {
+      lines.push(`_KB is a delta-merged snapshot; kb_search may be stale for base tables extended since ${since}._`);
+    }
     keys.partial_build = true;
   }
 

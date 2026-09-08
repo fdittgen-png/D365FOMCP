@@ -9,6 +9,7 @@ app.setup({ enableHttpStream: true });
 import './d365kb.js';
 import './d365xref.js';
 import './d365sec.js';
+import './d365labels.js';
 import './d365sec-upload.js';
 import './d365kb-upload.js';
 import './d365taskrecorder.js';

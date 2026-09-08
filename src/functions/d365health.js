@@ -41,6 +41,7 @@ const META_TABLE = {
   kb: 'kb_metadata',
   xref: 'xref_metadata',
   sec: 'sec_metadata',
+  labels: 'labels_metadata',
 };
 
 /**
@@ -52,6 +53,7 @@ const RECORD_COUNT_KEYS = {
   kb: ['tables', 'records', 'row_count'],
   xref: ['references', 'objects', 'records', 'row_count'],
   sec: ['privileges', 'roles', 'records', 'row_count'],
+  labels: ['label_count', 'records', 'row_count'],
 };
 
 /**

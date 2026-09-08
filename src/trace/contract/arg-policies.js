@@ -182,6 +182,7 @@ const SERVICE_PREFIXES = Object.freeze([
   [/^mcp__(d365xref|claude_ai_D365_xRef|plugin_d365fo-mcp_xref)__/i, 'xref'],
   [/^mcp__(d365sec|claude_ai_D365_Sec|plugin_d365fo-mcp_sec)__/i, 'sec'],
   [/^mcp__(d365taskrecorder|claude_ai_D365_Task_recorder|plugin_d365fo-mcp_taskrecorder)__/i, 'taskrecorder'],
+  [/^mcp__(d365labels|claude_ai_D365_Labels|plugin_d365fo-mcp_labels)__/i, 'labels'],
 ]);
 
 /** `mcp__<server>__<tool>` → { service, tool } for the D365FO services, else null. */

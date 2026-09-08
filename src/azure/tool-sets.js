@@ -32,6 +32,8 @@ import { registerXrefTools } from './xref-tools.js';
 import { registerIsvXrefTools } from './isv-xref-tools.js';
 import { registerSecTools } from './sec-tools.js';
 import { registerTaskRecorderTools } from './taskrecorder-tools.js';
+import { registerLabelsTools } from './labels-tools.js';
+import { tryGetXrefDb } from './shared.js';
 import { toolInProfile } from './tool-guards.js';
 import { getRequestContext } from './request-context.js';
 import { withFreshnessBanner } from './shared.js';
@@ -73,11 +75,17 @@ function registerSemanticKbTools(server, kbDb) {
   registerSemanticTools(server, lazySemanticDb(), kbDb ?? null);
 }
 
-/** @type {Readonly<Record<'kb'|'xref'|'sec'|'taskrecorder', ReadonlyArray<(server: any, db?: any) => void>>>} */
+/** Labels set: the where-used tools read the XRef snapshot when this host has it. */
+function registerLabelsSet(server, labelsDb) {
+  registerLabelsTools(server, labelsDb, { xrefDb: tryGetXrefDb() });
+}
+
+/** @type {Readonly<Record<'kb'|'xref'|'sec'|'labels'|'taskrecorder', ReadonlyArray<(server: any, db?: any) => void>>>} */
 export const TOOL_SETS = Object.freeze({
   kb: Object.freeze([registerKbTools, registerIsvKbTools, registerCustomFieldTools, registerSemanticKbTools]),
   xref: Object.freeze([registerXrefTools, registerIsvXrefTools]),
   sec: Object.freeze([registerSecTools]),
+  labels: Object.freeze([registerLabelsSet]),
   // Task Recorder tools take no database; the extra argument is ignored.
   taskrecorder: Object.freeze([registerTaskRecorderTools]),
 });
@@ -167,7 +175,7 @@ function withStructuredPolicy(handler) {
 
 // Words that are acronyms in this domain and read wrong in sentence case.
 const TITLE_ACRONYMS = Object.freeze({ isv: 'ISV', sql: 'SQL', id: 'ID', xref: 'XRef', kb: 'KB', il: 'IL' });
-const TITLE_PREFIXES = new Set(['d365', 'xref', 'sec', 'taskrecorder', 'wiki']);
+const TITLE_PREFIXES = new Set(['d365', 'xref', 'sec', 'labels', 'taskrecorder', 'wiki']);
 
 /**
  * Human display name from a tool name: `d365_lookup_table` → "Lookup table",
@@ -312,4 +320,5 @@ export function registerServiceTools(service, server, db) {
 export const registerAllKbTools = (server, db) => registerServiceTools('kb', server, db);
 export const registerAllXrefTools = (server, db) => registerServiceTools('xref', server, db);
 export const registerAllSecTools = (server, db) => registerServiceTools('sec', server, db);
+export const registerAllLabelsTools = (server, db) => registerServiceTools('labels', server, db);
 export const registerAllTaskRecorderTools = (server) => registerServiceTools('taskrecorder', server);

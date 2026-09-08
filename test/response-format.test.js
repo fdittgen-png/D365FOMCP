@@ -33,6 +33,7 @@ const TOOL_FILES = [
   // from their own modules; they answer to the same contract as everything else.
   'isv-kb-tools.js',
   'isv-xref-tools.js',
+  'labels-tools.js',
   // Live custom-field tool (issue #90). Same contract as everything else, with
   // one sanctioned exception: it declares READ_ONLY_LIVE_ANNOTATIONS instead of
   // READ_ONLY_DB_ANNOTATIONS — see the PM-03 test below.

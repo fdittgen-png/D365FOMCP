@@ -70,7 +70,7 @@ export function toolGuideText() {
 
 function metaValue(db, key) {
   if (!db || typeof db.prepare !== 'function') return null;
-  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata']) {
+  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata', 'labels_metadata']) {
     try {
       const row = db.prepare(`SELECT value FROM ${table} WHERE key = ?`).get(key);
       if (row?.value != null) return String(row.value);

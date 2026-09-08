@@ -2132,3 +2132,64 @@ export const d365DqRulesOutput = z.object({
   truncated: z.boolean(),
   note: z.string().describe('Rules are served, never executed here; render with build/gen-dq-sql.js.'),
 });
+
+// ── Labels service (src/azure/labels-tools.js, docs/Labels-Service-Concept-2026-09-08.md) ──
+const labelsCoverage = coverage('partial_build');
+export const labelsMetaRowSchema = z.object({
+  label_id: z.string(),
+  label_file: z.string(),
+  module: z.string(),
+  origin: z.string(),
+  // Explicit null (rule #14): on every row so the TOON table shape holds.
+  description: z.string().nullable(),
+});
+export const labelsTextRowSchema = z.object({ label_id: z.string(), language: z.string(), text: z.string() });
+export const labelsLookupOutput = z.object({
+  ...labelsCoverage,
+  requested_count: z.number(),
+  found_count: z.number(),
+  not_found: z.array(z.string()),
+  languages_present: z.array(z.string()),
+  meta: z.array(labelsMetaRowSchema),
+  labels: z.array(labelsTextRowSchema),
+  languages_missing: z.array(z.object({ label_id: z.string(), languages: z.array(z.string()) })).optional(),
+});
+export const labelsSearchOutput = z.object({
+  ...labelsCoverage,
+  query: z.string(),
+  language: z.string().nullable(),
+  result_count: z.number(),
+  results: z.array(z.object({
+    label_id: z.string(), language: z.string(), text: z.string(), label_file: z.string(), module: z.string(), description: z.string().nullable(),
+  })),
+  ...pageShapeOptional,
+});
+export const labelsUsageRowSchema = z.object({
+  object_type: z.string().nullable(),
+  object_name: z.string().nullable(),
+  element: z.string().nullable(),
+  property: z.string().nullable(),
+  kind: z.string(),
+});
+export const labelsWhereUsedOutput = z.object({
+  ...labelsCoverage,
+  label_id: z.string(),
+  text: z.string().nullable(),
+  description: z.string().nullable(),
+  total_count: z.number(),
+  property_counts: z.array(z.object({ property: z.string(), count: z.number() })),
+  usages: z.array(labelsUsageRowSchema),
+  ...pageShapeOptional,
+});
+export const labelsForObjectOutput = z.object({
+  ...labelsCoverage,
+  object_type: z.string(),
+  object_name: z.string(),
+  languages: z.array(z.string()),
+  label_count: z.number(),
+  truncated: z.boolean().optional(),
+  labels: z.array(z.object({
+    element: z.string().nullable(), property: z.string(), label_id: z.string(), language: z.string(),
+    text: z.string().nullable(), description: z.string().nullable(),
+  })),
+});

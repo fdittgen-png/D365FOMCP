@@ -115,8 +115,8 @@ describe('resources — over the wire, registered by registerServiceTools', () =
       assert.equal((md.match(/^\d+\. \*\*/gm) ?? []).length, 14, 'the 14 workflow recipes');
       assert.doesNotMatch(md, /C:\\Users|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/, 'no personal paths or e-mails');
       // Every tool the guide names exists on some service.
-      const known = new Set(['kb', 'xref', 'sec', 'taskrecorder'].flatMap(s => serviceToolNames(s, kbDb())));
-      const named = [...new Set(md.match(/\b(?:d365|xref|sec|taskrecorder)_[a-z0-9_]+/g) ?? [])];
+      const known = new Set(['kb', 'xref', 'sec', 'labels', 'taskrecorder'].flatMap(s => serviceToolNames(s, kbDb())));
+      const named = [...new Set(md.match(/\b(?:d365|xref|sec|labels|taskrecorder)_[a-z0-9_]+/g) ?? [])];
       assert.deepEqual(named.filter(n => !known.has(n)), [], 'tool guide names only registered tools');
 
       const snap = await client.readResource({ uri: RESOURCE_URIS.snapshot });
