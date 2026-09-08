@@ -241,8 +241,8 @@ Every expectation the two TDDs (`ERP-Trace-Module-TDD.md` v1.3, `ERP-Trace-Captu
 | E08 | One contract `trace-record.v1.schema.json`, two streams, envelope with `id` (ULID), `contract_version`, `erp`, `mcp`, `session_key`, `seq`, `source`; Zod mirror; `sanitize()` is the only producer of a record any writer accepts | Capture §5, WI-01 | **met** | `SANITIZED` brand symbol; static scan `test/trace-contract.test.js` |
 | E09 | Never the tool response; never the user's raw prompt | Capture §1, §6 | **deviated (approved)** | response: never. Prompt: fallback chain `declared` → `interpretation` → `user_prompt` (masked, withheld on party data) — Florian allowed the raw-prompt fallback on 2026-09-07; `allow_prompt_fallback` defaults `true` |
 | E10 | Privacy denylist: person-like keys, forbidden sample/value keys, party data in prose, URL query strings; digit runs ≥ 7 in prose **masked**, not rejected (Module §13.7, decided) | Capture §6 | **met** | `privacy.js` regexes copied from `semantic-store.js`, parity-tested; `maskDigitRuns` |
-| E11 | Server re-validates (schema + denylist) and dead-letters with only `{id, ts, reason, field, source_app_id, sha256}` | Capture §7.3 | **open** | this concept, Part A §4 |
-| E12 | Contract copies in other packages are generated and hash-checked, never hand-edited | Capture WI-11 KO, impl note §5 | **partly** | hook `lib/` generated + `test/trace-generated.test.js`; ingest copy not yet (Part A §6) |
+| E11 | Server re-validates (schema + denylist) and dead-letters with only `{id, ts, reason, field, source_app_id, sha256}` | Capture §7.3 | **met (2026-09-08)** | `src/ingest/core.js`; plus a term scan of `tool.args` the client never had |
+| E12 | Contract copies in other packages are generated and hash-checked, never hand-edited | Capture WI-11 KO, impl note §5 | **met (2026-09-08)** | hook `lib/` and the ingest `src/contract/` (+ `CONTRACT.sha256`), both generated, both drift-tested |
 | E13 | Versioning: minor additive; major = new schema file | Capture §5.4 | **met** | `CONTRACT_VERSION = '1.0.0'` |
 
 ### B3. Correlation
@@ -272,12 +272,12 @@ Every expectation the two TDDs (`ERP-Trace-Module-TDD.md` v1.3, `ERP-Trace-Captu
 
 | # | Expectation | Source | Status | Evidence / note |
 |---|---|---|---|---|
-| E27 | Sinks: `file` (stdio), `queue` (Azure MCP apps), `http` (bridge/push), `memory`/`null`; writer bounded ring 500, batch ≤ 100, 3 s timeout, retry once on 5xx/429, never on 4xx, never awaited | Capture §7.1–7.2, WI-04/05 | **partly** | `file`, `http`, `memory`, `null` shipped; **`queue` not built** (and no longer needed: the http sink with MI bearer covers the Azure apps in Part A phase 3 — propose to drop `queue`) |
+| E27 | Sinks: `file` (stdio), `queue` (Azure MCP apps), `http` (bridge/push), `memory`/`null`; writer bounded ring 500, batch ≤ 100, 3 s timeout, retry once on 5xx/429, never on 4xx, never awaited | Capture §7.1–7.2, WI-04/05 | **deviated (2026-09-08)** | `file`, `http` (function key and/or managed-identity bearer via `identityTokenProvider`), `memory`, `null`; **`queue` dropped** — the http sink with a bearer covers the Azure apps |
 | E28 | Azure MCP apps trace to the sink | Capture §7.2 | **open, deliberate** | `MCP_TRACE` unset on `tis-d-mcpd365fo-func` until a consumer exists (Part A phase 3) |
-| E29 | Ingest Function App validates, upserts (into the store of E31) with `month`/`_ingested_at`/`_ingest_version`/`source_app_id`, dead-letters, 200/207/400/413, Easy Auth + `appid` allow-list, **503 fail-closed** | Capture §7.3, WI-11 | **open** | stub returns 202 and stores nothing — **this concept** |
+| E29 | Ingest Function App validates, upserts (into the store of E31) with `month`/`_ingested_at`/`_ingest_version`/`source_app_id`, dead-letters, 200/207/400/413, Easy Auth + `appid` allow-list, **503 fail-closed** | Capture §7.3, WI-11 | **met (2026-09-08)** | ClaudeTrace v0.2.0: validate → archive → index → dead-letter, 200/207/400/413/500; bearer auth in code (`auth.js`, jose instead of Easy Auth) with `appid` allow-list and 503 fail-closed — cut-over waits for the Entra app registration (phase 3) |
 | E30 | App named `tis-d-mcptrace-func`, routes self-prefixed `api/` | Capture §7.3 | **deviated** | app is `tis-d-claudetrace-func` (created 2026-09-04 before the TDD name), `routePrefix ''` with routes `trace/ingest`, `health` — no `api/`. Hook config `ingest_route: /trace/ingest`. Keep; update the TDD |
 | E31 | Cosmos serverless, `disableLocalAuth`, hierarchical PK `/erp/system`,`/month`, no TTL on `traces`, 30 d on `deadletter`, §7.4 indexing, RBAC only, €10 alert | Capture §7.4, WI-12 | **deviated (2026-09-08)** | replaced by blob landing + Table Storage indexes in the existing account (Part A §3, decision 1); what survives: no TTL on the archive, 30 d on dead letters, no key material beyond the runtime's own connection, a cost alert (€5) |
-| E32 | `Push-LocalTraces.ps1` uploads the stdio file sinks | Capture §7.2, WI-13 | **open** | Part A §5, phase 1; until then `~/.claude/mcp-trace/*.ndjson` is the only copy of server-side records |
+| E32 | `Push-LocalTraces.ps1` uploads the stdio file sinks | Capture §7.2, WI-13 | **met (2026-09-08)** | `scripts/Push-LocalTraces.ps1`, first run backfilled 15 records |
 | E33 | Loss on scale-in counted, not hidden | Module §8 | **met (client)** | writer `stats.failed`; no server-side counter until E29 |
 
 ### B6. Cost and footprint
@@ -287,26 +287,24 @@ Every expectation the two TDDs (`ERP-Trace-Module-TDD.md` v1.3, `ERP-Trace-Captu
 | E34 | `MCP_TRACE=off` → no wrapper, no tool, no injected parameter, `tools/list` byte-identical | Capture §7.1 | **met** | budget test unchanged (155,766 B baseline holds) |
 | E35 | `tools/list` growth from tracing ≤ +5 % per server, else inject on `CORE_TOOLS` only | Module §13.3 | **met trivially** | +0 today because E15/E23 are not shipped; the check is encoded for when they are |
 | E36 | Call record ≈ 0.5–2 KB regardless of response size | Module §8 | **met** | 569 B server record, ~1.1 KB hook records |
-| E37 | Protocol note ≈ 90 tokens per prompt | decision 2026-09-07 | **met** | two identical notes are printed per prompt while both the settings.json entries and the plugin `hooks.json` are registered — the overlap costs ~90 tokens per prompt until the plugin update lands and the five settings entries are removed |
+| E37 | Protocol note ≈ 90 tokens per prompt | decision 2026-09-07 | **met** | plugin 1.5.0 installed and the five repo-path `settings.json` entries removed on 2026-09-08 — one note per prompt again (≈ 120 tokens now, the annotate sentence included) |
 | E38 | Whole sink ≪ €1/day | Capture §7.4 | **expected** | Part A §3/§7 estimate ≈ €0.3/month at the upper bound + shared plan |
 
 ### B7. Distribution and operations
 
 | # | Expectation | Source | Status | Evidence / note |
 |---|---|---|---|---|
-| E39 | Plugin is the distribution unit; a user without it traces nothing locally | Module §13.9 | **met** | plugin 1.4.1 ships `hooks.json`; installed cache on this machine still 1.0.0 → the repo-path entries in `~/.claude/settings.json` bridge it |
+| E39 | Plugin is the distribution unit; a user without it traces nothing locally | Module §13.9 | **met** | plugin 1.5.0 installed via `claude plugin update` on 2026-09-08; hooks come from the plugin cache, no settings.json bridge |
 | E40 | Off switch: `enabled: false` in `~/.claude/claude-trace.config.json` | impl note §6 | **met** | |
 | E41 | Config keys `transport`, `ingest_route`, `instruct`, `allow_prompt_fallback`, `erp` in the config file | impl note §6 | **deviated (harmless)** | the file on disk holds only `url`/`key`/`timeoutMs`/`enabled`; the hook's defaults supply the rest (`both` when `url` is set). Either add them explicitly or correct the note |
 | E42 | Deploy verified by ping + the host's function count, never by 401s; `src/trace` in both staging lists | lesson 2026-09-07 | **met** | `test/deploy-staging.test.js`; PRs #135/#136 |
-| E43 | ClaudeTrace repo under version control with a remote | — | **partly** | 3 local commits, **no remote** |
+| E43 | ClaudeTrace repo under version control with a remote | — | **met (2026-09-08)** | private `github.com/fdittgen-png/ClaudeTrace`, default branch `main` |
 | E44 | One conformance kit for the next emitter (M3 bridge) | Capture WI-14 | **open** | Part A §9's shared corpus is its seed |
 | E45 | v0.1 hooks (`trace-request.cjs`, `trace-result.cjs` — raw prompt and result text to the stub) retired at the 2026-09-07 cutover | impl note §6 | **met (fixed 2026-09-08)** | the two `settings.json` registrations were still in place on 2026-09-08 morning and were removed then; the files and routes go in phase 1 |
 
 ### B8. Reading the register
 
-- 45 expectations: 25 met · 7 partly · 7 open · 5 deviated · 1 expected (cost, E38). Four deviations are approved or
+- 45 expectations (status 2026-09-08 evening): 30 met · 4 partly · 4 open · 6 deviated · 1 expected (cost, E38). Four deviations are approved or
   harmless; the fifth (E31, no Cosmos) is Part A decision 1 and awaits Florian's confirmation.
-- The **open** items cluster in one place: everything server-side of `POST /trace/ingest` (E11, E29, E32) plus the
-  three deliberately deferred correlation/coverage items (E15, E23, E28). Part A is the plan for the first cluster; the
-  second waits for a connector-trace consumer.
+- The **open** items are the deliberately deferred ones: E15 (`investigation_id` parameter injection), E23 (`trace_investigation` tool for claude.ai), E28 (tracing on the Azure MCP apps — code and settings ready, waits for the Entra app registration), E44 (conformance kit).
 - E22 (annotate emitter) is closed; E20 turned out to be a transcript-persistence limit of Claude Code, not a hook defect, and is handled by protocol wording.
