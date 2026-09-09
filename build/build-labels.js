@@ -219,9 +219,9 @@ async function ingestIsvLabels(db, isvRoots, meta, stats, log, warn) {
 /* ── full build ───────────────────────────────────────────────────────────── */
 
 /**
- * @param {object} opts
- * @param {string}   opts.outputPath
- * @param {string[]} opts.packagesPaths  metadata roots (Microsoft + custom)
+ * @param {object} [opts]
+ * @param {string}   [opts.outputPath]     required at runtime (throws when absent)
+ * @param {string[]} [opts.packagesPaths]  metadata roots (Microsoft + custom); throws when none exists
  * @param {string[]} [opts.isvRoots]     sealed-ISV roots (ISV_SCAN_PATHS); [] = skip
  * @param {string[]|'all'} [opts.languages]
  * @param {(m:string)=>void} [opts.log]
@@ -273,10 +273,11 @@ export async function buildLabelsDb({ outputPath, packagesPaths, isvRoots = [], 
   set.run('duplicate_keys', String(stats.duplicate_keys));
   set.run('model_versions_count', String(descriptors.length));
   writeCounts(db);
+  /** @type {{labels:number, meta:number, languages:number, files:number, disagreements:number, isv_labels:number, seconds?:number, mb?:number, outputPath?:string}} */
   const summary = {
-    labels: db.prepare('SELECT COUNT(*) n FROM labels').get().n,
+    labels: /** @type {any} */ (db.prepare('SELECT COUNT(*) n FROM labels').get()).n,
     meta: meta.size,
-    languages: db.prepare('SELECT COUNT(*) n FROM label_languages').get().n,
+    languages: /** @type {any} */ (db.prepare('SELECT COUNT(*) n FROM label_languages').get()).n,
     files: stats.files,
     disagreements: stats.description_disagreements,
     isv_labels: stats.isv_labels,
@@ -300,6 +301,12 @@ export async function buildLabelsDb({ outputPath, packagesPaths, isvRoots = [], 
  * deleted (labels + meta + files) and the module's current files re-ingested,
  * in one transaction per module. The FTS follows through the triggers.
  * Stamps `partial_build` — the weekly full build clears it.
+ * @param {object} [opts]
+ * @param {string} [opts.dbPath]
+ * @param {string[]} [opts.modules]        model folder names; required at runtime (throws when absent)
+ * @param {string[]} [opts.packagesPaths]  metadata roots; throws when none exists
+ * @param {(m:string)=>void} [opts.log]
+ * @param {(m:string)=>void} [opts.warn]
  */
 export async function refreshLabelsModules({ dbPath = DEFAULT_LABELS_DB(), modules, packagesPaths, log = console.log, warn = (m) => console.warn('Warning:', m) } = {}) {
   if (!modules || !modules.length) throw new Error('No models named.');
@@ -311,7 +318,7 @@ export async function refreshLabelsModules({ dbPath = DEFAULT_LABELS_DB(), modul
   db.pragma('journal_mode = WAL');
   try {
     db.exec(LABELS_FINALIZE); // idempotent — a DB built before a trigger existed gets it now
-    const langRaw = db.prepare("SELECT value FROM labels_metadata WHERE key = 'languages'").get()?.value ?? 'all';
+    const langRaw = /** @type {any} */ (db.prepare("SELECT value FROM labels_metadata WHERE key = 'languages'").get())?.value ?? 'all';
     const keep = languageFilter(parseLanguages(langRaw));
     const descriptors = readModelDescriptors(roots, warn);
     insertModelVersions((sql, params) => db.prepare(sql).run(params), descriptors.filter(d => modules.some(m => m.toLowerCase() === String(d.model_name).toLowerCase())));
@@ -336,7 +343,7 @@ export async function refreshLabelsModules({ dbPath = DEFAULT_LABELS_DB(), modul
     }
     refreshLanguageInventory(db);
     writeCounts(db, { partial_build: new Date().toISOString(), last_delta_models: done.join(',') });
-    return { modules: done, labels: stats.labels, meta: db.prepare('SELECT COUNT(*) n FROM label_meta').get().n, dbPath };
+    return { modules: done, labels: stats.labels, meta: /** @type {any} */ (db.prepare('SELECT COUNT(*) n FROM label_meta').get()).n, dbPath };
   } finally {
     try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
     db.close();
@@ -349,6 +356,10 @@ export async function refreshLabelsModules({ dbPath = DEFAULT_LABELS_DB(), modul
  * Called last by `npm run build:kb` (CLI path only — never from the per-model
  * delta's scoped build). Non-fatal: a labels failure must not fail the KB.
  * `LABELS_SCAN=off` skips; `LABELS_DB_PATH`, `LABELS_LANGUAGES` configure.
+ * @param {object} [opts]
+ * @param {string[]} [opts.packagesPaths]  metadata roots the KB build just scanned
+ * @param {string[]} [opts.isvRoots]       sealed-ISV roots (ISV_SCAN_PATHS)
+ * @param {(m:string)=>void} [opts.log]
  */
 export async function refreshLabelsAfterKb({ packagesPaths, isvRoots, log = console.log } = {}) {
   if (String(process.env.LABELS_SCAN ?? '').toLowerCase() === 'off') {

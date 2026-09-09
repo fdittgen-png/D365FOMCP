@@ -136,10 +136,10 @@ function validateKbDatabase(filePath) {
     // through unchanged.
     let buildDate, tableCount, meta;
     try {
-      buildDate = probe.prepare("SELECT value FROM kb_metadata WHERE key = 'build_date'").get();
-      tableCount = probe.prepare('SELECT COUNT(*) AS n FROM tables').get().n;
-      meta = {};
-      for (const r of probe.prepare("SELECT key, value FROM kb_metadata").all()) meta[r.key] = r.value;
+      buildDate = /** @type {{ value?: string } | undefined} */ (probe.prepare("SELECT value FROM kb_metadata WHERE key = 'build_date'").get());
+      tableCount = /** @type {{ n: number }} */ (probe.prepare('SELECT COUNT(*) AS n FROM tables').get()).n;
+      meta = /** @type {Record<string, string>} */ ({});
+      for (const r of /** @type {{ key: string, value: string }[]} */ (probe.prepare("SELECT key, value FROM kb_metadata").all())) meta[r.key] = r.value;
     } catch (e) {
       throw new Error(`Not a valid KB database (missing expected schema): ${e.message}`);
     }
@@ -195,7 +195,7 @@ async function runSwapAsync(jobId, context) {
       const { createWriteStream } = await import('fs');
       const ws = createWriteStream(dlPath);
       for await (const chunk of resp.body) ws.write(chunk);
-      await new Promise((res, rej) => { ws.end(); ws.on('finish', res); ws.on('error', rej); });
+      await /** @type {Promise<void>} */ (new Promise((res, rej) => { ws.end(); ws.on('finish', res); ws.on('error', rej); }));
     } else if (job.blobName) {
       updateJob(jobId, { status: 'downloading', progress: 'Downloading KB database from blob storage...' });
       await downloadBlobToFile(job.blobName, dlPath);
@@ -245,7 +245,7 @@ async function runRebuildAsync(jobId, context) {
       const { createWriteStream } = await import('fs');
       const ws = createWriteStream(zipPath);
       for await (const chunk of resp.body) ws.write(chunk);
-      await new Promise((res, rej) => { ws.end(); ws.on('finish', res); ws.on('error', rej); });
+      await /** @type {Promise<void>} */ (new Promise((res, rej) => { ws.end(); ws.on('finish', res); ws.on('error', rej); }));
     } else if (job.blobName) {
       updateJob(jobId, { status: 'downloading', progress: 'Downloading customizations ZIP from blob storage...' });
       await downloadBlobToFile(job.blobName, zipPath);
@@ -341,7 +341,7 @@ app.http('d365kb-upload-apply', {
     if (denial) return denial;
 
     try {
-      const body = await request.json();
+      const body = /** @type {{ job_id?: string, source_url?: string }} */ (await request.json());
       let job;
       if (body.job_id) {
         job = getJob(body.job_id);
@@ -388,7 +388,7 @@ app.http('d365kb-upload-rebuild', {
     if (denial) return denial;
 
     try {
-      const body = await request.json();
+      const body = /** @type {{ job_id?: string, source_url?: string }} */ (await request.json());
       let job;
       if (body.job_id) {
         job = getJob(body.job_id);

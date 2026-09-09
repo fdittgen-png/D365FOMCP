@@ -53,6 +53,12 @@
 import { XMLBuilder } from 'fast-xml-parser';
 
 /**
+ * The ticket shape `otrs-extract-core.js#toExtractedTicket` produces. The typedef
+ * lives here because this file defines the XML schema that shape maps into.
+ * @typedef {ReturnType<typeof import('./otrs-extract-core.js').toExtractedTicket>} ExtractedTicket
+ */
+
+/**
  * @param {Array<ExtractedTicket>} tickets
  * @param {object} [opts]
  * @param {string} [opts.mode='incremental']

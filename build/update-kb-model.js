@@ -59,6 +59,15 @@ export function scopeRoot(modelStoreFolder, models, logger = log) {
   }
 }
 
+/**
+ * @param {object} [opts]
+ * @param {string[]} [opts.models]           model folder names under the model store
+ * @param {string} [opts.modelStoreFolder]   active XPP ModelStoreFolder
+ * @param {string} [opts.kbDbPath]
+ * @param {boolean} [opts.isv]               also refresh the sealed-ISV tables
+ * @param {string[]|null} [opts.isvRoots]
+ * @param {(msg:string)=>void} [opts.logger]
+ */
 export async function updateKbForModels({
   models,
   modelStoreFolder,
@@ -142,8 +151,8 @@ if (isMain) {
 
   updateKbForModels({
     models,
-    modelStoreFolder: flag('model-store') || process.env.KB_MODEL_STORE || '',
-    kbDbPath: flag('kb') || process.env.KB_DB_PATH || DEFAULT_KB(),
+    modelStoreFolder: /** @type {string} */ (flag('model-store') || process.env.KB_MODEL_STORE || ''),
+    kbDbPath: /** @type {string} */ (flag('kb') || process.env.KB_DB_PATH || DEFAULT_KB()),
     isv: flag('isv') === true,
   })
     .then((s) => {

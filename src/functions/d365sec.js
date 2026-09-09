@@ -68,6 +68,7 @@ app.http('d365sec', {
           options = { parsedBody };
         }
 
+        // @ts-expect-error SDK types this as a Fetch Request; Azure Functions v4 HttpRequest lacks cache/credentials/destination/... but the transport only reads method/url/headers/body
         const response = await transport.handleRequest(request, options);
 
         if (!response || !(response instanceof Response)) {

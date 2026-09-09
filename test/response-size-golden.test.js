@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
+import { runWithRequestContext } from '../src/azure/request-context.js';
 
 import { registerKbTools } from '../src/azure/kb-tools.js';
 import { registerXrefTools } from '../src/azure/xref-tools.js';
@@ -289,7 +290,7 @@ function captureTools(register, db) {
  *  present-but-null must be `.nullable()` — getting that wrong is a runtime
  *  -32602 on every call, and the size gate is the one place every shaped
  *  default response passes through. */
-async function callDefault(handlers, name, args) {
+async function callDefault(handlers, name, args, { keepText = false } = {}) {
   const tool = handlers[name];
   assert.ok(tool, `tool "${name}" not registered`);
   const validated = z.object(tool.schema).parse(args);
@@ -303,6 +304,7 @@ async function callDefault(handlers, name, args) {
   return {
     json: JSON.stringify(result.structuredContent).length,
     text: result.content[0].text.length,
+    ...(keepText ? { textRaw: result.content[0].text } : {}),
   };
 }
 
@@ -409,4 +411,36 @@ test('batching (#83): a batch call is never larger than the N single calls it re
   }
   for (const db of Object.values(dbs)) db.close();
   console.log(`\nbatch vs N singles (synthetic fixture, default args):\n${rows.join('\n')}\n`);
+});
+
+// ── W4 text-channel policy (#108) ───────────────────────────────────────────
+// Decision recorded 2026-09-09 (CLAUDE.md rule #5): a client measured to bill
+// only `structuredContent` (the claude.ai connector) is served `text=summary`.
+// The acceptance box of #108 is that the summary channel stays tiny on the
+// ten §3.1 calls — the H2 line, the freshness banner, coverage lines and one
+// `_Payload in structuredContent …_` line — while the JSON is byte-identical.
+test('text-channel summary (#108): ≤ 300 B of text per §3.1 call, structuredContent unchanged', async () => {
+  const dbs = { kb: buildKb(), xref: buildXref(), sec: buildSec() };
+  const handlers = {
+    kb: captureTools(registerKbTools, dbs.kb),
+    xref: captureTools(registerXrefTools, dbs.xref),
+    sec: captureTools(registerSecTools, dbs.sec),
+  };
+  const rows = [];
+  for (const [svc, name, args] of CALLS) {
+    const full = await callDefault(handlers[svc], name, args);
+    const summary = await runWithRequestContext({ profile: 'full', textChannel: 'summary', structured: 'full' },
+      () => callDefault(handlers[svc], name, args, { keepText: true }));
+    // Coverage lines (#116) ride along on purpose — they are what the summary
+    // exists to keep — so the 300 B bound is on the envelope without them.
+    const envelope = summary.textRaw.split('\n').filter(l => !(l.startsWith('_') && !l.startsWith('_Payload in structuredContent'))).join('\n');
+    const envelopeBytes = Buffer.byteLength(envelope);
+    rows.push(`  ${name.padEnd(26)} text ${String(full.text).padStart(7)} -> ${String(summary.text).padStart(4)} B (envelope ${String(envelopeBytes).padStart(3)} B)   json ${String(summary.json).padStart(7)}`);
+    assert.equal(summary.json, full.json, `${name}: structuredContent must not change with the text channel`);
+    assert.ok(envelopeBytes <= 300, `${name}: summary envelope is ${envelopeBytes} B (> 300)`);
+    assert.match(summary.textRaw, /^## /, 'rule #3: the summary still opens with the H2');
+    assert.match(summary.textRaw, /_Payload in structuredContent \(\d+ keys, \d+ bytes\)\._$/);
+  }
+  for (const db of Object.values(dbs)) db.close();
+  console.log(`\ntext=summary (synthetic fixture, default args):\n${rows.join('\n')}\n`);
 });

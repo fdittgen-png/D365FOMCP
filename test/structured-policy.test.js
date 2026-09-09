@@ -11,19 +11,22 @@
  * attached, so the compact text, banner included, is what arrives.
  * Default 'full' is byte-identical to the previous behaviour.
  */
-import { describe, it, after } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { z } from 'zod';
 
 import { withRegistrationPolicy } from '../src/azure/tool-sets.js';
 import { runWithRequestContext } from '../src/azure/request-context.js';
-import { structuredResult, emptyResult, READ_ONLY_DB_ANNOTATIONS } from '../src/azure/shared.js';
+import { structuredResult, emptyResult, READ_ONLY_DB_ANNOTATIONS, setFreshnessClock } from '../src/azure/shared.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 const dbs = [];
 after(() => { for (const d of dbs) { try { d.close(); } catch { /* closed */ } } });
+// #86 item 2: pin "today" to the fixture's build day so the banner has no age qualifier.
+before(() => setFreshnessClock(() => new Date('2026-08-14T12:00:00Z')));
+after(() => setFreshnessClock(null));
 function kbDb() {
   const db = new Database(':memory:'); dbs.push(db);
   db.exec("CREATE TABLE kb_metadata (key TEXT PRIMARY KEY, value TEXT)");

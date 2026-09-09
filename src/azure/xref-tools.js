@@ -21,6 +21,8 @@ import {
   modulesFilterParam,
   sanitizeModulesFilter,
   queryModelVersions,
+  latestIndexedAt,
+  hasIndexedAt,
   validateLikePattern,
   patternErrorResult,
   customLayerNote,
@@ -1179,7 +1181,8 @@ export function registerXrefTools(server, db, opts = {}) {
       // Build provenance per package: a package can hold several models,
       // so distinct values are joined with ', '.
       const byModule = new Map();
-      for (const v of queryModelVersions(q)) {
+      const allVersions = queryModelVersions(q);
+      for (const v of allVersions) {
         const key = (v.module_id ?? '').toLowerCase();
         if (!byModule.has(key)) byModule.set(key, []);
         byModule.get(key).push(v);
@@ -1190,6 +1193,13 @@ export function registerXrefTools(server, db, opts = {}) {
         )];
         return vals.length ? vals.join(', ') : null;
       };
+      // #86 item 4 / #129: the per-module delta stamps indexed_at on the models
+      // it refreshed, so this is where "how fresh is iExtension" is answered.
+      // Key on every row or on none — rule #14.
+      const withIndexedAt = hasIndexedAt(allVersions);
+      const indexedAt = (moduleName) => (withIndexedAt
+        ? { indexed_at: latestIndexedAt(byModule.get(String(moduleName).toLowerCase()) || []) }
+        : {});
 
       // A package matches when ANY of its models does - filtering the joined
       // provenance string would drop mixed-origin packages.
@@ -1214,6 +1224,7 @@ export function registerXrefTools(server, db, opts = {}) {
           origin: provenance(r.module, 'origin'),
           publisher: provenance(r.module, 'publisher'),
           layer: provenance(r.module, 'layer'),
+          ...indexedAt(r.module),
         })),
       };
       const filterDesc = [

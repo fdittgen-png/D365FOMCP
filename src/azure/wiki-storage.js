@@ -264,8 +264,12 @@ function splitFrontmatter(text) {
  *
  * Any line we can't parse is skipped rather than erroring — the wiki
  * author should use a real YAML tool for anything more exotic.
+ *
+ * @returns {Record<string, any>} values are the mixed scalars `parseScalar` yields
+ *   (string | number | boolean | string[] | null); consumers narrow per key.
  */
 export function parseFrontmatter(text) {
+  /** @type {Record<string, any>} */
   const out = {};
   if (!text) return out;
   for (const raw of text.split(/\r?\n/)) {
@@ -329,6 +333,7 @@ function isNotFound(err) {
  * @property {(opts?:{limit?:number}) => Promise<WikiPageListing[]>} listPages
  * @property {() => Promise<WikiPage[]>} loadAllPages
  * @property {() => Promise<string>} freshnessBanner
+ * @property {(blobName:string) => Promise<{content:string,lastModified:string|null,contentLength:number}|null>} _downloadText  exported for tests only
  *
  * @typedef {object} WikiPage
  * @property {string} slug

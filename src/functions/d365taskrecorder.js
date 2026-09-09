@@ -111,6 +111,7 @@ app.http('d365taskrecorder', {
           options = { parsedBody };
         }
 
+        // @ts-expect-error SDK types this as a Fetch Request; Azure Functions v4 HttpRequest lacks cache/credentials/destination/... but the transport only reads method/url/headers/body
         const response = await transport.handleRequest(request, options);
 
         if (!response || !(response instanceof Response)) {
@@ -157,7 +158,7 @@ app.http('d365taskrecorder-upload', {
       if (sizeRejection) return sizeRejection;
 
       const formData = await request.formData();
-      const file = formData.get('file');
+      const file = /** @type {File | null} */ (formData.get('file'));
       if (!file) {
         return { status: 400, body: 'No file uploaded.' };
       }

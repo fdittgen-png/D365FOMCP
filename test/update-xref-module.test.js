@@ -187,6 +187,39 @@ describe('update-xref-module — the delta', () => {
   });
 });
 
+describe('update-xref-module — per-model freshness (#86 item 1, #129)', () => {
+  const modelRows = () => {
+    const db = new Database(dbPath);
+    db.exec('CREATE TABLE model_versions (model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT, publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT)');
+    db.prepare("INSERT INTO model_versions VALUES ('Foundation','ApplicationSuite','Application Suite','Microsoft Corporation','SYS','microsoft','10.0.2263.172','C:\\pkg')").run();
+    db.prepare("INSERT INTO model_versions VALUES ('iExtension','iExtension','iExtension','Trelleborg','USR','custom','10.0.32.7','C:\\custom')").run();
+    db.close();
+  };
+  const source = () => fakeSource({
+    names: [{ Id: 500, Path: '/Classes/TBG_Ext', ProviderId: 1, ModuleId: CUSTOM_MODULE }],
+    refs: [{ SourceId: 500, TargetId: 10, Kind: 1, Line: 41, Column: 4 }],
+  });
+
+  it('adds indexed_at to a pre-#86 model_versions table and stamps only the refreshed module', async () => {
+    modelRows();
+    await updateXrefModules({ modules: ['iExtension'], dbPath, database: 'XRef_test', source: source(), logger: () => {} });
+    const db = new Database(dbPath, { readonly: true });
+    const rows = Object.fromEntries(db.prepare('SELECT model_name, indexed_at FROM model_versions').all().map(r => [r.model_name, r.indexed_at]));
+    assert.equal(rows.Foundation, null, 'an untouched model keeps its unknown age');
+    assert.match(rows.iExtension, /^\d{4}-\d{2}-\d{2}T/, 'the refreshed model is stamped');
+    const sync = db.prepare("SELECT synced_at FROM xref_module_sync WHERE module = 'iExtension'").get();
+    assert.equal(rows.iExtension, sync.synced_at, 'same instant as the module sync row');
+    db.close();
+  });
+
+  it('is a no-op on a database without model_versions (built without descriptor paths)', async () => {
+    await updateXrefModules({ modules: ['iExtension'], dbPath, database: 'XRef_test', source: source(), logger: () => {} });
+    const db = new Database(dbPath, { readonly: true });
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name = 'model_versions'").get().n, 0);
+    db.close();
+  });
+});
+
 describe('update-xref-module — the fingerprint guard', () => {
   const stableSource = () => fakeSource({
     names: [{ Id: 500, Path: '/Classes/TBG_Ext', ProviderId: 1, ModuleId: CUSTOM_MODULE }],

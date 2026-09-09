@@ -7,7 +7,7 @@
  * a live tool, never on a server with no database.
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -16,7 +16,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 
 import {
-  freshnessBanner, snapshotDate, readBuildDate, withFreshnessBanner,
+  freshnessBanner, snapshotDate, readBuildDate, withFreshnessBanner, setFreshnessClock, snapshotAgeDays,
   structuredResult, emptyResult, notFoundResult, errorResult,
   READ_ONLY_DB_ANNOTATIONS, READ_ONLY_LIVE_ANNOTATIONS,
 } from '../src/azure/shared.js';
@@ -29,6 +29,12 @@ const Database = require('better-sqlite3');
 
 const dbs = [];
 after(() => { for (const d of dbs) { try { d.close(); } catch { /* closed */ } } });
+
+// #86 item 2: the banner carries the snapshot's age, so "today" is pinned to
+// the KB fixture's build day (age 0 → no qualifier; the XRef/Sec fixtures
+// are 44 / 65 days older).
+before(() => setFreshnessClock(() => new Date('2026-08-14T12:00:00Z')));
+after(() => setFreshnessClock(null));
 
 function dbWith(table, iso) {
   const db = new Database(':memory:');
@@ -46,9 +52,31 @@ const data = (heading = '## Table CustTable') =>
 describe('freshnessBanner', () => {
   it('formats `_<Service> snapshot: YYYY-MM-DD_` from each service metadata table', () => {
     assert.equal(freshnessBanner(dbWith('kb_metadata', '2026-08-14T09:30:00.000Z'), 'kb'), '_KB snapshot: 2026-08-14_');
-    assert.equal(freshnessBanner(dbWith('xref_metadata', '2026-07-01T00:00:00Z'), 'xref'), '_XRef snapshot: 2026-07-01_');
-    assert.equal(freshnessBanner(dbWith('sec_metadata', '2026-06-10T00:00:00Z'), 'sec'), '_Sec snapshot: 2026-06-10_');
+    assert.equal(freshnessBanner(dbWith('xref_metadata', '2026-07-01T00:00:00Z'), 'xref'), '_XRef snapshot: 2026-07-01 (44 days old)_');
+    assert.equal(freshnessBanner(dbWith('sec_metadata', '2026-06-10T00:00:00Z'), 'sec'), '_Sec snapshot: 2026-06-10 (65 days old)_');
     assert.match(freshnessBanner(dbWith('kb_metadata', '2026-08-14T09:30:00.000Z'), 'kb'), /^_KB snapshot: \d{4}-\d{2}-\d{2}_$/);
+  });
+
+  it('carries an age qualifier (#86 item 2): whole UTC days, singular at 1, omitted on the build day, never negative', () => {
+    assert.equal(freshnessBanner(dbWith('kb_metadata', '2026-08-13T23:59:00Z'), 'kb'), '_KB snapshot: 2026-08-13 (1 day old)_');
+    assert.equal(freshnessBanner(dbWith('kb_metadata', '2026-08-12T00:00:00Z'), 'kb'), '_KB snapshot: 2026-08-12 (2 days old)_');
+    assert.equal(freshnessBanner(dbWith('kb_metadata', '2026-08-14T00:00:01Z'), 'kb'), '_KB snapshot: 2026-08-14_', 'built today: no qualifier');
+    assert.equal(freshnessBanner(dbWith('kb_metadata', '2026-09-01T00:00:00Z'), 'kb'), '_KB snapshot: 2026-09-01_', 'a clock behind the build never prints a negative age');
+    assert.equal(snapshotAgeDays(dbWith('kb_metadata', '2026-07-01T00:00:00Z')), 44);
+    assert.equal(snapshotAgeDays(dbWith(null)), null);
+    assert.equal(snapshotAgeDays(dbWith('kb_metadata', '2026-01-01T00:00:00Z'), new Date('2026-01-03T00:00:00Z')), 2, 'explicit now wins over the clock');
+  });
+
+  it('says `live refresh` on the XRef banner when XREF_LIVE=1 (#129) — and only there', () => {
+    const prev = process.env.XREF_LIVE;
+    process.env.XREF_LIVE = '1';
+    try {
+      assert.equal(freshnessBanner(dbWith('xref_metadata', '2026-07-01T00:00:00Z'), 'xref'), '_XRef snapshot: 2026-07-01 (44 days old, live refresh)_');
+      assert.equal(freshnessBanner(dbWith('xref_metadata', '2026-08-14T00:00:00Z'), 'xref'), '_XRef snapshot: 2026-08-14 (live refresh)_');
+      assert.equal(freshnessBanner(dbWith('kb_metadata', '2026-08-14T00:00:00Z'), 'kb'), '_KB snapshot: 2026-08-14_', 'the KB is not refreshed by XREF_LIVE');
+    } finally {
+      if (prev === undefined) delete process.env.XREF_LIVE; else process.env.XREF_LIVE = prev;
+    }
   });
 
   it('is empty — and never throws — when the snapshot cannot be dated', () => {
@@ -138,7 +166,7 @@ describe('central wiring on the registration path (tool-sets.js)', () => {
     view.registerTool('sec_search', { annotations: READ_ONLY_DB_ANNOTATIONS }, async () => emptyResult('roles', { roles: [] }));
 
     const stats = await s.handlers.sec_stats({});
-    assert.equal(stats.content[0].text.split('\n')[1], '_Sec snapshot: 2026-06-10_');
+    assert.equal(stats.content[0].text.split('\n')[1], '_Sec snapshot: 2026-06-10 (65 days old)_');
     const live = await s.handlers.d365_custom_fields({});
     assert.ok(!live.content[0].text.includes('snapshot:'), 'live rows are not stamped with a build date they do not have');
     assert.ok(!(await s.handlers.sec_lookup_role({})).content[0].text.includes('snapshot:'));
@@ -161,7 +189,7 @@ describe('central wiring on the registration path (tool-sets.js)', () => {
       const r = await s.handlers.d365_lookup_table({ table_name: 'CustTable' });
       const lines = r.content[0].text.split('\n');
       assert.equal(lines[0], '## Table CustTable');
-      assert.match(lines[1], /^_KB snapshot: \d{4}-\d{2}-\d{2}_$/);
+      assert.match(lines[1], /^_KB snapshot: \d{4}-\d{2}-\d{2}( \(\d+ days old\))?_$/);
       assert.match(r.content[0].text, /snapshot was built \d+ days ago/, 'the one-shot staleness note still lands');
       assert.deepEqual(r.structuredContent, { table_name: 'CustTable', field_count: 1 });
     } finally {
@@ -184,7 +212,7 @@ describe('central wiring on the registration path (tool-sets.js)', () => {
     await Promise.all([server.connect(st), client.connect(ct)]);
     try {
       const hit = await client.callTool({ name: 'xref_object_summary', arguments: { name: 'CustTable' } });
-      assert.equal(hit.content[0].text.split('\n')[1], '_XRef snapshot: 2026-07-01_');
+      assert.equal(hit.content[0].text.split('\n')[1], '_XRef snapshot: 2026-07-01 (44 days old)_');
       assert.deepEqual(hit.structuredContent, { n: 1 });
       const miss = await client.callTool({ name: 'xref_object_summary', arguments: { name: 'missing' } });
       assert.ok(!miss.content[0].text.includes('snapshot:'));

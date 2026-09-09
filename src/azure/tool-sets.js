@@ -61,13 +61,14 @@ const SEMANTIC_TOOLS = new Set(SEMANTIC_TOOL_NAMES);
  */
 function lazySemanticDb() {
   let db = null;
-  return new Proxy({}, {
+  // The Proxy forwards every member to the real handle, so it is typed as one.
+  return /** @type {import('better-sqlite3').Database} */ (new Proxy({}, {
     get(_t, prop) {
       db ??= openSemanticDb();
       const v = db[prop];
       return typeof v === 'function' ? v.bind(db) : v;
     },
-  });
+  }));
 }
 
 /** KB-set adapter: `(server, kbDb)` → `registerSemanticTools(server, semDb, kbDb)`. */

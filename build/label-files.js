@@ -132,6 +132,7 @@ const SKIP_DIRS = new Set(['bin', 'node_modules', 'XppMetadata', 'Descriptor', '
  * (matches `model_versions.model_name`), `package` the top-level folder.
  * Resolves directory junctions (the KB delta scopes builds through them).
  * @param {string} root
+ * @param {(m:string)=>void} [warn]  Warning sink for unreadable sub-directories.
  * @returns {Array<{path: string, language: string, prefix: string, module: string, package: string}>}
  */
 export function findLabelFiles(root, warn = () => {}) {

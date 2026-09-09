@@ -27,13 +27,23 @@
  */
 
 import { createRequire } from 'module';
-import { MODEL_VERSIONS_SCHEMA } from '../src/azure/model-descriptors.js';
+import { MODEL_VERSIONS_SCHEMA, ensureModelVersionsColumns } from '../src/azure/model-descriptors.js';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
+/**
+ * Row shapes of the queries below (better-sqlite3 returns `unknown`).
+ * @typedef {{table_name:string, module_id:string|null, label:string|null, developer_doc:string|null}} TableRow
+ * @typedef {{field_name:string, label:string|null, edt:string|null}} FieldRow
+ * @typedef {{enum_name:string, module_id:string|null, label:string|null, values_json:string|null}} EnumRow
+ * @typedef {{entity_name:string, module_id:string|null, label:string|null, public_name:string|null}} EntityRow
+ * @typedef {{tables:number, enums:number, entities:number}} ReindexCounts
+ * @typedef {{added:Record<string,number>, customizedTables:number, reindexed:ReindexCounts}} MergeSummary
+ */
+
 function hasColumn(db, table, col) {
   try {
-    return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+    return /** @type {Array<{name:string}>} */ (db.prepare(`PRAGMA table_info(${table})`).all()).some(c => c.name === col);
   } catch { return false; }
 }
 
@@ -58,7 +68,7 @@ function hasTable(db, schema, table) {
  *
  * @param {import('better-sqlite3').Database} db  live DB, cust already ATTACHed
  * @param {string[]} enumNames  enums whose values_json this merge changed
- * @returns {{tables:number, enums:number, entities:number}}
+ * @returns {ReindexCounts}
  */
 function reindexExtendedBaseObjects(db, enumNames) {
   const del = db.prepare('DELETE FROM main.kb_search WHERE object_type = ? AND object_name = ?');
@@ -67,12 +77,12 @@ function reindexExtendedBaseObjects(db, enumNames) {
 
   // ── Tables that received extension fields ────────────────────────────────
   const fieldsOf = db.prepare('SELECT field_name, label, edt FROM main.fields WHERE table_name = ?');
-  for (const t of db.prepare(`
+  for (const t of /** @type {TableRow[]} */ (db.prepare(`
     SELECT t.table_name, t.module_id, t.label, t.developer_doc
       FROM main.tables t
      WHERE t.table_name IN (SELECT DISTINCT table_name FROM cust.fields WHERE is_extension = 1)
-  `).all()) {
-    const f = fieldsOf.all(t.table_name);
+  `).all())) {
+    const f = /** @type {FieldRow[]} */ (fieldsOf.all(t.table_name));
     let fieldContent = '';
     if (f.length > 0) {
       const fieldNames = f.map(x => x.field_name).join(', ');
@@ -88,7 +98,7 @@ function reindexExtendedBaseObjects(db, enumNames) {
   // ── Enums whose values were UNIONed ──────────────────────────────────────
   const liveEnum = db.prepare('SELECT enum_name, module_id, label, values_json FROM main.enums WHERE enum_name = ?');
   for (const name of enumNames) {
-    const e = liveEnum.get(name);
+    const e = /** @type {EnumRow|undefined} */ (liveEnum.get(name));
     if (!e) continue;
     let valNames = '';
     try { valNames = JSON.parse(e.values_json).map(v => v.name).join(', '); } catch { /* keep '' */ }
@@ -100,14 +110,14 @@ function reindexExtendedBaseObjects(db, enumNames) {
   // ── Entities that received extension fields/methods ──────────────────────
   const entFields = db.prepare('SELECT field_name FROM main.entity_fields WHERE entity_name = ?');
   const entMethods = db.prepare("SELECT method_name FROM main.methods WHERE owner_type = 'entity' AND owner_name = ?");
-  for (const e of db.prepare(`
+  for (const e of /** @type {EntityRow[]} */ (db.prepare(`
     SELECT d.entity_name, d.module_id, d.label, d.public_name
       FROM main.data_entities d
      WHERE d.entity_name IN (SELECT DISTINCT entity_name FROM cust.entity_fields)
         OR d.entity_name IN (SELECT DISTINCT owner_name FROM cust.methods WHERE owner_type = 'entity')
-  `).all()) {
-    const fieldNames = entFields.all(e.entity_name).map(x => x.field_name).join(', ');
-    const methodNames = entMethods.all(e.entity_name).map(x => x.method_name).join(', ');
+  `).all())) {
+    const fieldNames = /** @type {Array<{field_name:string}>} */ (entFields.all(e.entity_name)).map(x => x.field_name).join(', ');
+    const methodNames = /** @type {Array<{method_name:string}>} */ (entMethods.all(e.entity_name)).map(x => x.method_name).join(', ');
     del.run('entity', e.entity_name);
     ins.run('entity', e.entity_name, e.module_id || '', `${e.label || ''} ${e.public_name || ''} ${fieldNames} ${methodNames}`);
     counts.entities++;
@@ -120,7 +130,7 @@ function reindexExtendedBaseObjects(db, enumNames) {
  * @param {string} liveDbPath   Path to the full KB DB to merge into (modified in place).
  * @param {string} customDbPath Path to the customizations-only KB DB.
  * @param {(msg:string)=>void} [log]
- * @returns {{added:object, customizedTables:number, reindexed:object}} merge summary
+ * @returns {MergeSummary} merge summary
  */
 export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
   const db = new Database(liveDbPath);
@@ -137,7 +147,8 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
   }
 
   db.exec(`ATTACH DATABASE '${customDbPath.replace(/'/g, "''")}' AS cust`);
-  const summary = { added: {}, customizedTables: 0 };
+  // `reindexed` is assigned after the merge, inside the transaction.
+  const summary = /** @type {MergeSummary} */ ({ added: {}, customizedTables: 0 });
 
   try {
     db.exec('BEGIN IMMEDIATE');
@@ -145,7 +156,8 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     // ── Net-new object tables (additive upsert) ──────────────────────────────
     // tables: INSERT OR IGNORE so existing Microsoft base rows are preserved;
     // only genuinely new custom tables are added.
-    const before = (t) => db.prepare(`SELECT COUNT(*) n FROM main.${t}`).get().n;
+    /** @param {string} t @returns {number} */
+    const before = (t) => /** @type {{n:number}} */ (db.prepare(`SELECT COUNT(*) n FROM main.${t}`).get()).n;
 
     const tBefore = before('tables');
     db.exec('INSERT OR IGNORE INTO main.tables SELECT * FROM cust.tables');
@@ -171,8 +183,8 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     const liveEnumStmt = db.prepare('SELECT module_id, label, values_json FROM main.enums WHERE enum_name = ?');
     const upsertEnum = db.prepare('INSERT OR REPLACE INTO main.enums VALUES (?,?,?,?)');
     const enumNamesTouched = [];
-    for (const ce of db.prepare('SELECT enum_name, module_id, label, values_json FROM cust.enums').all()) {
-      const live = liveEnumStmt.get(ce.enum_name);
+    for (const ce of /** @type {EnumRow[]} */ (db.prepare('SELECT enum_name, module_id, label, values_json FROM cust.enums').all())) {
+      const live = /** @type {Omit<EnumRow,'enum_name'>|undefined} */ (liveEnumStmt.get(ce.enum_name));
       if (!live) {
         upsertEnum.run(ce.enum_name, ce.module_id, ce.label, ce.values_json);
         enumNamesTouched.push(ce.enum_name);
@@ -212,8 +224,17 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     // either side may predate the model_versions table.
     if (hasTable(db, 'cust', 'model_versions')) {
       if (!hasTable(db, 'main', 'model_versions')) db.exec(MODEL_VERSIONS_SCHEMA);
+      // #86 item 1: the two sides may differ in schema age (a legacy main
+      // without `indexed_at`, or a legacy delta). Bring main up to date and
+      // copy by NAME — `SELECT *` would fail on a column-count mismatch. The
+      // delta's own `indexed_at` (its build instant) is what moves the custom
+      // models forward while every base model keeps its full-build stamp.
+      ensureModelVersionsColumns(db, 'main');
+      const custCols = /** @type {Array<{ name: string }>} */ (db.prepare('PRAGMA cust.table_info(model_versions)').all()).map(c => c.name);
+      const mainCols = new Set(/** @type {Array<{ name: string }>} */ (db.prepare('PRAGMA main.table_info(model_versions)').all()).map(c => c.name));
+      const cols = custCols.filter(c => mainCols.has(c)).join(', ');
       const mvBefore = before('model_versions');
-      db.exec('INSERT OR REPLACE INTO main.model_versions SELECT * FROM cust.model_versions');
+      db.exec(`INSERT OR REPLACE INTO main.model_versions (${cols}) SELECT ${cols} FROM cust.model_versions`);
       summary.added.model_versions = before('model_versions') - mvBefore;
     }
 
@@ -239,10 +260,11 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     } catch { /* FTS5 not present — d365_search falls back to LIKE */ }
 
     // ── Metadata ──────────────────────────────────────────────────────────────
-    const getMeta = (k) => { try { return db.prepare('SELECT value FROM main.kb_metadata WHERE key = ?').get(k)?.value || ''; } catch { return ''; } };
+    /** @param {string} k @returns {string} */
+    const getMeta = (k) => { try { return /** @type {{value:string}|undefined} */ (db.prepare('SELECT value FROM main.kb_metadata WHERE key = ?').get(k))?.value || ''; } catch { return ''; } };
     const custRoots = getMeta('custom_packages_paths');
     const setMeta = db.prepare('INSERT OR REPLACE INTO main.kb_metadata VALUES (?,?)');
-    const custFromDelta = (() => { try { return db.prepare("SELECT value FROM cust.kb_metadata WHERE key='custom_packages_paths'").get()?.value || ''; } catch { return ''; } })();
+    const custFromDelta = (() => { try { return /** @type {{value:string}|undefined} */ (db.prepare("SELECT value FROM cust.kb_metadata WHERE key='custom_packages_paths'").get())?.value || ''; } catch { return ''; } })();
     const mergedRoots = [...new Set([...custRoots.split(';'), ...custFromDelta.split(';')].map(s => s.trim()).filter(Boolean))].join(';');
     setMeta.run('custom_packages_paths', mergedRoots);
     setMeta.run('has_customizations', '1');
@@ -255,7 +277,7 @@ export function mergeCustomKb(liveDbPath, customDbPath, log = console.log) {
     setMeta.run('partial_build', new Date().toISOString());
     if (hasTable(db, 'main', 'model_versions')) {
       setMeta.run('model_versions_count',
-        String(db.prepare('SELECT COUNT(*) AS n FROM main.model_versions').get().n));
+        String(/** @type {{n:number}} */ (db.prepare('SELECT COUNT(*) AS n FROM main.model_versions').get()).n));
     }
 
     db.exec('COMMIT');

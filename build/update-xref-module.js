@@ -50,6 +50,7 @@ import { join } from 'path';
 import { existsSync } from 'fs';
 import { createRequire } from 'module';
 import { openXrefSource } from './xref-source.js';
+import { ensureModelVersionsColumns } from '../src/azure/model-descriptors.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -112,21 +113,21 @@ export async function readModuleFingerprint(source, moduleName) {
  */
 export function assertNoOrphans(db, moduleIds) {
   const placeholders = moduleIds.map(() => '?').join(',');
-  const orphans = db.prepare(
+  const orphans = /** @type {{ n: number }} */ (db.prepare(
     `SELECT COUNT(*) AS n FROM refs r
       WHERE (r.source_id IN (SELECT id FROM names WHERE module_id IN (${placeholders}))
          OR  r.target_id IN (SELECT id FROM names WHERE module_id IN (${placeholders})))
         AND (NOT EXISTS (SELECT 1 FROM names n WHERE n.id = r.source_id)
           OR NOT EXISTS (SELECT 1 FROM names n WHERE n.id = r.target_id))`,
-  ).get(...moduleIds, ...moduleIds).n;
+  ).get(...moduleIds, ...moduleIds)).n;
 
   // Inbound references from OTHER modules whose target we just replaced. These
   // are the 45 HISOL rows the header describes; they only break if a custom
   // object was deleted and re-created with a fresh identity value.
-  const dangling = db.prepare(
+  const dangling = /** @type {{ n: number }} */ (db.prepare(
     `SELECT COUNT(*) AS n FROM refs r
       WHERE NOT EXISTS (SELECT 1 FROM names n WHERE n.id = r.target_id)`,
-  ).get().n;
+  ).get()).n;
 
   if (orphans > 0 || dangling > 0) {
     throw new Error(
@@ -139,6 +140,19 @@ export function assertNoOrphans(db, moduleIds) {
 
 /* ── The delta ────────────────────────────────────────────────────────────── */
 
+/**
+ * @typedef {object} UpdateXrefModulesOptions
+ * @property {string[]} modules  module names, or `['--all-custom']` for every module in xref_module_sync
+ * @property {string} dbPath
+ * @property {string} [serverInstance]
+ * @property {string} database
+ * @property {boolean} [dryRun]
+ * @property {boolean} [force]
+ * @property {(msg: string) => void} [logger]
+ * @property {any} [source]  test seam — same shape as openXrefSource()
+ */
+
+/** @param {UpdateXrefModulesOptions} opts */
 export async function updateXrefModules({
   modules,
   dbPath,
@@ -151,13 +165,14 @@ export async function updateXrefModules({
   // delta and its rollback be exercised against a synthetic source without a
   // SQL Server on the machine running the suite.
   source: injectedSource = null,
-} = {}) {
+} = /** @type {any} */ ({})) {
   if (!existsSync(dbPath)) {
     throw new Error(`XRef SQLite not found: ${dbPath}. Run a full \`npm run build:xref\` first — the delta refreshes an existing database, it does not create one.`);
   }
 
   const source = injectedSource || await openXrefSource({ serverInstance, database, log: logger });
   const db = new Database(dbPath);
+  /** @type {{ database: string, modules: any[], skipped: string[], missing: string[], dryRun: boolean }} */
   const summary = { database, modules: [], skipped: [], missing: [], dryRun };
 
   try {
@@ -166,13 +181,18 @@ export async function updateXrefModules({
     db.pragma('journal_mode = DELETE');
     db.pragma('synchronous = NORMAL');
     db.exec(MODULE_SYNC_SCHEMA);
+    // #86 item 1: a snapshot built before `model_versions.indexed_at` existed
+    // gains the column here, so the per-module stamp below always has a home.
+    // No-op when the table is absent (XRef built without descriptor paths).
+    ensureModelVersionsColumns(db);
 
     const wanted = modules.includes('--all-custom')
-      ? db.prepare(`SELECT module FROM xref_module_sync ORDER BY module`).all().map(r => r.module)
+      ? /** @type {any[]} */ (db.prepare(`SELECT module FROM xref_module_sync ORDER BY module`).all()).map(r => r.module)
       : modules;
     if (!wanted.length) throw new Error('No modules named, and xref_module_sync is empty — name the modules explicitly on the first run.');
 
     // ── Plan: what actually changed ──────────────────────────────────────────
+    /** @type {any[]} */
     const plan = [];
     const readSync = db.prepare('SELECT * FROM xref_module_sync WHERE module = ? COLLATE NOCASE');
     for (const name of wanted) {
@@ -182,7 +202,7 @@ export async function updateXrefModules({
         summary.missing.push(name);
         continue;
       }
-      const previous = readSync.get(name);
+      const previous = /** @type {any} */ (readSync.get(name));
       const current = fingerprintOf(fp);
       if (!force && previous && previous.fingerprint === current) {
         logger(`  ${name}: unchanged (${fp.name_count.toLocaleString()} names) — skipped`);
@@ -239,6 +259,13 @@ export async function updateXrefModules({
       `INSERT OR REPLACE INTO xref_module_sync (module, module_id, name_count, ref_count, fingerprint, synced_at)
        VALUES (?, ?, ?, ?, ?, ?)`);
     const setMeta = db.prepare('INSERT OR REPLACE INTO xref_metadata (key, value) VALUES (?, ?)');
+    // Per-model freshness (#86 item 1, #129): the refreshed module's model rows
+    // move to "now" while every other model keeps its full-build stamp. In the
+    // XRef the module IS the package, so match either the model or its package.
+    const hasModelVersions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'model_versions'").get();
+    const stampModel = hasModelVersions
+      ? db.prepare('UPDATE model_versions SET indexed_at = ? WHERE model_name = ? COLLATE NOCASE OR module_id = ? COLLATE NOCASE')
+      : null;
 
     const apply = db.transaction(() => {
       for (const p of providers) upsertProvider.run(Number(p.Id), p.Provider);
@@ -255,7 +282,9 @@ export async function updateXrefModules({
             r.Column == null ? null : Number(r.Column),
           );
         }
-        upsertSync.run(m.name, m.module_id, m.names.length, m.refs.length, m.fingerprint, new Date().toISOString());
+        const syncedAt = new Date().toISOString();
+        upsertSync.run(m.name, m.module_id, m.names.length, m.refs.length, m.fingerprint, syncedAt);
+        if (stampModel) stampModel.run(syncedAt, m.name, m.name);
         summary.modules.push({
           module: m.name, module_id: m.module_id,
           names: m.names.length, refs: m.refs.length,
@@ -273,8 +302,8 @@ export async function updateXrefModules({
       setMeta.run('build_date', now);
       setMeta.run('last_module_delta', now);
       setMeta.run('last_module_delta_modules', plan.map(m => m.name).join(','));
-      setMeta.run('name_count', String(db.prepare('SELECT COUNT(*) AS n FROM names').get().n));
-      setMeta.run('ref_count', String(db.prepare('SELECT COUNT(*) AS n FROM refs').get().n));
+      setMeta.run('name_count', String(/** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) AS n FROM names').get()).n));
+      setMeta.run('ref_count', String(/** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) AS n FROM refs').get()).n));
     });
 
     apply();
@@ -303,7 +332,8 @@ if (isMain) {
   };
   const modules = argv.filter(a => !a.startsWith('--') || a === '--all-custom');
 
-  const opts = {
+  /** @type {UpdateXrefModulesOptions} */
+  const opts = /** @type {any} */ ({
     modules,
     dbPath: flag('db') || process.env.XREF_DB_PATH
       || join(process.env.USERPROFILE || process.env.HOME || '.', '.claude', 'd365fo_xref.sqlite'),
@@ -311,7 +341,7 @@ if (isMain) {
     database: flag('database') || process.env.XREF_DATABASE || '',
     dryRun: flag('dry-run') === true,
     force: flag('force') === true,
-  };
+  });
 
   if (!modules.length) {
     console.error('Usage: node build/update-xref-module.js <Module> [Module...] [--database=<XRef_db>] [--db=<sqlite>] [--dry-run] [--force]');

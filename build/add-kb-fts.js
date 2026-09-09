@@ -44,7 +44,7 @@ export function ensureKbFtsIndex(dbPath) {
       content='kb_search', content_rowid='rowid'
     )`);
     db.exec(`INSERT INTO kb_search_fts(kb_search_fts) VALUES('rebuild')`);
-    return db.prepare(`SELECT COUNT(*) AS n FROM kb_search_fts`).get().n;
+    return /** @type {any} */ (db.prepare(`SELECT COUNT(*) AS n FROM kb_search_fts`).get()).n;
   } finally {
     db.close();
   }

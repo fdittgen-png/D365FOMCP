@@ -64,7 +64,7 @@ const newSize = (fs.statSync(dbPath).size / (1024 * 1024)).toFixed(1);
 console.log(`\nTotal: ${totalTime}s  |  Size: ${fileSize} MB → ${newSize} MB`);
 
 // Show all indexes for verification
-const allIdx = db.prepare(`SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY tbl_name, name`).all();
+const allIdx = /** @type {{ name: string, tbl_name: string }[]} */ (db.prepare(`SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY tbl_name, name`).all());
 console.log(`\nAll indexes (${allIdx.length}):`);
 for (const i of allIdx) console.log(`  ${i.tbl_name.padEnd(35)} ${i.name}`);
 

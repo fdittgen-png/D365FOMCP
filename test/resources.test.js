@@ -78,7 +78,7 @@ describe('resources — documents', () => {
     const m = modulesInfo({ db: kbDb(), service: 'kb' });
     assert.equal(m.model_count, 2);
     assert.deepEqual(m.models.map(r => r.model_name), ['ApplicationSuite', 'iExtension']);
-    assert.deepEqual(Object.keys(m.models[0]).sort(), ['display_name', 'layer', 'model_name', 'module_id', 'origin', 'publisher', 'version']);
+    assert.deepEqual(Object.keys(m.models[0]).sort(), ['display_name', 'indexed_at', 'layer', 'model_name', 'module_id', 'origin', 'publisher', 'version']);
   });
 
   it('is a silent no-op on a server without registerResource (the test mocks)', () => {

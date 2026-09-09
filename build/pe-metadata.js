@@ -21,7 +21,7 @@
  * it does. Callers that blur the two turn a fact into a guess.
  *
  * Layout walked, in order:
- *   DOS header (e_lfanew @0x3C) -> PE signature -> COFF header
+ *   DOS header (e_lfanew at 0x3C) -> PE signature -> COFF header
  *   -> optional header (PE32 / PE32+) -> data directory 14 (CLI header)
  *   -> section table (RVA -> file offset) -> CLI header -> metadata root
  *   -> "BSJB" -> stream headers (#~ / #-, #Strings, #Blob, #GUID, #US)
@@ -251,6 +251,7 @@ export function parseMetadataRoot(buf, metaOffset) {
   const numStreams = u16(buf, p);
   p += 2;
 
+  /** @type {Object<string,{offset:number,size:number}>} */
   const streams = {};
   for (let i = 0; i < numStreams; i++) {
     const offset = u32(buf, p);

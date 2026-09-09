@@ -154,7 +154,7 @@ export function registerResources(server, { db = null, service = 'snapshot', too
       RESOURCE_URIS.modules,
       {
         title: 'Scanned models',
-        description: 'Per-model build provenance (model_versions): name, module, publisher, layer, origin, version.',
+        description: 'Per-model build provenance (model_versions): name, module, publisher, layer, origin, version, indexed_at (when the snapshot records it).',
         mimeType: MIME,
       },
       (uri) => jsonContents(uri, () => modulesInfo({ db, service })),

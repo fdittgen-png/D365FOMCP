@@ -226,7 +226,8 @@ function readLabels(model, binDir, prefix, warn) {
   }
   const rows = [];
   for (const s of stores) {
-    for (const l of s.labels) {
+    // parseSealedLabelStore's outer @returns predates qualifiedId (present at runtime, isv-parsers.js:257).
+    for (const l of /** @type {Array<{id:string, text:string, qualifiedId?:string|null}>} */ (s.labels)) {
       rows.push({
         labelId: l.id,
         language: s.language,
@@ -590,9 +591,9 @@ export function writeXref(db, models) {
  * successful build into a failed one. Equally, when no root is configured this
  * is a silent no-op — an unconfigured box builds exactly as it did before.
  *
- * @param {object} opts
- * @param {string} opts.dbPath          database the main build just closed
- * @param {'kb'|'xref'} opts.target     which schema set to write
+ * @param {object} [opts]
+ * @param {string} [opts.dbPath]        database the main build just closed (absent → no-op)
+ * @param {'kb'|'xref'} [opts.target]   which schema set to write
  * @param {string[]} [opts.roots]       override; otherwise ISV_SCAN_PATHS etc.
  * @param {boolean} [opts.il]           override the ISV_IL_SCAN flag (#81)
  * @param {(msg:string)=>void} [opts.log]

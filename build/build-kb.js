@@ -2055,9 +2055,9 @@ function resetState() {
 
 /**
  * Build a KB SQLite database programmatically.
- * @param {object}   opts
- * @param {string[]|string} opts.packagesPaths  Source metadata roots (MS + custom).
- * @param {string}   opts.outputPath            Destination .sqlite path.
+ * @param {object}   [opts]
+ * @param {string[]|string} [opts.packagesPaths]  Source metadata roots (MS + custom); defaults to the CLI/env value.
+ * @param {string}   [opts.outputPath]            Destination .sqlite path; defaults to the CLI/env value.
  * @returns {Promise<{outputPath:string, stats:object, customPackagesPaths:string[]}>}
  */
 export async function buildKnowledgeBase({ packagesPaths: pp, outputPath: op } = {}) {
