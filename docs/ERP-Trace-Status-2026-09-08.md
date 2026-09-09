@@ -22,7 +22,7 @@ through its **managed identity** (phase 2, deployed today). Bearer authenticatio
 | Plugin hook `trace-capture.mjs` | `plugin/d365fo-mcp/hooks/` (MCP repo), installed from the local marketplace | **1.5.0** — annotate emitter, protocol lines as FIRST text, 207 handling | 16 hook tests; live records in `hook.ndjson` and in the sink |
 | Server-side `withTrace` | `src/trace/client/` (MCP repo), on the three stdio servers by default | file sink `~/.claude/mcp-trace/<service>.ndjson`; http sink with function key **or** managed-identity bearer (`identityTokenProvider`) | `xref.ndjson` record correlated to the hook's investigation id |
 | Contract | `src/trace/contract/` (MCP repo) — copies generated into the hook (`gen:trace-hook`) and the sink (`gen:trace-ingest`, `CONTRACT.sha256`) | v1.0.0; `sanitize()` keeps `expects` on annotate; `validate.js` names the offending key | drift tests on both sides |
-| Message sink | `C:\working\ClaudeTrace` → `github.com/fdittgen-png/ClaudeTrace` (private, `main`) | **v0.2.0**, 48 tests | health 200, smoke `received=0 accepted=0`, 15 records / 3 dossiers / 3 request keys, 0 dead letters |
+| Message sink | `C:\working\ClaudeTrace` → `github.com/fdittgen-png/ClaudeTrace` (private, `main`) | **v0.3.0** (2026-09-09: concept §8 metrics + alert rules), 63 tests | health 200 at 0.3.0, smoke `received=0 accepted=0`, 15 records / 3 dossiers / 3 request keys, 0 dead letters; alert rules `…-deadletter-rate`, `…-silent-outage` + action group deployed |
 | Store | storage account `tisdclaudetracest`: blob `trace-landing`, `trace-deadletter`; tables `tracerecords`, `tracerequests` | declared in Bicep; identity path (`TRACE_STORAGE_ACCOUNT`), Blob + Table Data Contributor on the Function MI; 30-d dead-letter lifecycle; €5 budget | `Reingest-Landing.ps1` through the identity path: 4 accepted, tables idempotent |
 | Local tooling | `scripts/Push-LocalTraces.ps1` (MCP), `scripts/Get-TraceStats.ps1`, `scripts/Reingest-Landing.ps1` (ClaudeTrace) | | all three run today |
 | Azure MCP apps (`tis-d-mcpd365fo-func`) | trace **off** (`MCP_TRACE` unset) | phase 3 settings documented, not applied | — |
@@ -60,6 +60,16 @@ plugin 1.5.0), **#140** (managed-identity bearer), **#141** (register). ClaudeTr
 - **autocrlf:** generated copies are hashed and written as LF; JSON comparisons in tests normalise line endings.
 - The two retired v0.1 hooks were **still registered** in `settings.json` on the morning of 2026-09-08 and posting
   raw prompts to the stub; removed (backups `settings.json.bak-20260908`, `-20260908b`).
+
+## 4b. Added 2026-09-09
+
+- **Concept §8 observability shipped** (the one phase-1 item that had been left out): four custom metrics per batch and the
+  two alert rules, ClaudeTrace v0.3.0, `Deploy.ps1 -AlertsOnly` for the rules alone. Platform facts recorded in the concept:
+  log-alert lookback ≤ 48 h (the 7-day silence check became two working days, Wed–Fri), and a rule evaluated less often
+  than every 12 h must have `autoMitigate: false`.
+  Metric arrival verified in `customMetrics` (08:14 UTC batch → three entries 22 s later); alert rules listed in the RG.
+- Everything else in the sink (phases 1–3 code, identity store path, re-ingestion, bearer auth) was already built and
+  deployed on 2026-09-08; the remaining sink work is the Entra-gated cut-over (F2–F4) and the deferred items C2–C7.
 
 ## 5. Next actions
 

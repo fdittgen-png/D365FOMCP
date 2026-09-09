@@ -150,12 +150,30 @@ WI-11 KO case). No npm package, no submodule: two repos, one generator, one hash
 step-up never enters. Expected cost at the upper bound ≈ €0.3/month plus a few cents of storage; the Function shares
 the MCP plan.
 
-### 8. Observability
+### 8. Observability — **BUILT AND DEPLOYED 2026-09-09** (ClaudeTrace v0.3.0, commits 3f321d4 + 6ba6d68)
 
 - App Insights **custom metrics** per batch: `trace.ingest.accepted`, `trace.ingest.deadlettered` (dimension `reason`),
   `trace.ingest.batch_size`, `trace.ingest.duration_ms`. One log line per batch as today (counts and ids, never text).
+  Shipped as `src/ingest/metrics.js`: the entries are built from the ingest *result* (counts + duration), so no record can
+  reach telemetry; the `applicationinsights@3` client is created from `APPLICATIONINSIGHTS_CONNECTION_STRING` with every
+  auto-collector off (trackMetric only — the host already ships requests and traces), loaded through `createRequire`
+  because the 3.x ESM path needs an instrumentation hook, and it is optional: no connection string or a load failure →
+  no client, identical responses. A throwing client is logged and never changes the HTTP status.
 - **Alert:** dead-letter rate > 10 % over 1 h, or zero accepted records for 7 days while the hook config says `enabled`
   (the silent-outage case: a rotated key, a deleted route — the 2026-09-07 404s went unnoticed for five hours).
+  Shipped as `infra/alerts.bicep` (a module of `main.bicep`, also deployable alone with `Deploy.ps1 -AlertsOnly` — no
+  role assignment, so no PIM): two `scheduledQueryRules` over `customMetrics` plus an action group whose e-mail is the
+  signed-in operator at deploy time. **Two deviations, both forced by the platform:** (1) a log alert's lookback is capped
+  at **48 h** (`ago(7d)` is silently clipped), so the silence rule is a 2-day window evaluated daily on **Wednesday–Friday
+  only** — the window never covers a weekend, and a silence that starts on a Friday is reported on the Wednesday (5 days,
+  inside the 7-day intent); (2) "while the hook config says `enabled`" is client state the sink cannot see, so the rule
+  fires on silence alone. Learned on the first deploy: a rule evaluated less often than every 12 h must be stateless
+  (`autoMitigate: false`, else `InvalidRequestContent`).
+  **Verified 2026-09-09 08:14 UTC:** an empty batch to the 0.3.0 host produced `trace.ingest.accepted = 0`,
+  `trace.ingest.batch_size = 0`, `trace.ingest.duration_ms = 26` in `customMetrics` 22 s later; no `deadlettered` entry
+  because none was dead-lettered (the key is emitted per reason, never as a zero). The 08:10 smoke batch of the deploy
+  itself carried no metric — it hit the 0.2.0 worker seconds before the host restarted, so a deploy's own smoke test
+  is not evidence for a code change; probe again after `/health` reports the new version.
 - `GET /health` stays anonymous and cheap. No stats endpoint: the operator's "is the sink alive and full" check is
   `Get-TraceStats.ps1` in the ClaudeTrace repo — a partition count on `traces` and the landing blob sizes per day via
   `az storage`, read-side, no code in the Function. A read endpoint would be the first step of the read API this project excludes.
@@ -178,7 +196,7 @@ The WI-11 OK/KO list becomes the test file, item for item:
 
 | Phase | Content | Deploy | Effort |
 |---|---|---|---|
-| **1 — durable, addressable sink** | ingest core (§4): landing + dead-letter blobs, `traces` + `requests` tables, AJV + `sanitize()`, 200/207/400/413/500; delete the v0.1 routes and hook files; `gen:trace-ingest` + drift test; metrics + the two alerts; hook `207` handling; `Push-LocalTraces.ps1` (backfills the 12 records already on this machine); `Get-TraceStats.ps1`; README/runbook; TDD §7.3/§7.4 amended to point here | `Deploy.ps1 -SkipInfra` — no ARM write, no step-up; the agent can run it | ~1 day |
+| **1 — durable, addressable sink** | ingest core (§4): landing + dead-letter blobs, `traces` + `requests` tables, AJV + `sanitize()`, 200/207/400/413/500; delete the v0.1 routes and hook files; `gen:trace-ingest` + drift test; metrics + the two alerts (**the one item left out on 2026-09-08 — built 2026-09-09, §8**); hook `207` handling; `Push-LocalTraces.ps1` (backfills the 12 records already on this machine); `Get-TraceStats.ps1`; README/runbook; TDD §7.3/§7.4 amended to point here | `Deploy.ps1 -SkipInfra` — no ARM write, no step-up; the agent can run it | ~1 day |
 | **2 — hygiene** — **BUILT 2026-09-08** | `Reingest-Landing.ps1` (landing → core, idempotent, dedupes by id before sending, strips the ingest fields); Bicep declares the two containers, the two tables, the dead-letter lifecycle rule (30 d), Storage Blob/Table Data Contributor for the Function identity, a €5 budget (contact e-mail passed at deploy time, never in the repo) and the `TRACE_*` app settings; `storeFromEnv` takes the identity path when `TRACE_STORAGE_ACCOUNT` is set (`DefaultAzureCredential`), else the connection string | infra deploy with the PIM Owner role active (role assignments) | done |
 | **3 — server-to-server** — **CODE BUILT 2026-09-08, cut-over blocked on Entra** | sink: `src/ingest/auth.js` (jose) validates a bearer against the tenant JWKS — audience `TRACE_TOKEN_AUDIENCE`, issuer v1/v2 of `TRACE_TENANT_ID`, caller `azp`/`appid` ∈ `TRACE_ALLOWED_APP_IDS`; `REQUIRE_AUTH=bearer` makes it mandatory; 503 fail-closed on a missing audience or an empty allow-list; `source_app_id = app:<client id>` for bearer callers. MCP side: `identityTokenProvider(scope)` (cached to 60 s before expiry) feeds `httpSink` when `TRACE_INGEST_SCOPE` is set. **Blocked:** the audience must be an app registration — `az ad app create` is refused for this account ("Directory permission is needed") and a managed identity cannot be an audience (AADSTS100040, probed). An Entra admin must create `tis-d-claudetrace-api` with identifier URI `api://tis-d-claudetrace-api` (no permissions, no roles). Then: sink `TRACE_TOKEN_AUDIENCE=api://tis-d-claudetrace-api`, `TRACE_ALLOWED_APP_IDS=6d31fb59-f048-4a3c-8812-5983c35d3106` (the MCP Function App identity's client id, already in `dev.parameters.json`); MCP app `MCP_TRACE=on TRACE_SINK=http TRACE_INGEST_URL=… TRACE_INGEST_SCOPE=api://tis-d-claudetrace-api/.default`; later `REQUIRE_AUTH=bearer` once the hook has moved off the function key or a second key path exists | Entra admin, then MCP app settings | code done; cut-over pending |
 
@@ -278,7 +296,7 @@ Every expectation the two TDDs (`ERP-Trace-Module-TDD.md` v1.3, `ERP-Trace-Captu
 | E30 | App named `tis-d-mcptrace-func`, routes self-prefixed `api/` | Capture §7.3 | **deviated** | app is `tis-d-claudetrace-func` (created 2026-09-04 before the TDD name), `routePrefix ''` with routes `trace/ingest`, `health` — no `api/`. Hook config `ingest_route: /trace/ingest`. Keep; update the TDD |
 | E31 | Cosmos serverless, `disableLocalAuth`, hierarchical PK `/erp/system`,`/month`, no TTL on `traces`, 30 d on `deadletter`, §7.4 indexing, RBAC only, €10 alert | Capture §7.4, WI-12 | **deviated (2026-09-08)** | replaced by blob landing + Table Storage indexes in the existing account (Part A §3, decision 1); what survives: no TTL on the archive, 30 d on dead letters, no key material beyond the runtime's own connection, a cost alert (€5) |
 | E32 | `Push-LocalTraces.ps1` uploads the stdio file sinks | Capture §7.2, WI-13 | **met (2026-09-08)** | `scripts/Push-LocalTraces.ps1`, first run backfilled 15 records |
-| E33 | Loss on scale-in counted, not hidden | Module §8 | **met (client)** | writer `stats.failed`; no server-side counter until E29 |
+| E33 | Loss on scale-in counted, not hidden | Module §8 | **met (2026-09-09)** | writer `stats.failed` on the client; server side `trace.ingest.accepted` / `trace.ingest.deadlettered` (by reason) per batch + the two alert rules (Part A §8) |
 
 ### B6. Cost and footprint
 
