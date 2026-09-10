@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { generate, COPIED, CONTRACT_DIR, HOOK_LIB, ROOT } from '../build/gen-trace-hook.js';
+import { parseToolName } from '../src/trace/contract/arg-policies.js';
 
 describe('generated hook library', () => {
   it('contract copies in plugin/d365fo-mcp/hooks/lib are byte-identical to src/trace/contract', () => {
@@ -37,13 +38,16 @@ describe('generated hook library', () => {
   it('vocabulary.json is the checked-in vocabulary', () => {
     assert.equal(readFileSync(join(HOOK_LIB, 'vocabulary.json'), 'utf8'), readFileSync(join(ROOT, 'config', 'semantic-vocabulary.json'), 'utf8'), 'vocabulary copy is stale — run npm run gen:trace-hook');
   });
-  it('hooks.json registers the five events and restricts tool events to the KB/XRef servers', () => {
+  it('hooks.json registers the five events and restricts tool events to the KB/XRef/Labels servers (never Security)', () => {
     const h = JSON.parse(readFileSync(join(ROOT, 'plugin', 'd365fo-mcp', 'hooks', 'hooks.json'), 'utf8')).hooks;
     assert.deepEqual(Object.keys(h).sort(), ['PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'Stop', 'UserPromptSubmit']);
     for (const ev of ['PreToolUse', 'PostToolUse', 'PostToolUseFailure']) {
       const re = new RegExp(h[ev][0].matcher);
       assert.ok(re.test('mcp__d365kb__d365_lookup_table') && re.test('mcp__claude_ai_D365_xRef__xref_find_references'));
+      assert.ok(re.test('mcp__d365labels__labels_lookup') && re.test('mcp__claude_ai_D365_Labels__labels_search'), 'labels calls are captured (2026-09-10)');
       assert.ok(!re.test('mcp__d365sec__sec_lookup_role') && !re.test('Skill') && !re.test('mcp__claude_ai_Microsoft_Learn__microsoft_docs_search'));
+      // every server the matcher admits must be one the contract maps to a service, or the hook records service "kb" by default
+      for (const name of ['mcp__d365labels__labels_lookup', 'mcp__claude_ai_D365_Labels__labels_search']) assert.equal(parseToolName(name)?.service, 'labels');
     }
     for (const groups of Object.values(h)) for (const g of groups) for (const hk of g.hooks) assert.match(hk.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/trace-capture\.mjs/);
   });

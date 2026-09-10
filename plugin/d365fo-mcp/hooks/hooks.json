@@ -1,5 +1,5 @@
 {
-  "description": "ERP trace capture (ERP-Trace-Capture-TDD WI-15): records the investigation (request as Claude interpreted it, strategy lines, every D365 KB/XRef MCP call with replayable arguments, the conclusion) to ~/.claude/mcp-trace and the trace ingest Function. Never the tool responses, never the user's raw prompt unless nothing else exists. Off switch: enabled=false in ~/.claude/claude-trace.config.json.",
+  "description": "ERP trace capture (ERP-Trace-Capture-TDD WI-15): records the investigation (request as Claude interpreted it, strategy lines, every D365 KB/XRef/Labels MCP call with replayable arguments (Security calls are deliberately not captured by the hook — the stdio server records them), the conclusion) to ~/.claude/mcp-trace and the trace ingest Function. Never the tool responses, never the user's raw prompt unless nothing else exists. Off switch: enabled=false in ~/.claude/claude-trace.config.json.",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -11,7 +11,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^mcp__(d365kb|d365xref|claude_ai_D365_KB|claude_ai_D365_xRef)__",
+        "matcher": "^mcp__(d365kb|d365xref|d365labels|claude_ai_D365_KB|claude_ai_D365_xRef|claude_ai_D365_Labels)__",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/trace-capture.mjs\" PreToolUse", "timeout": 10 }
         ]
@@ -19,7 +19,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^mcp__(d365kb|d365xref|claude_ai_D365_KB|claude_ai_D365_xRef)__",
+        "matcher": "^mcp__(d365kb|d365xref|d365labels|claude_ai_D365_KB|claude_ai_D365_xRef|claude_ai_D365_Labels)__",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/trace-capture.mjs\" PostToolUse", "timeout": 10 }
         ]
@@ -27,7 +27,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "^mcp__(d365kb|d365xref|claude_ai_D365_KB|claude_ai_D365_xRef)__",
+        "matcher": "^mcp__(d365kb|d365xref|d365labels|claude_ai_D365_KB|claude_ai_D365_xRef|claude_ai_D365_Labels)__",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/trace-capture.mjs\" PostToolUseFailure", "timeout": 10 }
         ]
