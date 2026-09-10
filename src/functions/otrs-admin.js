@@ -1168,6 +1168,7 @@ app.http('otrs-admin-upload-to-rag', {
  * out ourselves") and HTTP 500 for internal errors.
  */
 function structuredErrorResponse(err, action, extra = {}) {
+  /** @type {{ error: string, action: string, timestamp: string, category?: string, phase?: string, details?: unknown, stack?: string | null, [key: string]: unknown }} */
   const envelope = {
     error: err.message || 'Unknown error',
     action,

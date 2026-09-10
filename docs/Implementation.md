@@ -418,7 +418,7 @@ The deployment disables server-side build (`SCM_DO_BUILD_DURING_DEPLOYMENT=false
 
 Every MCP tool emits via the helpers in `src/azure/shared.js` (`structuredResult`, `emptyResult`, `notFoundResult`, `errorResult`, `formatMarkdownTable`, `formatPermission`, `truncationNote`, `contextAround`, `makeLabelResolver`). Tools are registered with `server.registerTool(name, { description, inputSchema, outputSchema, annotations: READ_ONLY_DB_ANNOTATIONS }, handler)` (typed-first, render Markdown from typed). The static-scan test `test/response-format.test.js` enforces these rules across all five services.
 
-**Note (2026-09-02):** the response-format contract also calls for a `freshnessBanner(db, service)` helper that prepends a snapshot-date line to data responses. This helper does not exist in `shared.js` — a same-named but unrelated function lives in the Wiki service's `wiki-storage.js` (different signature, no `db`/`service` params). No KB/XRef/Sec tool currently emits a freshness banner. Tracked in issue #86.
+**Note (2026-09-02, superseded 2026-09-09):** `freshnessBanner(db, service)` was found missing on 2026-09-02 and shipped the same day (issue #86 item 0): it lives in `shared.js`, is attached centrally by `registerServiceTools` in `tool-sets.js`, and is never put on `emptyResult` / `notFoundResult` / `errorResult`. On 2026-09-09 it gained the age qualifier (`_KB snapshot: 2026-08-14 (26 days old)_`), the `live refresh` hint for `XREF_LIVE=1`, and per-model freshness through `model_versions.indexed_at` (exposed by the module-list tools and the `d365://modules` resource). See CLAUDE.md rule #4. The same-named function in the Wiki service's `wiki-storage.js` is unrelated.
 
 ---
 

@@ -12,6 +12,8 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
+/** @typedef {{ n: number }} CountRow  shape of a `SELECT COUNT(*) as n` row (better-sqlite3 returns `unknown`) */
+
 const dbPath = process.argv[2];
 if (!dbPath) { console.error('Usage: ... | node build/inject-duty-privs.js <sqlitePath>'); process.exit(1); }
 
@@ -88,9 +90,9 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   flushBatch();
 
-  const dpCount = db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get().n;
-  const dutyCount = db.prepare('SELECT COUNT(*) as n FROM duties').get().n;
-  const privCount = db.prepare('SELECT COUNT(*) as n FROM privileges').get().n;
+  const dpCount = /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get()).n;
+  const dutyCount = /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM duties').get()).n;
+  const privCount = /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM privileges').get()).n;
 
   // Update metadata
   db.prepare("INSERT OR REPLACE INTO sec_metadata VALUES ('dutyPrivileges', ?)").run(String(dpCount));

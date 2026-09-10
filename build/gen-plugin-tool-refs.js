@@ -61,7 +61,8 @@ function paramRows(shape) {
   const keys = Object.keys(shape);
   if (keys.length === 0) return '_No parameters._';
   const json = z.toJSONSchema(z.object(shape), { unrepresentable: 'any', io: 'input' });
-  const props = json.properties ?? {};
+  // zod's _JSONSchema type omits `default` / `description`, which toJSONSchema does emit.
+  const props = /** @type {Record<string, any>} */ (json.properties ?? {});
   const required = new Set(json.required ?? []);
   const rows = keys.map((k) => {
     const p = props[k] ?? {};
@@ -121,7 +122,8 @@ function firstSentence(d) {
 export function generate() {
   // The sealed-ISV tools (#82) and the live custom-field tool (#90) register
   // onto the same services, so they belong in the same reference files.
-  const kb = captureServer();
+  // captureServer() is a registration-capturing mock, not a real McpServer.
+  const kb = /** @type {any} */ (captureServer());
   registerKbTools(kb, stubDb);
   registerIsvKbTools(kb, stubDb);
   registerCustomFieldTools(kb, stubDb);
@@ -129,7 +131,8 @@ export function generate() {
   const sec = captureServer(); registerSecTools(sec, stubDb);
   const labels = captureServer(); registerLabelsTools(labels, stubDb);
   const tr = captureServer(); registerTaskRecorderTools(tr);
-  const wiki = captureServer(); registerWikiTools(wiki, { name: '<wiki>', title: '<Wiki title>', description: '<wiki description>', container: 'wiki', pagesPrefix: '' }, { serviceClient: stubServiceClient });
+  // Placeholder config: registration only reads name/title/description; no blob is ever fetched here.
+  const wiki = /** @type {any} */ (captureServer()); registerWikiTools(wiki, /** @type {import('../src/azure/wiki-registry.js').WikiConfig} */ ({ name: '<wiki>', title: '<Wiki title>', description: '<wiki description>', container: 'wiki', pagesPrefix: '' }), { serviceClient: stubServiceClient });
 
   const services = [
     { file: 'kb-tools.md', key: 'd365kb', title: 'd365kb — D365FO Knowledge Base', source: 'src/azure/kb-tools.js', tools: kb.tools,

@@ -76,21 +76,46 @@ export function sanitizeModulesFilter(modules) {
  * @param {string|null} [moduleId]  Optional: only models of this package.
  */
 export function queryModelVersions(q, moduleId = null) {
+  // `indexed_at` (#86 item 1) exists only on databases built or delta-merged
+  // after 2026-09-09. The first SELECT names it; on a pre-column snapshot that
+  // statement fails to prepare and the second SELECT serves the old shape. So
+  // every row of a response carries `indexed_at` (possibly null) or none does —
+  // rule #14 decided per response, by the column's existence.
+  const cols = 'model_name, module_id, display_name, publisher, layer, origin, version';
+  const sqlFor = (withIndexedAt) => (moduleId != null
+    ? `SELECT ${cols}${withIndexedAt ? ', indexed_at' : ''} FROM model_versions WHERE module_id = ? COLLATE NOCASE ORDER BY model_name`
+    : `SELECT ${cols}${withIndexedAt ? ', indexed_at' : ''} FROM model_versions ORDER BY module_id, model_name`);
+  const params = moduleId != null ? [moduleId] : undefined;
   try {
-    if (moduleId != null) {
-      return q(
-        `SELECT model_name, module_id, display_name, publisher, layer, origin, version
-         FROM model_versions WHERE module_id = ? COLLATE NOCASE ORDER BY model_name`,
-        [moduleId],
-      );
-    }
-    return q(
-      `SELECT model_name, module_id, display_name, publisher, layer, origin, version
-       FROM model_versions ORDER BY module_id, model_name`,
-    );
+    return q(sqlFor(true), params);
   } catch {
-    return [];
+    try {
+      return q(sqlFor(false), params);
+    } catch {
+      return [];
+    }
   }
+}
+
+/**
+ * The most recent `indexed_at` among model rows, or null when the column is
+ * absent (pre-#86 snapshot) or every value is null. A package's freshness is
+ * its newest model — the delta path moves models forward one at a time.
+ * @param {Array<{ indexed_at?: string|null }>} rows
+ * @returns {string|null}
+ */
+export function latestIndexedAt(rows) {
+  let best = null;
+  for (const r of rows || []) {
+    const v = r && typeof r.indexed_at === 'string' ? r.indexed_at : null;
+    if (v && (!best || v > best)) best = v;
+  }
+  return best;
+}
+
+/** True when the rows carry the `indexed_at` key at all (column present). */
+export function hasIndexedAt(rows) {
+  return Array.isArray(rows) && rows.length > 0 && Object.prototype.hasOwnProperty.call(rows[0], 'indexed_at');
 }
 
 // ── Singleton databases ─────────────────────────────────────────────────────
@@ -521,16 +546,51 @@ export function snapshotDate(db) {
 
 const SERVICE_LABELS = Object.freeze({ kb: 'KB', xref: 'XRef', sec: 'Sec', labels: 'Labels' });
 
+// Clock seam (#86 item 2): the age qualifier depends on "today", and a test
+// that asserts a banner string must be able to pin it. Production never calls
+// setFreshnessClock.
+let freshnessNow = () => new Date();
+/** @param {(() => Date) | null} [fn] a fixed clock for tests; null restores the real one */
+export function setFreshnessClock(fn) {
+  freshnessNow = typeof fn === 'function' ? fn : () => new Date();
+}
+
 /**
- * The freshness banner of rule #4: `_KB snapshot: 2026-08-14_`. Empty string
- * when the snapshot cannot be dated — never throws. `service` is the service
- * key ('kb' | 'xref' | 'sec') or any label to print verbatim.
+ * Whole days between the snapshot's build date and today (UTC calendar dates,
+ * so a build at 23:59 and a call at 00:01 count as one day). null when the
+ * snapshot is undatable; never negative.
+ * @param {any} db
+ * @param {Date} [now]
+ * @returns {number|null}
+ */
+export function snapshotAgeDays(db, now = freshnessNow()) {
+  const iso = snapshotDate(db);
+  if (!iso) return null;
+  const built = Date.parse(`${iso}T00:00:00Z`);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (!Number.isFinite(built) || !Number.isFinite(today)) return null;
+  return Math.max(0, Math.floor((today - built) / 86_400_000));
+}
+
+/**
+ * The freshness banner of rule #4: `_KB snapshot: 2026-08-14 (26 days old)_`.
+ * The age qualifier (#86 item 2) is omitted on the build day; a local XRef
+ * server converging on the live cross-reference database (`XREF_LIVE=1`,
+ * #129) adds `live refresh` so the reader knows the custom modules move ahead
+ * of the whole-DB date. Empty string when the snapshot cannot be dated — never
+ * throws. `service` is the service key ('kb' | 'xref' | 'sec' | 'labels') or
+ * any label to print verbatim.
  */
 export function freshnessBanner(db, service) {
   const iso = snapshotDate(db);
   if (!iso) return '';
-  const label = SERVICE_LABELS[String(service ?? '').toLowerCase()] ?? String(service ?? 'snapshot');
-  return `_${label} snapshot: ${iso}_`;
+  const key = String(service ?? '').toLowerCase();
+  const label = SERVICE_LABELS[key] ?? String(service ?? 'snapshot');
+  const qualifiers = [];
+  const age = snapshotAgeDays(db);
+  if (age != null && age > 0) qualifiers.push(`${age} day${age === 1 ? '' : 's'} old`);
+  if (key === 'xref' && process.env.XREF_LIVE === '1') qualifiers.push('live refresh');
+  return `_${label} snapshot: ${iso}${qualifiers.length ? ` (${qualifiers.join(', ')})` : ''}_`;
 }
 
 /**
@@ -728,7 +788,7 @@ function insertAfterHeading(text, lines) {
  *   provenance_omitted?: { count: number, total: number, models?: string[] },
  *   isv_not_scanned?: boolean,
  *   isv_excluded?: { count: number },
- *   partial_build?: { since?: string|null },
+ *   partial_build?: { since?: string|null, service?: string } | null,
  *   custom_layer?: string,
  *   shape_hint?: string,
  * }} [signals]

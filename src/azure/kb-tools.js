@@ -22,6 +22,8 @@ import {
   modulesFilterParam,
   sanitizeModulesFilter,
   queryModelVersions,
+  latestIndexedAt,
+  hasIndexedAt,
   numberSourceLines,
   contextAround,
   validateLikePattern,
@@ -1578,7 +1580,11 @@ export function registerKbTools(server, db, opts = {}) {
 
       // Build provenance of the models in this package ([] on KB databases
       // built before model_versions capture).
-      const models = queryModelVersions(q, mid).map(v => ({
+      const versionRows = queryModelVersions(q, mid);
+      // #86 item 4: `indexed_at` on every model row when the snapshot has the
+      // column (null where a row predates it), on none otherwise — rule #14.
+      const withIndexedAt = hasIndexedAt(versionRows);
+      const models = versionRows.map(v => ({
         model_name: v.model_name,
         module_id: v.module_id ?? null,
         display_name: v.display_name ?? null,
@@ -1586,6 +1592,7 @@ export function registerKbTools(server, db, opts = {}) {
         layer: v.layer ?? null,
         origin: v.origin ?? null,
         version: v.version ?? null,
+        ...(withIndexedAt ? { indexed_at: v.indexed_at ?? null } : {}),
       }));
 
       const tableRows = q(
@@ -2310,7 +2317,8 @@ export function registerKbTools(server, db, opts = {}) {
       // Build provenance per package: a package can hold several models
       // (e.g. ApplicationSuite), so distinct values are joined with ', '.
       const byModule = new Map();
-      for (const v of queryModelVersions(q)) {
+      const allVersions = queryModelVersions(q);
+      for (const v of allVersions) {
         const key = (v.module_id ?? '').toLowerCase();
         if (!byModule.has(key)) byModule.set(key, []);
         byModule.get(key).push(v);
@@ -2321,6 +2329,12 @@ export function registerKbTools(server, db, opts = {}) {
         )];
         return vals.length ? vals.join(', ') : null;
       };
+      // #86 item 4: a package is as fresh as its newest model. Key on every row
+      // or on none (column absent on a pre-#86 snapshot) — rule #14.
+      const withIndexedAt = hasIndexedAt(allVersions);
+      const indexedAt = (moduleId) => (withIndexedAt
+        ? { indexed_at: latestIndexedAt(byModule.get(moduleId.toLowerCase()) || []) }
+        : {});
       // A package matches when ANY of its models does - filtering the joined
       // provenance string would drop mixed-origin packages.
       const matchesFilter = (moduleId) => {
@@ -2354,6 +2368,7 @@ export function registerKbTools(server, db, opts = {}) {
           origin: provenance(r.module_id, 'origin'),
           publisher: provenance(r.module_id, 'publisher'),
           layer: provenance(r.module_id, 'layer'),
+          ...indexedAt(r.module_id),
         })),
       };
 

@@ -36,6 +36,12 @@ import {
   wikiSearchOutput,
 } from './output-schemas.js';
 
+/**
+ * The shared.js result helpers infer `content[].type` as `string`; the SDK handler
+ * contract wants the `'text'` literal, so every handler return is cast to it.
+ * @typedef {import('@modelcontextprotocol/sdk/types.js').CallToolResult} CallToolResult
+ */
+
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 500;
 const DEFAULT_SEARCH_LIMIT = 10;
@@ -82,7 +88,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
             `index for wiki:${wiki.name}. The wiki exists but ${wiki.indexBlob} has not been written yet `
             + `(${pageCount} page(s) are in the container)`,
           );
-          return { ...fallback, structuredContent: typed };
+          return /** @type {CallToolResult} */ ({ ...fallback, structuredContent: typed });
         }
 
         const banner = await store.freshnessBanner();
@@ -100,9 +106,9 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           + `Pages in container \`${wiki.container}\`: **${pageCount}**\n\n`
           + `---\n\n`
           + idx.content;
-        return structuredResult(typed, md, 'markdown');
+        return /** @type {CallToolResult} */ (structuredResult(typed, md, 'markdown'));
       } catch (err) {
-        return errorResult('db-error', `Could not read the ${wiki.title} index.`, err);
+        return /** @type {CallToolResult} */ (errorResult('db-error', `Could not read the ${wiki.title} index.`, err));
       }
     },
   );
@@ -141,7 +147,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
             truncated: false,
           };
           const fallback = emptyResult(`pages in wiki:${wiki.name}`);
-          return { ...fallback, structuredContent: typed };
+          return /** @type {CallToolResult} */ ({ ...fallback, structuredContent: typed });
         }
 
         const truncated = total > effectiveLimit;
@@ -178,9 +184,9 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           + `## ${wiki.title} — Pages (${typedPages.length}/${total})\n\n`
           + table;
         if (truncated) md += truncationNote('user', typedPages.length);
-        return structuredResult(typed, md, 'markdown');
+        return /** @type {CallToolResult} */ (structuredResult(typed, md, 'markdown'));
       } catch (err) {
-        return errorResult('db-error', `Could not list pages in wiki:${wiki.name}.`, err);
+        return /** @type {CallToolResult} */ (errorResult('db-error', `Could not list pages in wiki:${wiki.name}.`, err));
       }
     },
   );
@@ -204,7 +210,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
     },
     async ({ slug }) => {
       if (typeof slug !== 'string' || slug.trim().length === 0) {
-        return errorResult('invalid-input', 'Provide the page slug.');
+        return /** @type {CallToolResult} */ (errorResult('invalid-input', 'Provide the page slug.'));
       }
       try {
         const page = await store.getPage(slug);
@@ -215,7 +221,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
             const listing = await store.listPages();
             suggestions = fuzzyMatch(slug, listing.map(l => l.slug), 8);
           } catch { /* cleanup-warn suppressed; suggestions are best-effort */ }
-          return notFoundResult('Wiki page', slug, suggestions);
+          return /** @type {CallToolResult} */ (notFoundResult('Wiki page', slug, suggestions));
         }
 
         const banner = await store.freshnessBanner();
@@ -239,9 +245,9 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           + fmLines
           + `\n${page.body}`;
 
-        return structuredResult(typed, md, 'markdown');
+        return /** @type {CallToolResult} */ (structuredResult(typed, md, 'markdown'));
       } catch (err) {
-        return errorResult('db-error', `Could not read page "${slug}".`, err);
+        return /** @type {CallToolResult} */ (errorResult('db-error', `Could not read page "${slug}".`, err));
       }
     },
   );
@@ -264,7 +270,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
     },
     async ({ query, limit }) => {
       if (typeof query !== 'string' || query.trim().length === 0) {
-        return errorResult('invalid-input', 'Provide a search query.');
+        return /** @type {CallToolResult} */ (errorResult('invalid-input', 'Provide a search query.'));
       }
       const effectiveLimit = Number.isInteger(limit) && limit > 0 && limit <= MAX_SEARCH_LIMIT
         ? limit
@@ -288,7 +294,7 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
           const fallback = emptyResult(
             `matches for query "${query}" in wiki:${wiki.name} (scanned ${totalScanned} page(s))`,
           );
-          return { ...fallback, structuredContent: typed };
+          return /** @type {CallToolResult} */ ({ ...fallback, structuredContent: typed });
         }
 
         // searchPages already truncates to `limit`; we never know the full hit
@@ -322,9 +328,9 @@ export function registerWikiTools(server, wiki, { serviceClient = null } = {}) {
         }
         if (truncated) md += truncationNote('user', matches.length);
 
-        return structuredResult(typed, md, 'markdown');
+        return /** @type {CallToolResult} */ (structuredResult(typed, md, 'markdown'));
       } catch (err) {
-        return errorResult('db-error', `Could not search wiki:${wiki.name}.`, err);
+        return /** @type {CallToolResult} */ (errorResult('db-error', `Could not search wiki:${wiki.name}.`, err));
       }
     },
   );

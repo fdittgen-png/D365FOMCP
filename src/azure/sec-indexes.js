@@ -189,7 +189,7 @@ export function ensureSecIndexes(dbPath, opts = {}) {
   try {
     db = new Database(dbPath, { fileMustExist: true, timeout: 5000 });
     const existing = new Set(
-      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(r => r.name),
+      /** @type {{ name: string }[]} */ (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all()).map(r => r.name),
     );
     for (const ix of SEC_INDEXES) {
       if (existing.has(ix.name)) { result.present.push(ix.name); continue; }

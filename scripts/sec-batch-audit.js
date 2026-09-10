@@ -14,7 +14,11 @@
  *   4. Tool-free summary call at the end for cross-user reasoning
  *
  * Usage:
- *   SEC_DB_PATH=... ANTHROPIC_API_KEY=sk-ant-... node scripts/sec-batch-audit.js [user1 user2 ...]
+ *   SEC_DB_PATH=... node scripts/sec-batch-audit.js [user1 user2 ...]
+ *
+ * Credentials: the SDK resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an
+ * `ant auth login` profile on its own — nothing is passed explicitly.
+ * Model: AUDIT_MODEL (default claude-opus-5). Effort: AUDIT_EFFORT (default: API default, `high`).
  *
  * If no users are specified, audits all enabled users.
  *
@@ -28,13 +32,20 @@ const require = createRequire(import.meta.url);
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
-const API_KEY = process.env.ANTHROPIC_API_KEY;
-const MODEL = process.env.AUDIT_MODEL || 'claude-sonnet-4-5-20241022';
+// claude-sonnet-4-5-20241022 (the previous default) never existed — Sonnet 4.5's
+// snapshot is 20250929 — so every run without AUDIT_MODEL failed with a 404.
+const MODEL = process.env.AUDIT_MODEL || 'claude-opus-5';
+// Thinking is on by default on Claude Opus 5 and max_tokens caps thinking + answer
+// together, so the old 1024/2048 caps would truncate mid-answer.
+const MAX_TOKENS = 16000;
+const EFFORT = process.env.AUDIT_EFFORT || undefined; // low | medium | high | xhigh | max
 const SEC_DB = process.env.SEC_DB_PATH;
 const MAX_TOOL_ROUNDS = 5;
 
-if (!API_KEY) { console.error('Error: ANTHROPIC_API_KEY not set.'); process.exit(1); }
 if (!SEC_DB) { console.error('Error: SEC_DB_PATH not set.'); process.exit(1); }
+if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+  console.error('Note: no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN — the SDK will use an `ant auth login` profile if one exists.');
+}
 
 // ── Lazy imports (avoid crashing if deps missing) ────────────────────────────
 
@@ -85,7 +96,37 @@ console.log(`Auditing ${targetUsers.length} user(s)...`);
 
 // ── Anthropic client ─────────────────────────────────────────────────────────
 
-const anthropic = new Anthropic({ apiKey: API_KEY });
+const anthropic = new Anthropic();
+
+/**
+ * Shared request shape. `fallbacks: 'default'` re-runs a request that Opus 5's
+ * safety classifiers decline (stop_reason 'refusal', HTTP 200) on Anthropic's
+ * recommended fallback model, routed by refusal category — a security audit is
+ * exactly the benign workload that occasionally trips the cyber classifier.
+ * Requires the beta messages endpoint + the -2026-07-01 beta header.
+ */
+const requestBase = {
+  model: MODEL,
+  max_tokens: MAX_TOKENS,
+  thinking: { type: 'adaptive' },
+  ...(EFFORT ? { output_config: { effort: EFFORT } } : {}),
+  betas: ['server-side-fallback-2026-07-01'],
+  fallbacks: 'default',
+};
+
+/** All text blocks of a response joined — thinking blocks come first, so never index content[0]. */
+const textOf = (response) => response.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+
+/** Non-tool stop reasons end the analysis; the text says why when it was not a normal end. */
+function finalText(response) {
+  if (response.stop_reason === 'refusal') {
+    const d = response.stop_details;
+    return `(declined by safety classifier${d?.category ? `: ${d.category}` : ''}${d?.explanation ? ` — ${d.explanation}` : ''})`;
+  }
+  const text = textOf(response);
+  if (response.stop_reason === 'max_tokens') return `${text}\n(truncated: max_tokens reached)`;
+  return text;
+}
 
 // Define the tools Claude can call (subset for efficiency)
 const tools = [
@@ -165,32 +206,33 @@ async function analyzeUser(userId) {
   let totalTokens = 0;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      tools,
-      messages,
-    });
+    const response = await anthropic.beta.messages.create({ ...requestBase, tools, messages });
 
     totalTokens += (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0);
 
-    if (response.stop_reason === 'end_turn') {
-      const text = response.content.find(c => c.type === 'text')?.text || '';
-      return { userId, analysis: text, tokens: totalTokens };
+    // Anything but a tool call ends the turn — looping on end_turn / refusal / max_tokens
+    // would leave an assistant message last in `messages`, which is a prefill and a 400.
+    if (response.stop_reason !== 'tool_use') {
+      return { userId, analysis: finalText(response), tokens: totalTokens };
     }
 
-    // Process tool calls
+    // Process tool calls: the full content (thinking blocks included) goes back
+    // unchanged, and every tool_result of the turn goes in ONE user message.
     messages.push({ role: 'assistant', content: response.content });
     const toolResults = [];
     for (const block of response.content) {
       if (block.type === 'tool_use') {
-        const result = await executeTool(block.name, block.input);
+        let result;
+        try {
+          result = await executeTool(block.name, block.input);
+        } catch (err) {
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Tool failed: ${err.message}`, is_error: true });
+          continue;
+        }
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result });
       }
     }
-    if (toolResults.length) {
-      messages.push({ role: 'user', content: toolResults });
-    }
+    messages.push({ role: 'user', content: toolResults });
   }
 
   return { userId, analysis: '(max tool rounds exceeded)', tokens: totalTokens };
@@ -214,9 +256,8 @@ for (const user of targetUsers) {
 // ── Cross-user summary ───────────────────────────────────────────────────────
 
 console.log('\nGenerating cross-user summary...');
-const summaryResponse = await anthropic.messages.create({
-  model: MODEL,
-  max_tokens: 2048,
+const summaryResponse = await anthropic.beta.messages.create({
+  ...requestBase,
   messages: [{
     role: 'user',
     content: `You analyzed D365 security for ${results.length} users. Individual results:\n\n` +
@@ -228,7 +269,7 @@ const summaryResponse = await anthropic.messages.create({
   }],
 });
 
-const summary = summaryResponse.content.find(c => c.type === 'text')?.text || '';
+const summary = finalText(summaryResponse);
 const totalTokens = results.reduce((s, r) => s + r.tokens, 0) +
   (summaryResponse.usage?.input_tokens || 0) + (summaryResponse.usage?.output_tokens || 0);
 
@@ -237,6 +278,7 @@ const totalTokens = results.reduce((s, r) => s + r.tokens, 0) +
 const report = {
   analyzedAt: new Date().toISOString(),
   buildDate,
+  model: MODEL,
   userCount: results.length,
   totalTokensUsed: totalTokens,
   summary,

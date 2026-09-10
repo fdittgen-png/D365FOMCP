@@ -24,3 +24,25 @@ jobs:
 
       - name: Install with strict lockfile (npm ci)
         run: npm ci
+
+  typecheck:
+    name: Type check (checkJs + JSDoc, issue #103)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read Node version from .nvmrc
+        id: nvm
+        run: echo "version=$(cat .nvmrc)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.nvm.outputs.version }}
+          cache: npm
+
+      - run: npm ci
+
+      # Baseline reached zero on 2026-09-09 (232 -> 0, types only). From here a
+      # new checker error is a failed job, not an advisory number.
+      - name: tsc -p jsconfig.json (noEmit)
+        run: npm run typecheck

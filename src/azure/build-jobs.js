@@ -79,7 +79,8 @@ function cleanup() {
   // Cap total jobs
   if (jobs.size > MAX_JOBS) {
     const sorted = [...jobs.entries()].sort((a, b) =>
-      new Date(a[1].createdAt) - new Date(b[1].createdAt));
+      // `Date - Date` coerces through valueOf() at runtime; TS permits the operator only on number/any.
+      /** @type {any} */ (new Date(a[1].createdAt)) - /** @type {any} */ (new Date(b[1].createdAt)));
     for (let i = 0; i < sorted.length - MAX_JOBS; i++) {
       jobs.delete(sorted[i][0]);
     }

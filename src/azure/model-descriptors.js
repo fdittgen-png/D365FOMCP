@@ -199,25 +199,74 @@ CREATE TABLE IF NOT EXISTS model_versions (
   layer            TEXT,
   origin           TEXT,
   version          TEXT,
-  source_root      TEXT
+  source_root      TEXT,
+  indexed_at       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_model_versions_module ON model_versions(module_id COLLATE NOCASE);
 `;
 
 /**
+ * Columns added to `model_versions` after its first release, with the DDL that
+ * adds each one to an EXISTING database. `CREATE TABLE IF NOT EXISTS` never
+ * alters a table that is already there, so every path that writes into a
+ * database it did not create (the KB delta merge, the XRef module delta)
+ * calls `ensureModelVersionsColumns()` first.
+ *
+ *   indexed_at (#86 item 1) — ISO timestamp of the build/delta that last wrote
+ *   the row. A full build stamps every model with the same instant; a delta
+ *   moves only the compiled models forward, which is exactly the per-model
+ *   freshness the whole-DB `build_date` cannot express.
+ */
+export const MODEL_VERSIONS_OPTIONAL_COLUMNS = Object.freeze([
+  { name: 'indexed_at', ddl: 'ALTER TABLE model_versions ADD COLUMN indexed_at TEXT' },
+]);
+
+/**
+ * Add any missing optional column to an existing `model_versions` table
+ * (better-sqlite3 handle). No-op when the table is absent or already current.
+ * Returns the names of the columns added.
+ *
+ * @param {{ prepare(sql: string): { all(...p: any[]): any[] }, exec(sql: string): any }} db
+ * @param {string} [schema] attached-database prefix (`'main'`), default main
+ * @returns {string[]}
+ */
+export function ensureModelVersionsColumns(db, schema = 'main') {
+  const added = [];
+  /** @type {any[]} */
+  let cols;
+  try {
+    cols = db.prepare(`PRAGMA ${schema}.table_info(model_versions)`).all();
+  } catch {
+    return added;
+  }
+  if (!cols.length) return added; // table absent — the caller creates it from MODEL_VERSIONS_SCHEMA
+  const have = new Set(cols.map(c => String(c.name).toLowerCase()));
+  for (const col of MODEL_VERSIONS_OPTIONAL_COLUMNS) {
+    if (have.has(col.name)) continue;
+    db.exec(col.ddl.replace('ALTER TABLE model_versions', `ALTER TABLE ${schema}.model_versions`));
+    added.push(col.name);
+  }
+  return added;
+}
+
+/**
  * Insert descriptor rows via a caller-supplied runner so both better-sqlite3
  * (`stmt.run`) and sql.js (`db.run(sql, params)`) builders can share it.
  *
+ * Every row is stamped with `indexed_at` — one instant per call (the build),
+ * overridable for tests or for a merge that wants to keep the delta's stamp.
+ *
  * @param {(sql:string, params:any[])=>void} run  Statement executor.
- * @param {ReturnType<typeof readModelDescriptors>} rows
+ * @param {Array<Record<string, any>>} rows  readModelDescriptors() rows
+ * @param {{ indexedAt?: string }} [opts]
  */
-export function insertModelVersions(run, rows) {
+export function insertModelVersions(run, rows, { indexedAt = new Date().toISOString() } = {}) {
   for (const r of rows) {
     run(
       `INSERT OR REPLACE INTO model_versions
-       (model_name, module_id, display_name, publisher, layer, origin, version, source_root)
-       VALUES (?,?,?,?,?,?,?,?)`,
-      [r.model_name, r.module_id, r.display_name, r.publisher, r.layer, r.origin, r.version, r.source_root],
+       (model_name, module_id, display_name, publisher, layer, origin, version, source_root, indexed_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [r.model_name, r.module_id, r.display_name, r.publisher, r.layer, r.origin, r.version, r.source_root, r.indexed_at ?? indexedAt],
     );
   }
 }

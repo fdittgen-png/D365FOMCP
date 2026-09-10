@@ -569,6 +569,7 @@ export function parseTaskRecordingData(buffer) {
 
   // ── recording_resource.xml (optional) ─────────────────────────────────
   let language = null;
+  /** @type {Record<string, string>} */
   const localizedSteps = {};
   if (entryMap['recording_resource.xml']) {
     try {
@@ -593,6 +594,7 @@ export function parseTaskRecordingData(buffer) {
 
   // ── Form contexts ─────────────────────────────────────────────────────
   const forms = [];
+  /** @type {Record<string, string>} */
   const formIdToName = {};
   if (rec.FormContexts) {
     for (const kv of asArray(rec.FormContexts.KeyValueOfstringFormContextyaScvdpM)) {

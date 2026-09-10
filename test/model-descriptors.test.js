@@ -19,6 +19,8 @@ import {
   classifyOrigin,
   layerName,
   MODEL_VERSIONS_SCHEMA,
+  MODEL_VERSIONS_OPTIONAL_COLUMNS,
+  ensureModelVersionsColumns,
 } from '../src/azure/model-descriptors.js';
 import { createRequire } from 'module';
 
@@ -213,6 +215,45 @@ describe('readModelDescriptors (on-disk scan)', () => {
       'SELECT model_name FROM model_versions WHERE module_id = ? COLLATE NOCASE'
     ).all('IEXTENSION');
     assert.equal(byModule.length, 1);
+    // #86 item 1: every row of one build carries the same indexed_at stamp.
+    assert.match(stored[0].indexed_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(stored[0].indexed_at, stored[1].indexed_at, 'one instant per insertModelVersions call');
     db.close();
+  });
+
+  it('insertModelVersions honours an explicit indexedAt and a per-row indexed_at', () => {
+    const db = new Database(':memory:');
+    db.exec(MODEL_VERSIONS_SCHEMA);
+    const rows = readModelDescriptors([root]);
+    insertModelVersions((sql, params) => db.prepare(sql).run(...params), rows, { indexedAt: '2026-09-01T00:00:00.000Z' });
+    assert.deepEqual([...new Set(db.prepare('SELECT indexed_at FROM model_versions').all().map(r => r.indexed_at))], ['2026-09-01T00:00:00.000Z']);
+    insertModelVersions((sql, params) => db.prepare(sql).run(...params), [{ ...rows[1], indexed_at: '2026-09-09T10:00:00.000Z' }], { indexedAt: '2026-09-02T00:00:00.000Z' });
+    assert.equal(db.prepare('SELECT indexed_at FROM model_versions WHERE model_name = ?').get(rows[1].model_name).indexed_at, '2026-09-09T10:00:00.000Z', 'a row-level stamp (delta merge) wins');
+    db.close();
+  });
+
+  it('ensureModelVersionsColumns adds indexed_at to a pre-#86 table, once, and leaves a current or absent table alone', () => {
+    const legacy = new Database(':memory:');
+    legacy.exec('CREATE TABLE model_versions (model_name TEXT PRIMARY KEY, module_id TEXT, display_name TEXT, publisher TEXT, layer TEXT, origin TEXT, version TEXT, source_root TEXT)');
+    legacy.prepare("INSERT INTO model_versions VALUES ('iExtension','iExtension','iExtension','Trelleborg','USR','custom','10.0.32.7','C:\\custom')").run();
+    assert.deepEqual(ensureModelVersionsColumns(legacy), ['indexed_at']);
+    assert.deepEqual(ensureModelVersionsColumns(legacy), [], 'idempotent');
+    assert.equal(legacy.prepare('SELECT indexed_at FROM model_versions').get().indexed_at, null, 'existing rows are unknown-age, not stamped');
+    // insertModelVersions now works against the upgraded table
+    insertModelVersions((sql, params) => legacy.prepare(sql).run(...params), readModelDescriptors([root]), { indexedAt: '2026-09-09T00:00:00.000Z' });
+    assert.equal(legacy.prepare("SELECT indexed_at FROM model_versions WHERE model_name = 'iExtension'").get().indexed_at, '2026-09-09T00:00:00.000Z');
+    legacy.close();
+
+    const current = new Database(':memory:');
+    current.exec(MODEL_VERSIONS_SCHEMA);
+    assert.deepEqual(ensureModelVersionsColumns(current), []);
+    current.close();
+
+    const none = new Database(':memory:');
+    assert.deepEqual(ensureModelVersionsColumns(none), [], 'no table: the caller creates it from MODEL_VERSIONS_SCHEMA');
+    none.close();
+
+    assert.deepEqual(MODEL_VERSIONS_OPTIONAL_COLUMNS.map(c => c.name), ['indexed_at']);
+    assert.ok(MODEL_VERSIONS_SCHEMA.includes('indexed_at'), 'the fresh-build DDL carries every optional column');
   });
 });

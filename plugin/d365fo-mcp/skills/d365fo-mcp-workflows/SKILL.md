@@ -1,6 +1,6 @@
 ---
 name: d365fo-mcp-workflows
-description: Efficient multi-tool orchestration recipes for the D365FO MCP services — 14 named workflows (table deep dive, field investigation, impact analysis, security audit, migration-defect RCA, field-wiper hunt…), raw-SQL guardrails, anti-patterns, cost-efficiency rules. Use when planning which MCP tools to call and in what order.
+description: Efficient multi-tool orchestration recipes for the D365FO MCP services — 17 named workflows (table deep dive, field investigation, impact analysis, security audit, migration-defect RCA, field-wiper hunt, UI text → object → access, OData integration surface of a document…), raw-SQL guardrails, anti-patterns, cost-efficiency rules. Use when planning which MCP tools to call and in what order.
 ---
 
 # D365FO MCP Tool Orchestration Workflows
@@ -26,6 +26,8 @@ Full recipes with call sequences: **`references/workflows-catalog.md`** — read
 | 13 | Migration-Defect RCA | DMF entity validation depth |
 | 14 | Who wipes / writes this field | system overwrites a user value |
 | 15 | Cross-ERP pivot mapping | a source-ERP object → functional entity → D365FO data entity → table, names verified in batches |
+| 16 | UI text → object → access | a screen text or `@SYS…` id → every language + developer description → objects and properties that show it → who reaches them (`/d365-label`) |
+| 17 | OData integration surface of a document | "which OData services create / post X" → entity catalogue from `data_entities`, posting path via entity methods **and their `_Extension` classes**, domain skill first |
 | — | Raw SQL guardrails, KB raw-SQL schema notes | before any `*_raw_sql` |
 
 ### Most-used recipe inline — 7a "structure of entity X" (≤ 4 calls, ≤ 4k MCP tokens)
@@ -43,6 +45,8 @@ This skill defines efficient multi-tool workflows for the 5 MCP service families
 | Need | Service | Best Starting Tool |
 |------|---------|-------------------|
 | Table/field metadata | d365kb | `d365_lookup_table` |
+| A label id → text in any language + what it is for; a screen text → label ids | d365labels | `labels_lookup` / `labels_search` |
+| Where a label is shown, or what an object says | d365labels | `labels_where_used` / `labels_for_object` |
 | Table as compiled (base + extension fields, tagged by origin/module) | d365kb | `d365_effective_schema` |
 | "Does this field exist?" | d365kb | `d365_check_field_exists` |
 | "Do these objects / methods exist?" (preflight, ≤50, misses carry suggestions) | d365xref | `xref_check_exists` |
@@ -106,6 +110,9 @@ This skill defines efficient multi-tool workflows for the 5 MCP service families
 | Ignoring the italic coverage lines under the snapshot banner (`isv_excluded`, `partial_build`, `field_limit_hit`, `provenance_omitted`, `isv_not_scanned`) | They are the exact statement of what the response does NOT cover — asserting completeness over them is the hallucination these tools exist to prevent | Carry each line into the deliverable as an evidence limit; widen the call (`include_isv`, `include_provenance`, `fields_like`) only when the gap matters |
 | Retrying a call that came back with a "you are repeating this call" note | The server suppresses the payload on the third identical call in fifteen — the answer is already in context or the arguments are wrong | Change the arguments or move on; never loop on an unchanged call |
 | Calling `d365_lookup_table` on several tables in one turn, or `xref_find_extensions` + `d365_lookup_table` to learn who added which field | `lookup_table` is deliberately unbatched (one response is already large); two calls to answer one question | One `d365_effective_schema(table)` — base + every extension's fields, each row tagged `origin` / `module` / `model_origin` |
+| Enumerating the data entities of a business area with `d365_search(object_type: "entity")` | Keyword-biased: "vendor invoice header pending" returned the vendor-portal (VRM) entities and missed `VendorInvoiceHeaderEntity` itself (2026-09-10) | One `d365_raw_sql` over `data_entities` (`entity_name LIKE` / `primary_table IN`) — public name, collection, backing table and method count in one authoritative table (Workflow 17) |
+| Guessing an AOT entity name from its backing table (`VendInvoiceInfoTableEntity`) | `d365_get_class_methods` on a non-existent entity returns "No results" with **no suggestions** — indistinguishable from an entity without methods | Read the AOT name off the `data_entities` catalogue first |
+| Concluding "no OData action exists" from the entity's own method list or from 0 `d365_search` hits on `SysODataAction` | Actions frequently live on an extension class (`VendorInvoiceHeaderChargeEntity_iExtension_Extension.allocateChargesAction` posts pending vendor invoices); search indexes names/labels, not attributes | `methods` raw SQL with `owner_name LIKE '%<Entity>%'` (catches `_Extension` owners), or `xref_find_references("SysODataActionAttribute", kind: "Attribute")`; and read the domain skill / `MEMORY.md` before the first call — this one was already documented there |
 
 ---
 
@@ -139,6 +146,7 @@ This skill defines efficient multi-tool workflows for the 5 MCP service families
 
 ---
 
+*Version: 2.3 | Date: 2026-09-10 | Added: Workflow 17 (OData integration surface of a document — `data_entities` catalogue SQL, actions on `_Extension` classes, domain skill first), 3 anti-patterns (entity discovery by search, guessed AOT entity name, "no action" from the entity's own methods) after a vendor-invoice OData question spent 8 calls and still missed the documented custom posting action.*
 *Version: 2.2 | Date: 2026-09-07 | Added: cost rule 25 (deploy verification — ping 200 and `/admin/functions` over 401 checks; staging-list guard; line-ending-only diffs) after the first trace deploy took the MCP Function App down for 15 minutes with seven green checks.*
 *Version: 2.1 | Date: 2026-09-07 | Added: Workflow 15 (cross-ERP pivot mapping — vocabulary v2 with D365FO logical/physical references, batch preflight recipe, empty logical layer as a finding), cost rules 23–24 (trace protocol lines; Write tool + smoke load for code files after a heredoc corrupted a regex).*
 *Version: 2.0 | Date: 2026-09-04 | Split: Workflows 1–14 + raw-SQL notes moved to `references/workflows-catalog.md` (48 KB → index + 7a inline + anti-patterns + cost rules); loaded per session only what steers behaviour.*

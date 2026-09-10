@@ -7,7 +7,7 @@
  * typed keys are present only when fired (rule #14 — never false, never null).
  */
 
-import { describe, it, after } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
@@ -15,12 +15,16 @@ import {
   coverageNotes, structuredResult, withFreshnessBanner, readKbMetadataFlag, encodeToon, customLayerNote,
 } from '../src/azure/shared.js';
 import { runWithRequestContext } from '../src/azure/request-context.js';
+import { setFreshnessClock } from '../src/azure/shared.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
 const dbs = [];
 after(() => { for (const d of dbs) { try { d.close(); } catch { /* closed */ } } });
+// #86 item 2: pin "today" to the fixture's build day so the banner has no age qualifier.
+before(() => setFreshnessClock(() => new Date('2026-08-14T12:00:00Z')));
+after(() => setFreshnessClock(null));
 
 function kbDb(meta = {}) {
   const db = new Database(':memory:');

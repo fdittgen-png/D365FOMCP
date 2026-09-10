@@ -529,6 +529,19 @@ function parseDmfXml(xmlParser, filePath, entityNodeName, log) {
 // ── Main Build Function ──────────────────────────────────────────────────────
 
 /**
+ * Row shapes of the better-sqlite3 results read back during the build
+ * (`.get()` / `.all()` are typed `unknown`). Types only, no runtime effect.
+ * @typedef {{ n: number }} CountRow
+ * @typedef {{ role_id: string, role_name?: string, module_id?: string|null, label?: string|null, description?: string|null }} RoleRow
+ * @typedef {{ parent_role_id: string, child_role_id: string }} SubRoleRow
+ * @typedef {{ duty_id: string, duty_name?: string|null, module_id?: string|null, description?: string|null }} DutyRow
+ * @typedef {{ privilege_name: string, module_id?: string|null, label?: string|null }} PrivilegeRow
+ * @typedef {{ user_id: string, person_name?: string|null, email?: string|null, default_company?: string|null }} UserRow
+ * @typedef {{ permission_type: string|null }} RolePermRow
+ * @typedef {{ name: string, pass: boolean, detail: string }} DataQualityCheck
+ */
+
+/**
  * Build the security SQLite database.
  *
  * @param {Object} options
@@ -536,7 +549,7 @@ function parseDmfXml(xmlParser, filePath, entityNodeName, log) {
  * @param {string} options.dmfInputDir     - Directory with DMF XML exports (or 'skip'/'')
  * @param {string} options.outputPath      - Output SQLite file path
  * @param {Function} [options.log]         - Logger function (default: console.log)
- * @returns {{ stats: Object, counts: Object, elapsed: string, fileSize: string }}
+ * @returns {{ stats: Object, counts: Object, elapsed: string, fileSize: string, checks: DataQualityCheck[] }}
  */
 export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', outputPath, log = console.log }) {
   const xmlParser = createXmlParser();
@@ -724,7 +737,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
     log('\n[2/5] Parsing DMF exports from PROD...');
 
     const aotIdUpper = new Map();
-    for (const row of db.prepare('SELECT role_id, role_name FROM roles').all()) {
+    for (const row of /** @type {RoleRow[]} */ (db.prepare('SELECT role_id, role_name FROM roles').all())) {
       aotIdUpper.set(row.role_id.toUpperCase(), row.role_id);
     }
 
@@ -829,7 +842,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
         // Flatten transitive sub-roles via BFS (bulk-load adjacency list)
         const adj = new Map();
-        for (const row of db.prepare('SELECT parent_role_id, child_role_id FROM role_subroles').all()) {
+        for (const row of /** @type {SubRoleRow[]} */ (db.prepare('SELECT parent_role_id, child_role_id FROM role_subroles').all())) {
           if (!adj.has(row.parent_role_id)) adj.set(row.parent_role_id, []);
           adj.get(row.parent_role_id).push(row.child_role_id);
         }
@@ -859,7 +872,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
       // 2c: Role-Duty Assignments
       const aotDutyUpper = new Map();
-      for (const row of db.prepare('SELECT duty_id FROM duties').all()) {
+      for (const row of /** @type {DutyRow[]} */ (db.prepare('SELECT duty_id FROM duties').all())) {
         aotDutyUpper.set(row.duty_id.toUpperCase(), row.duty_id);
       }
 
@@ -880,7 +893,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
               aotDutyUpper.set(dutyId.toUpperCase(), dutyId);
             }
           }
-          const parentPerm = dmfStmts.findRolePerm.get(roleId)?.permission_type || 'Grant';
+          const parentPerm = /** @type {RolePermRow | undefined} */ (dmfStmts.findRolePerm.get(roleId))?.permission_type || 'Grant';
           const perm = (parentPerm === 'Deny' || detectPermissionType(dutyName) === 'Deny') ? 'Deny' : 'Grant';
           stmts.insertRoleDuty.run(roleId, dutyId, perm);
           stats.dmfDuties++;
@@ -904,7 +917,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
 
         const existingPrivsUpper = new Map();
-        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+        for (const row of /** @type {PrivilegeRow[]} */ (db.prepare('SELECT privilege_name FROM privileges').all())) {
           existingPrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
         }
 
@@ -1011,7 +1024,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
         // Refresh the privilege lookup — V1 ingestion above may have added rows.
         const v2PrivsUpper = new Map();
-        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+        for (const row of /** @type {PrivilegeRow[]} */ (db.prepare('SELECT privilege_name FROM privileges').all())) {
           v2PrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
         }
 
@@ -1138,7 +1151,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         const sizeMB = (fileSize / (1024 * 1024)).toFixed(0);
 
         const existingPrivsUpper = new Map();
-        for (const row of db.prepare('SELECT privilege_name FROM privileges').all()) {
+        for (const row of /** @type {PrivilegeRow[]} */ (db.prepare('SELECT privilege_name FROM privileges').all())) {
           existingPrivsUpper.set(row.privilege_name.toUpperCase(), row.privilege_name);
         }
 
@@ -1274,7 +1287,7 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
         for (const sdcRole of sdcRoles) {
           const roleName = sdcRole.Name;
           if (!roleName) continue;
-          const roleRow = findRoleByNameOrId.get(roleName, roleName);
+          const roleRow = /** @type {RoleRow | undefined} */ (findRoleByNameOrId.get(roleName, roleName));
           if (!roleRow) continue;
           const roleId = roleRow.role_id;
           const privs = ensureArray(sdcRole.Privileges?.AxSecurityPrivilegeReference);
@@ -1311,22 +1324,22 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
   log('\n[4/5] Building search index...');
   const searchTransaction = db.transaction(() => {
-    const roles = db.prepare('SELECT role_id, role_name, module_id, label, description FROM roles').all();
+    const roles = /** @type {RoleRow[]} */ (db.prepare('SELECT role_id, role_name, module_id, label, description FROM roles').all());
     for (const r of roles) {
       const content = [r.role_name, r.label, r.description, r.module_id].filter(Boolean).join(' ');
       stmts.insertSearch.run('role', r.role_name, r.module_id, content);
     }
-    const duties = db.prepare('SELECT duty_id, duty_name, module_id, description FROM duties').all();
+    const duties = /** @type {DutyRow[]} */ (db.prepare('SELECT duty_id, duty_name, module_id, description FROM duties').all());
     for (const d of duties) {
       const content = [d.duty_id, d.duty_name, d.description, d.module_id].filter(Boolean).join(' ');
       stmts.insertSearch.run('duty', d.duty_id, d.module_id, content);
     }
-    const privs = db.prepare('SELECT privilege_name, module_id, label FROM privileges').all();
+    const privs = /** @type {PrivilegeRow[]} */ (db.prepare('SELECT privilege_name, module_id, label FROM privileges').all());
     for (const p of privs) {
       const content = [p.privilege_name, p.label, p.module_id].filter(Boolean).join(' ');
       stmts.insertSearch.run('privilege', p.privilege_name, p.module_id, content);
     }
-    const users = db.prepare('SELECT user_id, person_name, email, default_company FROM users').all();
+    const users = /** @type {UserRow[]} */ (db.prepare('SELECT user_id, person_name, email, default_company FROM users').all());
     for (const u of users) {
       const content = [u.user_id, u.person_name, u.email, u.default_company].filter(Boolean).join(' ');
       stmts.insertSearch.run('user', u.user_id, null, content);
@@ -1342,33 +1355,33 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
 
   log('\n[5/5] Writing metadata & finalizing...');
   const counts = {
-    roles: db.prepare('SELECT COUNT(*) as n FROM roles').get().n,
-    duties: db.prepare('SELECT COUNT(*) as n FROM duties').get().n,
-    privileges: db.prepare('SELECT COUNT(*) as n FROM privileges').get().n,
-    entryPoints: db.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get().n,
-    users: db.prepare('SELECT COUNT(*) as n FROM users').get().n,
-    userRoles: db.prepare('SELECT COUNT(*) as n FROM user_roles').get().n,
-    companies: db.prepare('SELECT COUNT(DISTINCT company_id) as n FROM user_role_companies').get().n,
-    subRoles: db.prepare('SELECT COUNT(*) as n FROM role_subroles').get().n,
-    roleDuties: db.prepare('SELECT COUNT(*) as n FROM role_duties').get().n,
-    dutyPrivileges: db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get().n,
-    directEntityPerms: db.prepare('SELECT COUNT(*) as n FROM role_direct_entity_permissions').get().n,
+    roles: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM roles').get()).n,
+    duties: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM duties').get()).n,
+    privileges: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM privileges').get()).n,
+    entryPoints: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get()).n,
+    users: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM users').get()).n,
+    userRoles: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM user_roles').get()).n,
+    companies: /** @type {CountRow} */ (db.prepare('SELECT COUNT(DISTINCT company_id) as n FROM user_role_companies').get()).n,
+    subRoles: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM role_subroles').get()).n,
+    roleDuties: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM role_duties').get()).n,
+    dutyPrivileges: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM duty_privileges').get()).n,
+    directEntityPerms: /** @type {CountRow} */ (db.prepare('SELECT COUNT(*) as n FROM role_direct_entity_permissions').get()).n,
   };
 
   // ── Data-quality checks ──────────────────────────────────────────────────────
   // Loud PASS/WARN gate so a degraded export can't slip through unnoticed (this
   // is how role_direct_entity_permissions silently sat at 0 on prod).
-  const dutiesNoPriv = db.prepare(
+  const dutiesNoPriv = /** @type {CountRow} */ (db.prepare(
     'SELECT COUNT(*) as n FROM duties d WHERE NOT EXISTS (SELECT 1 FROM duty_privileges dp WHERE dp.duty_id = d.duty_id)'
-  ).get().n;
-  const epWithInvoke = db.prepare(
+  ).get()).n;
+  const epWithInvoke = /** @type {CountRow} */ (db.prepare(
     "SELECT COUNT(*) as n FROM privilege_entry_points WHERE grant_invoke IS NOT NULL AND grant_invoke <> ''"
-  ).get().n;
+  ).get()).n;
   const dep = {
     rows: counts.directEntityPerms,
-    withType: db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE resource_type IS NOT NULL AND resource_type <> ''").get().n,
-    withDeny: db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE 'Deny' IN (grant_read,grant_create,grant_update,grant_delete,grant_correct,grant_invoke)").get().n,
-    distinctRoles: db.prepare('SELECT COUNT(DISTINCT role_id) as n FROM role_direct_entity_permissions').get().n,
+    withType: /** @type {CountRow} */ (db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE resource_type IS NOT NULL AND resource_type <> ''").get()).n,
+    withDeny: /** @type {CountRow} */ (db.prepare("SELECT COUNT(*) as n FROM role_direct_entity_permissions WHERE 'Deny' IN (grant_read,grant_create,grant_update,grant_delete,grant_correct,grant_invoke)").get()).n,
+    distinctRoles: /** @type {CountRow} */ (db.prepare('SELECT COUNT(DISTINCT role_id) as n FROM role_direct_entity_permissions').get()).n,
   };
   const hadPermsExport = (stats.dmfDirectEntityPerms || 0) > 0 || dep.rows > 0;
   // "labels loaded" only proves label FILES were found — it stayed green
@@ -1376,9 +1389,9 @@ export function buildSecurityDatabase({ packagesPathArg = '', dmfInputDir = '', 
   // the raw `@…` reference instead of throwing. Count actual leaks left in
   // the queryable columns so a degraded resolve pass is visible in the log.
   const unresolvedLabels = {
-    roles: db.prepare("SELECT COUNT(*) as n FROM roles WHERE label LIKE '@%'").get().n,
-    duties: db.prepare("SELECT COUNT(*) as n FROM duties WHERE duty_name LIKE '@%'").get().n,
-    privileges: db.prepare("SELECT COUNT(*) as n FROM privileges WHERE label LIKE '@%'").get().n,
+    roles: /** @type {CountRow} */ (db.prepare("SELECT COUNT(*) as n FROM roles WHERE label LIKE '@%'").get()).n,
+    duties: /** @type {CountRow} */ (db.prepare("SELECT COUNT(*) as n FROM duties WHERE duty_name LIKE '@%'").get()).n,
+    privileges: /** @type {CountRow} */ (db.prepare("SELECT COUNT(*) as n FROM privileges WHERE label LIKE '@%'").get()).n,
   };
   const totalUnresolvedLabels = unresolvedLabels.roles + unresolvedLabels.duties + unresolvedLabels.privileges;
   const checks = [

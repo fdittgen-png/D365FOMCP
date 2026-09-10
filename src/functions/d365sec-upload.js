@@ -512,7 +512,7 @@ async function downloadToFile(url, filePath, context) {
     }
     ws.write(chunk);
   }
-  await new Promise((resolve, reject) => { ws.end(); ws.on('finish', resolve); ws.on('error', reject); });
+  await /** @type {Promise<void>} */ (new Promise((resolve, reject) => { ws.end(); ws.on('finish', resolve); ws.on('error', reject); }));
   context.log(`Downloaded ${(downloaded / (1024 * 1024)).toFixed(1)} MB to ${filePath}`);
 }
 
@@ -618,7 +618,7 @@ app.http('d365sec-upload', {
 
         if (contentType.includes('application/json')) {
           // ── Mode: JSON with zip_url (PowerAutomate / API) ─────────────────
-          const body = await request.json();
+          const body = /** @type {{ zip_url?: string }} */ (await request.json());
           zipUrl = body.zip_url;
           if (!zipUrl) {
             return { status: 400, jsonBody: { error: 'Missing zip_url in request body.', hint: 'POST JSON: { "zip_url": "https://..." }' } };
@@ -636,14 +636,14 @@ app.http('d365sec-upload', {
             if (bytes > MAX_URL_DOWNLOAD_BYTES) { ws.destroy(); throw new Error('Upload exceeds size limit.'); }
             ws.write(chunk);
           }
-          await new Promise((resolve, reject) => { ws.end(); ws.on('finish', resolve); ws.on('error', reject); });
+          await /** @type {Promise<void>} */ (new Promise((resolve, reject) => { ws.end(); ws.on('finish', resolve); ws.on('error', reject); }));
           context.log(`Mode: raw body, ${(bytes / (1024 * 1024)).toFixed(1)} MB` + (zipUrl ? ' + URL' : ''));
           extractZipSafe(zipPath, tmpDir, context);
 
         } else {
           // ── Mode: Multipart form (HTML form upload) ───────────────────────
           const formData = await request.formData();
-          const file = formData.get('zipfile');
+          const file = /** @type {File | null} */ (formData.get('zipfile'));
           zipUrl = formData.get('zip_url') || null;
           if (typeof zipUrl === 'string') zipUrl = zipUrl.trim() || null;
 
@@ -705,8 +705,8 @@ app.http('d365sec-upload', {
         if (existsSync(dbPath)) {
           try {
             const existing = new Database(dbPath, { readonly: true, fileMustExist: true });
-            const hasAot = existing.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get().n > 0;
-            const hasDmfRoles = existing.prepare('SELECT COUNT(*) as n FROM roles').get().n > 0;
+            const hasAot = /** @type {{ n: number }} */ (existing.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get()).n > 0;
+            const hasDmfRoles = /** @type {{ n: number }} */ (existing.prepare('SELECT COUNT(*) as n FROM roles').get()).n > 0;
             existing.close();
             if (dmfDir && !aotDir && hasAot) mode = 'merge-dmf';
             else if (aotDir && !dmfDir && hasDmfRoles) mode = 'merge-aot';
@@ -830,17 +830,17 @@ function mergeBuildsInPlace(dbPath, newBuildPath, context) {
 
     const dmfTables = ['roles', 'role_subroles', 'role_duties', 'users', 'user_roles', 'user_role_companies'];
     for (const t of dmfTables) {
-      const before = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      const before = /** @type {{ n: number }} */ (db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get()).n;
       db.exec(`DELETE FROM main.${t}`);
       db.exec(`INSERT INTO main.${t} SELECT * FROM new_db.${t}`);
-      const after = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      const after = /** @type {{ n: number }} */ (db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get()).n;
       context.log(`  ${t}: ${before} → ${after}`);
     }
 
     // Add new custom duties from DMF (don't touch existing AOT duties)
-    const dutyBefore = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    const dutyBefore = /** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) as n FROM main.duties').get()).n;
     db.exec('INSERT OR IGNORE INTO main.duties SELECT * FROM new_db.duties');
-    const dutyAfter = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    const dutyAfter = /** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) as n FROM main.duties').get()).n;
     context.log(`  duties: ${dutyBefore} → ${dutyAfter} (added ${dutyAfter - dutyBefore} from DMF)`);
 
     // Refresh search index for DMF object types
@@ -892,23 +892,23 @@ function mergeAotUpdateInPlace(dbPath, newBuildPath, context) {
     // REPLACE: AOT-sourced tables
     const replaceTables = ['privileges', 'privilege_entry_points', 'role_direct_privileges', 'role_direct_entity_permissions'];
     for (const t of replaceTables) {
-      const before = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      const before = /** @type {{ n: number }} */ (db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get()).n;
       db.exec(`DELETE FROM main.${t}`);
       db.exec(`INSERT INTO main.${t} SELECT * FROM new_db.${t}`);
-      const after = db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get().n;
+      const after = /** @type {{ n: number }} */ (db.prepare(`SELECT COUNT(*) as n FROM main.${t}`).get()).n;
       context.log(`  ${t}: ${before} → ${after}`);
     }
 
     // ADD-ONLY: new AOT duties (preserve custom DMF duties)
-    const dutyBefore = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    const dutyBefore = /** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) as n FROM main.duties').get()).n;
     db.exec('INSERT OR IGNORE INTO main.duties SELECT * FROM new_db.duties');
-    const dutyAfter = db.prepare('SELECT COUNT(*) as n FROM main.duties').get().n;
+    const dutyAfter = /** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) as n FROM main.duties').get()).n;
     context.log(`  duties: ${dutyBefore} → ${dutyAfter} (added ${dutyAfter - dutyBefore} from AOT)`);
 
     // ADD-ONLY: AOT direct duty-privilege pairs (preserves the 34M effective view)
-    const dpBefore = db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get().n;
+    const dpBefore = /** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get()).n;
     db.exec('INSERT OR IGNORE INTO main.duty_privileges SELECT * FROM new_db.duty_privileges');
-    const dpAfter = db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get().n;
+    const dpAfter = /** @type {{ n: number }} */ (db.prepare('SELECT COUNT(*) as n FROM main.duty_privileges').get()).n;
     context.log(`  duty_privileges: ${dpBefore} → ${dpAfter} (added ${dpAfter - dpBefore} from AOT)`);
 
     // Refresh search index for refreshed object types
@@ -982,8 +982,8 @@ async function runBuildAsync(jobId, context) {
     if (existsSync(dbPath)) {
       try {
         const existing = new Database(dbPath, { readonly: true, fileMustExist: true });
-        const hasAot = existing.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get().n > 0;
-        const hasDmfRoles = existing.prepare('SELECT COUNT(*) as n FROM roles').get().n > 0;
+        const hasAot = /** @type {{ n: number }} */ (existing.prepare('SELECT COUNT(*) as n FROM privilege_entry_points').get()).n > 0;
+        const hasDmfRoles = /** @type {{ n: number }} */ (existing.prepare('SELECT COUNT(*) as n FROM roles').get()).n > 0;
         existing.close();
         if (dmfDir && !aotDir && hasAot) mode = 'merge-dmf';
         else if (aotDir && !dmfDir && hasDmfRoles) mode = 'merge-aot';
@@ -1097,7 +1097,7 @@ app.http('d365sec-upload-build', {
   authLevel: 'anonymous',
   handler: async (request, context) => {
     try {
-      const body = await request.json();
+      const body = /** @type {{ job_id?: string, source_url?: string }} */ (await request.json());
 
       let job;
       if (body.job_id) {

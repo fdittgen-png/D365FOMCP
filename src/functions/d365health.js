@@ -139,7 +139,10 @@ export function inspectDatabase({ name, dbPath, getDb, statFn = statSync }) {
   return entry;
 }
 
-/** Build the full /api/health response body. */
+/**
+ * Build the full /api/health response body.
+ * @param {{ env?: NodeJS.ProcessEnv, getDbs?: Record<'kb' | 'xref' | 'sec', () => unknown>, statFn?: typeof statSync, now?: () => Date }} [options]
+ */
 export function buildHealthReport({ env = process.env, getDbs, statFn = statSync, now = () => new Date() } = {}) {
   const dbs = getDbs ?? {
     kb: getKbDb,

@@ -18,7 +18,11 @@
 import { execSync } from 'child_process';
 import sql from 'mssql';
 
-/** Resolve (and if necessary start) the named pipe of a LocalDB instance. */
+/**
+ * Resolve (and if necessary start) the named pipe of a LocalDB instance.
+ * @param {string} instanceName
+ * @param {(msg: string) => void} [log]
+ */
 export function getLocalDbPipe(instanceName, log = () => {}) {
   const instance = instanceName.split('\\').pop();
   const read = () => {
@@ -49,6 +53,7 @@ function coerce(raw) {
 /**
  * Open the cross-reference source.
  *
+ * @param {{ serverInstance: string, database: string, log?: (msg: string) => void }} opts
  * @returns {Promise<{query(sqlText:string, columns:string[]):Promise<object[]>,
  *                    close():Promise<void>, transport:'tedious'|'sqlcmd'}>}
  */

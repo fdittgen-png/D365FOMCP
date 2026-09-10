@@ -72,6 +72,10 @@ export const modelVersionRowSchema = z.object({
   layer: z.string().nullish(),
   origin: z.string().nullish(),   // 'microsoft' | 'isv' | 'custom' | 'unknown'
   version: z.string().nullish(),  // VersionMajor.Minor.Build.Revision
+  // #86 item 1/4: when this model's row was last written (full build or
+  // per-model delta). Present on every row or on none (column absent on a
+  // pre-2026-09-09 snapshot) — rule #14, decided per response.
+  indexed_at: z.string().nullish(),
 });
 
 // ── Issue #87/#90: UI custom fields, read live from an environment ───────────
@@ -818,6 +822,9 @@ export const d365ModuleRowSchema = z.object({
   origin: z.string().nullish(),
   publisher: z.string().nullish(),
   layer: z.string().nullish(),
+  // #86 item 4: newest indexed_at among the package's models; key present on
+  // every row or on none (column absent on a pre-#86 snapshot).
+  indexed_at: z.string().nullish(),
 });
 export const d365ListModulesOutput = z.object({
   ...kbCoverage,
@@ -1196,6 +1203,10 @@ export const xrefListModuleRowSchema = z.object({
   origin: z.string().nullish(),
   publisher: z.string().nullish(),
   layer: z.string().nullish(),
+  // #86 item 4 / #129: newest indexed_at among the package's models — the
+  // per-module delta moves it, the whole-DB build date does not. Present on
+  // every row or on none.
+  indexed_at: z.string().nullish(),
 });
 export const xrefListModulesOutput = z.object({
   // module_count = modules matching the filter; returned_count = rows in

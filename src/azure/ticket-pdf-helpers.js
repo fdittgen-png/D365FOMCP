@@ -171,6 +171,9 @@ export function siblingPdfName(ticketOrId, attachmentIndex, originalFilename) {
  * HTML we run it through `html-to-text` (injectable so tests don't need
  * the heavy dependency). Inline-image `<img cid:...>` references are
  * replaced with a textual placeholder so the flow stays readable.
+ *
+ * @param {string} body
+ * @param {{ htmlToText?: (html: string, options?: object) => string }} [opts]
  */
 export function toReadableText(body, { htmlToText } = {}) {
   if (!isFilled(body)) return '';

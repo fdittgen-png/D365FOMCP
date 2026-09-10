@@ -33,7 +33,8 @@ const parser = new XMLParser({
   cdataPropName: '__cdata',
   parseAttributeValue: false,
   trimValues: false,
-  isArray: (_name, jpath) => ALWAYS_ARRAY.has(jpath),
+  // fast-xml-parser types `jpath` as string | ReadonlyMatcher; it is the dotted path string here.
+  isArray: (_name, jpath) => ALWAYS_ARRAY.has(/** @type {string} */ (jpath)),
 });
 
 /**
