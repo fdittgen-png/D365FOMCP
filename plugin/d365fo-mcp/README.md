@@ -2,8 +2,8 @@
 
 Turns Claude Code into a Dynamics 365 Finance & Operations analyst. The plugin:
 
-- **works with the four D365FO MCP connectors** (knowledge base, cross-references, security model, Task Recorder) hosted on the TIS Azure Function App and published as claude.ai connectors — sign-in with your work account, no local database;
-- **adds 19 slash commands** that run complete analysis workflows (`/d365-table`, `/d365-security`, `/support-scope`, …);
+- **works with the five D365FO MCP services** (knowledge base, cross-references, security model, labels in every language, Task Recorder) hosted on the TIS Azure Function App and published as claude.ai connectors — sign-in with your work account, no local database;
+- **adds 21 slash commands** that run complete analysis workflows (`/d365-table`, `/d365-entity`, `/d365-label`, `/d365-security`, `/support-scope`, …);
 - **adds 8 skills** that teach Claude which tool to call first, how to read the answers, what to verify before asserting, and how to stay token-efficient.
 
 Contact / information: florian.dittgen@trelleborg.com
@@ -17,7 +17,7 @@ Contact / information: florian.dittgen@trelleborg.com
 
 You need read access to the GitHub repository (it is private — ask the contact above). Claude Code clones the repo and reads the marketplace file **at the repo root**; the second copy under `plugin/.claude-plugin/` exists only for a local *directory* marketplace (`/plugin marketplace add C:\path\to\D365FOMCP\plugin`) and a test keeps the two identical. After a plugin update, run `/plugin` → *Marketplaces* → *Update* to pull the new version; skills and commands are re-read on the next session.
 
-**The plugin ships skills and commands only — no MCP server definitions.** The four D365FO services are reached through the **claude.ai connectors** ("D365 KB", "D365 xRef", "D365 Sec", "D365 Task recorder") that your organisation publishes in the claude.ai Directory; enable them once under *Customize → Connectors* and they are available in claude.ai, Claude Desktop and Claude Code alike (Claude Code: `/mcp` → Authenticate). Sign-in is Entra ID; your account needs the `Mcp.Access` app role — ask the contact above if you get a 403.
+**The plugin ships skills and commands only — no MCP server definitions.** The five D365FO services are reached through the **claude.ai connectors** ("D365 KB", "D365 xRef", "D365 Sec", "D365 Labels", "D365 Task recorder") that your organisation publishes in the claude.ai Directory; enable them once under *Customize → Connectors* and they are available in claude.ai, Claude Desktop and Claude Code alike (Claude Code: `/mcp` → Authenticate). Sign-in is Entra ID; your account needs the `Mcp.Access` app role — ask the contact above if you get a 403. The Labels service (`/api/d365labels`, added 2026-09-08) runs on the same Function App; if its connector is not yet in the Directory, ask the contact above or use the local stdio server below.
 
 > **Never register the Azure MCP URLs as your own servers** (`claude mcp add … https://…azurewebsites.net/api/d365kb`, project `.mcp.json`, or a plugin `.mcp.json`). Claude Code hides a connector whose URL matches a local server ("hidden — same URL as your server") and uses the local entry instead, which then needs its own OAuth dance. This is why the plugin deliberately has no `.mcp.json`. A SessionStart guard hook (`~/.claude/hooks/mcp-url-guard.cjs`) warns if such an entry exists.
 
@@ -38,6 +38,7 @@ The tools are all read-only. Add to your `~/.claude/settings.json` (or the proje
       "mcp__claude_ai_D365_KB__*",
       "mcp__claude_ai_D365_xRef__*",
       "mcp__claude_ai_D365_Sec__*",
+      "mcp__claude_ai_D365_Labels__*",
       "mcp__claude_ai_D365_Task_recorder__*"
     ]
   }
@@ -46,15 +47,15 @@ The tools are all read-only. Add to your `~/.claude/settings.json` (or the proje
 
 ### Local stdio servers (developers with built databases)
 
-If you also run the local stdio servers (`d365kb`, `d365xref`, `d365sec`, `d365taskrecorder` → local SQLite files), keep them **stdio**. They coexist with the connectors (tools appear twice — pick by freshness: connectors = live Azure snapshot, stdio = your local build). See "Local stdio alternative" below.
+If you also run the local stdio servers (`d365kb`, `d365xref`, `d365sec`, `d365labels`, `d365taskrecorder` → local SQLite files), keep them **stdio**. They coexist with the connectors (tools appear twice — pick by freshness: connectors = live Azure snapshot, stdio = your local build). See "Local stdio alternative" below.
 
 ## What is inside
 
 ```text
 d365fo-mcp/
 ├── .claude-plugin/plugin.json
-├── commands/                     # 19 workflows
-│   ├── d365-table, d365-class, d365-trace-field, d365-impact, d365-security, d365-research, d365-wiki
+├── commands/                     # 21 workflows
+│   ├── d365-table, d365-entity, d365-label, d365-class, d365-trace-field, d365-impact, d365-security, d365-research, d365-wiki
 │   ├── arch-change-impact, arch-module-review
 │   ├── func-analysis, func-process-analysis, func-config-review
 │   ├── support-scope, support-diagnose, support-reproduce
@@ -62,8 +63,8 @@ d365fo-mcp/
 │   └── biz-access-check, biz-explain-process
 └── skills/
     ├── d365fo-mcp-tooling/       # loads first: service map, call discipline, verification + privacy rules
-    │   └── references/           # generated per-tool parameter tables (kb, xref, sec, taskrecorder, wiki)
-    ├── d365fo-mcp-workflows/     # 14 multi-tool recipes
+    │   └── references/           # generated per-tool parameter tables (kb, xref, sec, labels, taskrecorder, wiki)
+    ├── d365fo-mcp-workflows/     # 16 multi-tool recipes
     ├── d365fo-sql-direct-queries/# verified AxDB schemas, join keys, AX2012 renames
     ├── d365fo-analysis/          # product/ECM/DMF/tax/dimension data-model knowledge (27 reference files)
     ├── d365fo-security-analysis/ # security model, Deny-wins, SoD method
@@ -79,6 +80,8 @@ Skills follow progressive disclosure: `SKILL.md` is short and points at `referen
 | Command | Use it for |
 |---|---|
 | `/d365-table <Table>` | Structure, relations, extensions, usage hotspots |
+| `/d365-entity <Entity>` | How a data entity is built: data sources, keys, party link, siblings (brief, 3 calls) |
+| `/d365-label <@Id or "text">` | Label → every language + developer description → objects that show it → who reaches them |
 | `/d365-class <Class>` | Hierarchy, methods, CoC/event handlers, callers |
 | `/d365-trace-field <Table.Field>` | One field end-to-end |
 | `/d365-impact <Object>` | Change impact + go/no-go |
@@ -102,7 +105,7 @@ Some commands also use optional MCPs when connected (`d365rag`, Microsoft Learn,
 
 ## Local stdio alternative (developers with built databases)
 
-If you run the MCP servers from a clone of this repo with local SQLite databases, register them as **stdio** servers (user scope, `claude mcp add-json …`). The server scripts read the DB path from the first argument or from `KB_DB_PATH` / `XREF_DB_PATH` / `SEC_DB_PATH`:
+If you run the MCP servers from a clone of this repo with local SQLite databases, register them as **stdio** servers (user scope, `claude mcp add-json …`). The server scripts read the DB path from the first argument or from `KB_DB_PATH` / `XREF_DB_PATH` / `SEC_DB_PATH` / `LABELS_DB_PATH` (the labels server also wants `XREF_DB_PATH` for its where-used tools):
 
 ```json
 {
@@ -110,6 +113,7 @@ If you run the MCP servers from a clone of this repo with local SQLite databases
     "d365kb":   { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/../../src/local/mcp-server-kb.js"],   "env": { "KB_DB_PATH":   "D:/d365/d365fo_kb.sqlite" } },
     "d365xref": { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/../../src/local/mcp-server-xref.js"], "env": { "XREF_DB_PATH": "D:/d365/d365fo_xref.sqlite" } },
     "d365sec":  { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/../../src/local/mcp-server-sec.js"],  "env": { "SEC_DB_PATH":  "D:/d365/d365fo_sec.sqlite" } },
+    "d365labels": { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/../../src/local/mcp-server-labels.js"], "env": { "LABELS_DB_PATH": "D:/d365/d365fo_labels.sqlite", "XREF_DB_PATH": "D:/d365/d365fo_xref.sqlite" } },
     "d365taskrecorder": { "type": "stdio", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/../../src/local/mcp-server-taskrecorder.js"] }
   }
 }

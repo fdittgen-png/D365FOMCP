@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "d365fo-mcp",
-      "description": "D365FO MCP services (knowledge base, cross-references, security, Task Recorder) with expert analysis commands and skills.",
+      "description": "D365FO MCP services (knowledge base, cross-references, security, labels, Task Recorder) with expert analysis commands and skills.",
       "author": {
         "name": "Trelleborg Group — TIS D365 F&O Services"
       },

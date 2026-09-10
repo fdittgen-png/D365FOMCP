@@ -14,6 +14,8 @@ Four read-only **snapshot** servers (`d365kb`, `d365xref`, `d365sec`, `d365label
 | Table structure | `d365_lookup_table` with `sections: ["indexes","relations_out"]`; fields only on request (`fields_like`, `field_limit`) | `d365_effective_schema` for base + every extension's fields |
 | Does field X exist | `d365_check_field_exists` (batch `tables`) | `d365_field_renames` (AX2012 name); `_Custom` suffix → `d365_custom_fields`, "not in the snapshot", never "does not exist" |
 | Data entity | `d365_get_entity_sources` — default **summary** (data sources + counts) | `custom_only: true` names the exposed extension fields; `fields_like` / `summary:false` for rows |
+| Which entities / OData collections serve a business document | `d365_raw_sql`: `SELECT entity_name, module_id, public_name, public_collection, is_public, primary_table, method_count FROM data_entities WHERE entity_name LIKE '%<Doc>%' OR primary_table IN (…) ORDER BY is_public DESC LIMIT 60` — one call, authoritative | `d365_search(object_type: "entity")` is keyword-biased: on 2026-09-10 it returned the portal (VRM) entities and missed the standard `VendorInvoiceHeaderEntity` |
+| Does an entity expose an OData action | **Load the domain skill / memory index first** — if the integration is already documented, the action and its owner are there. Then `d365_get_class_methods(entity)` (signatures carry no attributes: an action is a public method with a business-verb name — confirm with `d365_get_method_source`) | Actions often live on an **extension class** (`<Entity>_<Model>_Extension`), not the entity; module-wide: `xref_find_references("SysODataActionAttribute", kind: "Attribute")` — 558 usages, paths resolve to `/DataEntityViews/<Entity>/Methods/<Action>`, page with `cursor` |
 | Join two tables | `d365_get_join_keys` | `d365_sql_template` |
 | Enum values | `d365_get_enum` (batch `enum_names`) | — |
 | Class API / X++ | `d365_get_class_methods` (signatures + `source_lines`) | `d365_get_method_source` with `method_names` (≤ 10); `include_source` on at most ONE class per investigation |
@@ -44,6 +46,7 @@ Decide what the answer must contain, say it in one line (*"Shape: data sources +
 | Who can do Y | list with counts | `sec_object_access limit 20` |
 | Impact of changing X | counts, then only the lists that matter | `xref_object_summary` → `xref_impact_analysis` |
 | Conceptual "how does it work" | 5–8 lines, details on request | no tools, or `/d365-research` |
+| OData integration surface for document X ("which services create / post X") | catalogue table (collection, AOT entity, backing table, role), then how the document is posted | domain skill first → 1 `data_entities` SQL → `get_class_methods` on the create entity **and its `_Extension` classes** → `get_method_source` on the 1–2 posting-shaped methods. ≤ 5 calls (measured 2026-09-10: 8 calls, 2 wasted on a guessed name and a PRAGMA already in `references/kb-raw-sql-schema.md`) |
 
 ## 3. Rules — each one is measured (`references/tooling-full.md` §2 has the numbers)
 
@@ -57,6 +60,9 @@ Decide what the answer must contain, say it in one line (*"Shape: data sources +
 8. **Pass `functional_context`** (vocabulary id such as `vendor`, `sales_order`) on the lookup tools — it also becomes the investigation's `expected_entities` in the trace when you wrote no `Entities:` line (§8).
 9. **A "you are repeating this call" note means stop**, not retry.
 10. **A `/d365-*` command carries its calls — do not load this skill on top of it** (the skill is ≈ 5.8k tokens of text against ≈ 2.6k of data for an entity question).
+11. **Never guess an AOT entity name from its table** (2026-09-10): `VendInvoiceInfoTable` backs `VendorInvoiceHeaderEntity`, not `VendInvoiceInfoTableEntity`; `d365_get_class_methods` on a name that does not exist answers "No results" **without suggestions**, so the wasted call looks like an empty object. Take the AOT name from the `data_entities` catalogue SQL (rule above) before any method call.
+12. **0 hits from `d365_search` for an attribute or method name is not absence** (2026-09-10): `"SysODataAction vendor invoice post"` scoped to the custom model returned nothing while `VendorInvoiceHeaderChargeEntity_iExtension_Extension.allocateChargesAction` exists there and posts invoices. Search matches object names and labels; for code-level facts use `methods` raw SQL (`owner_name LIKE '%<Entity>%'`) or XRef references to the attribute class.
+13. **Check the domain skills and `MEMORY.md` before answering "does X exist" from metadata alone** (2026-09-10): the answer "no custom posting action" was given while the Basware skill (trigger: "vendor-invoice posting") and a memory entry both documented the custom action. A metadata query proves what the snapshot holds; the project's own knowledge says what is in use.
 
 ## 4. Reading a response
 

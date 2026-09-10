@@ -483,3 +483,37 @@ Hard-won this session — a raw_sql call blew the token limit **three times** an
 5. **State the mapping in three rows** (functional / logical / physical) with the counterpart on the source side and the verification date; label every judgement call (Customers V3 vs V2, released vs shared product) as a choice, not a fact.
 
 **Anti-patterns**: mapping source table → D365 table without naming the functional entity (the comparison across a third ERP is then impossible); inventing a data entity because "there must be one"; verifying names one call at a time.
+
+## Workflow 16: UI Text → Object → Access (labels as the entry point)
+
+**Scenario**: a ticket quotes what the user sees ("Maintain recurring invoices is greyed out"), a document leaks a raw `@SYS…` id, or a screen text must be changed and nobody knows what else shows it. The label is the entry point; the objects and the security model are the answer. Command: `/d365-label`.
+
+**Recipe (2–4 MCP calls, ≈ 1–2 k tokens)**:
+
+1. **Identify** — an id: `labels_lookup(label_ids: [<id>], languages: ["en-US"])` (several ids in one batch; add languages only when asked — 75 are stored). A screen text: `labels_search(text: "<as shown>", language: <UI language if known>, limit: 20)`; keep exact matches and the label file that fits the module, say the choice was a choice. Never page past two pages — narrow with `label_file` / `modules` / `origin`.
+2. **Where it is shown** — `labels_where_used(label_id, limit: 50)`; read the property: `Label` / `Caption` = visible, `HelpText` = status bar, `DeveloperDocumentation` = internal, `Code` = X++. Filter with `property` or `object_type` (form, menu_item, table, duty, privilege) when long. Reverse question ("what does this form say?") = `labels_for_object(object_type, object_name)`.
+3. **Who reaches it** (only when access is the question) — menu item or form → `sec_object_access(<menu item>)` (Deny included); duty or privilege → `sec_find_roles_by_duty` / `sec_find_roles_by_privilege`.
+4. **Change impact** (only when the text changes) — count uses per property from step 2; one id can serve a field, a caption and a report column at once.
+
+**Read the developer description** (the ` ;` line stored with every id): it is the author's statement of what the label is for and settles most "which of these three ids is the right one" questions without another call.
+
+**Anti-patterns**: inventing a text for an id the lookup does not know (it is a data gap); searching label text on the KB (`d365_search(object_type: 'label')` is en-US only and has no description — use `labels_search`); asking where-used without the XRef snapshot connected (the tool says so; report the gap).
+
+## Workflow 17: OData Integration Surface of a Business Document ("which services create / post X")
+
+**Scenario**: an integration or support question asks which OData endpoints exist to create, read and post a document (vendor invoice, sales order, journal) and how posting is actually triggered. Learned 2026-09-10 on "OData services for posting vendor invoices": 8 calls, two wasted, and the final answer still missed a custom posting action that the project's own skill documented.
+
+**Step 0 — the project's knowledge first (no MCP call)**: read `MEMORY.md` and the domain skill whose trigger matches the document (Basware skill for vendor-invoice posting, EDI skill for orders/ASN, Lasernet for print). If the integration is already in use, the create sequence, the posting action and its owner class are written there; the metadata calls then only confirm and refresh.
+
+**Recipe (≤ 5 MCP calls, ≈ 3–4 k tokens)**:
+
+1. **Catalogue** — `d365_raw_sql`:
+   `SELECT entity_name, module_id, public_name, public_collection, is_public, primary_table, method_count FROM data_entities WHERE (entity_name LIKE '%VendInvoice%' OR entity_name LIKE '%VendorInvoice%' OR primary_table IN ('VendInvoiceInfoTable','VendInvoiceInfoLine')) AND entity_name NOT LIKE '%BiEntity' AND entity_name NOT LIKE '%CDREntity' ORDER BY is_public DESC, module_id LIMIT 60`.
+   One call gives the OData collection, the AOT name, the backing table and the method count for standard, ISV and custom models alike. `is_public = 0` rows are DMF-only — say so. Do **not** start with `d365_search(object_type: "entity")`: it is keyword-biased (returned the VRM vendor-portal entities, missed `VendorInvoiceHeaderEntity`).
+2. **Posting path on the create entity** — `d365_get_class_methods(<AOT entity from step 1>)`. Method count is the first signal (Workflow 13): 18 methods on `VendorInvoiceHeaderEntity` vs 4 on `VendInvoiceJournalHeaderEntity`. Signatures carry no attributes, so an OData action shows only as a public method with a business-verb name.
+3. **Extension owners** — `d365_raw_sql`: `SELECT owner_name, method_name, is_static, substr(signature,1,200) FROM methods WHERE owner_name LIKE '%<Entity>%' COLLATE NOCASE ORDER BY owner_name LIMIT 40`. This catches `<Entity>_<Model>_Extension` classes — where custom actions actually live (`VendorInvoiceHeaderChargeEntity_iExtension_Extension.allocateChargesAction`, `_postInvoice` parameter). For a module-wide inventory of actions: `xref_find_references("SysODataActionAttribute", kind: "Attribute")`, 558 usages, paths `/DataEntityViews/<Entity>/Methods/<Action>`, page with `cursor`.
+4. **Read the 1–2 posting-shaped methods** — `d365_get_method_source(owner, method_names: [...])`. Distinguish: `postTargetProcess` / `postGetStagingData` run only under DMF import (standard `VendorInvoiceHeaderEntity.postTargetProcess` only logs the import event when `VendAutomateVendorInvoicesFeature` is on); `createAndPostInvoiceRegister` fires on insert when `VendorInvoiceType = InvoicePool`; a `[SysODataAction]` method is the only true "post by API".
+
+**Answer shape**: one table (collection · AOT entity · backing table · role) for the create path, one for journal alternatives, then "how posting is triggered" with the standard mechanisms (automation batch, workflow, UI) **and** the custom action from step 0/3 with its owner and known defects (the Basware action returns HTTP 200 on failure — gotcha 76).
+
+**Anti-patterns**: guessing the AOT name from the table (`VendInvoiceInfoTableEntity` → "No results", no suggestions); a `PRAGMA table_info(data_entities)` call when the columns are listed in `kb-raw-sql-schema.md`; treating 0 `d365_search` hits for `SysODataAction` in a module as proof of absence; answering "no custom action" without opening the domain skill whose description names the topic.
