@@ -10,6 +10,7 @@
     "build:sec": "node --env-file-if-exists=.env build/build-sec.js",
     "build:isv": "node --env-file-if-exists=.env build/isv-scan.js",
     "build:labels": "node --env-file-if-exists=.env build/build-labels.js",
+    "build:insight": "node --env-file-if-exists=.env build/build-insight.js",
     "update:xref": "node --env-file-if-exists=.env build/update-xref-module.js",
     "update:kb": "node --env-file-if-exists=.env build/update-kb-model.js",
     "seed:dq": "node --env-file-if-exists=.env build/seed-dq-rules.js",

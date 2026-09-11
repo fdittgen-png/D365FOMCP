@@ -11,16 +11,23 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { generate, COPIED, CONTRACT_DIR, resolveTargetDir, manifestText, contractText } from '../build/gen-trace-ingest.js';
+import { generate, COPIED, CONTRACT_DIR, resolveTargetDir, manifestText, contractText, EXTERNAL_SOURCES } from '../build/gen-trace-ingest.js';
 
 const lf = (s) => s.replace(/\r\n/g, '\n');
 
-test('copies every contract module the validator and sanitizer need, plus the schema', () => {
+test('copies every contract module the validator and sanitizer need, the schema, and the vocabulary the sink report resolves entities with', () => {
   assert.deepEqual([...COPIED].sort(), [
     'arg-policies.js', 'identifiers.js', 'privacy.js', 'record.js', 'sanitize.js',
-    'trace-record.v1.schema.json', 'validate.js', 'vocabulary-match.js',
+    'trace-record.v1.schema.json', 'validate.js', 'vocabulary-match.js', 'vocabulary.json',
   ]);
-  for (const f of COPIED) assert.ok(existsSync(join(CONTRACT_DIR, f)), `${f} missing from the contract dir`);
+  for (const f of COPIED) {
+    const ext = EXTERNAL_SOURCES[f];
+    const path = ext ? join(CONTRACT_DIR, '..', '..', '..', ...ext) : join(CONTRACT_DIR, f);
+    assert.ok(existsSync(path), `${f} missing from its source`);
+  }
+  // The vocabulary is DATA, not a contract module: it must never be imported by one.
+  assert.equal(EXTERNAL_SOURCES['vocabulary.json'].join('/'), 'config/semantic-vocabulary.json');
+  assert.equal(JSON.parse(contractText('vocabulary.json')).entities.length > 0, true);
 });
 
 test('manifest is one sha256 per copied file, deterministic, and matches the source bytes', () => {

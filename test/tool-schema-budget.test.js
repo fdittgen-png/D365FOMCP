@@ -109,7 +109,11 @@ const BUDGET = {
   // #123–#128 (2026-09-03): six authoring-loop read tools (find_method_implementations,
   // lookup_object, lookup_form, find_forms, preflight, knowledge) — measured after
   // the change, ceiling re-set at ≤2% above it.
-  kb: { maxBytes: 93_700, tools: 32 },   // 91,916 measured 2026-09-03
+  // Trace Insight (2026-09-11): d365_prior_art + d365_entity_insight on the KB server
+  // — 91,916 -> 101,208 measured (+9,292 B for two tools: the entity dossier's field /
+  // usage row shapes and the recipe step shape are the cost). Outside CORE_TOOLS, so
+  // the core profile is unchanged. Ceiling re-set at ≤2% above the measurement.
+  kb: { maxBytes: 103_200, tools: 34 },   // 101,208 measured 2026-09-11
   // xref 37,300 -> 38,600 (#83 objects[]); W1: 38,702 measured -> 35,047, ceiling 35,700.
   // Q2–Q5: 35,047 -> 36,800 (+1,753): xref_check_exists +1,599 (18 tools) ·
   // functional_context ×2 +280 · coverage keys +177 · description trims −304. Ceiling 37,500.
@@ -130,7 +134,7 @@ const BUDGET = {
 };
 // 160,800 B measured after Q2–Q5 (was 155,810): +4,990 = two preflight tools
 // +3,446 · functional_context ×9 +1,297 · coverage keys +1,035 · trims −790.
-const TOTAL_MAX_BYTES = 190_600; // 2026-09-08: 186,857 measured after the Labels service (+8,256 B, four tools)
+const TOTAL_MAX_BYTES = 198_700; // 2026-09-11: 194,851 measured after Trace Insight (+9,292 B, two KB tools); 2026-09-08: 186,857 after Labels
 
 // Entry points that must register through tool-sets.js — and nothing else.
 const ENTRY_POINTS = {

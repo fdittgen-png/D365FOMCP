@@ -68,7 +68,7 @@
     since nothing would be uploaded.
 
 .PARAMETER Databases
-    Which databases to upload. Subset of {'kb','xref','sec','labels'}. Default: all
+    Which databases to upload. Subset of {'kb','xref','sec','labels','insight'}. Default: all
     three (whichever local files exist).
 
 .PARAMETER SkipRoles
@@ -127,13 +127,14 @@ param(
     [switch]$SkipRoles,
     [switch]$SkipValidation,
 
-    [ValidateSet('kb', 'xref', 'sec', 'labels')]
-    [string[]]$Databases = @('kb', 'xref', 'sec', 'labels'),
+    [ValidateSet('kb', 'xref', 'sec', 'labels', 'insight')]
+    [string[]]$Databases = @('kb', 'xref', 'sec', 'labels', 'insight'),
 
     [string]$KbDbPath,
     [string]$XrefDbPath,
     [string]$SecDbPath,
     [string]$LabelsDbPath,
+    [string]$InsightDbPath,
 
     [switch]$RefreshIsv,
 
@@ -296,6 +297,7 @@ if (-not $KbDbPath)   { $KbDbPath   = Join-Path $env:USERPROFILE '.claude\d365fo
 if (-not $XrefDbPath) { $XrefDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_xref.sqlite' }
 if (-not $SecDbPath)  { $SecDbPath  = Join-Path $env:USERPROFILE '.claude\d365fo_sec.sqlite' }
 if (-not $LabelsDbPath) { $LabelsDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_labels.sqlite' }
+if (-not $InsightDbPath) { $InsightDbPath = Join-Path $env:USERPROFILE '.claude\d365fo_insight.sqlite' }
 
 # Derive Environment from RG name when not explicit
 if (-not $Environment) {
@@ -792,6 +794,7 @@ if (-not $SkipDb) {
     if ('xref' -in $Databases -and (Test-Path $XrefDbPath)) { $uploadPlan += @{ Name='XRef'; Local=$XrefDbPath; Remote='d365fo_xref.sqlite' } }
     if ('sec'  -in $Databases -and (Test-Path $SecDbPath))  { $uploadPlan += @{ Name='Sec';  Local=$SecDbPath;  Remote='d365fo_sec.sqlite'  } }
     if ('labels' -in $Databases -and (Test-Path $LabelsDbPath)) { $uploadPlan += @{ Name='Labels'; Local=$LabelsDbPath; Remote='d365fo_labels.sqlite' } }
+    if ('insight' -in $Databases -and (Test-Path $InsightDbPath)) { $uploadPlan += @{ Name='Insight'; Local=$InsightDbPath; Remote='d365fo_insight.sqlite' } }
 
     if (-not $uploadPlan) {
         Write-Host '  [SKIP] No databases to upload (none found at requested paths).' -ForegroundColor DarkGray

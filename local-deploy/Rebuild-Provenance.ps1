@@ -76,6 +76,10 @@ if (-not $VerifyOnly) {
       npm run build:kb
       if ($LASTEXITCODE -ne 0) { throw "KB build failed (exit $LASTEXITCODE)" }
     }
+    Step "Trace Insight snapshot (seconds; from ~/.claude/mcp-trace)" {
+      npm run build:insight
+      if ($LASTEXITCODE -ne 0) { Write-Warning "Insight build failed (exit $LASTEXITCODE) - the KB is unaffected; d365_prior_art / d365_entity_insight serve the previous snapshot." }
+    }
   }
   if (-not $SkipSec) {
     Step "Sec rebuild (AOT + DMF 2026-06-10)" {

@@ -21,6 +21,13 @@
   "functional_context": "identifier",
   "format": "identifier"
  },
+ "d365_entity_insight": {
+  "entity": "identifier",
+  "sections": "identifier[]",
+  "languages": "identifier[]",
+  "limit": "number",
+  "format": "identifier"
+ },
  "d365_field_renames": {
   "table_name": "identifier",
   "format": "identifier"
@@ -166,6 +173,12 @@
   "method_name": "identifier",
   "proposed_names": "identifier[]",
   "functional_context": "identifier",
+  "format": "identifier"
+ },
+ "d365_prior_art": {
+  "request_key": "identifier",
+  "text": "term",
+  "limit": "number",
   "format": "identifier"
  },
  "d365_raw_sql": {

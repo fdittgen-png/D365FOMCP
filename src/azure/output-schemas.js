@@ -1019,6 +1019,112 @@ export const d365KnowledgeOutput = z.object({
   topics: z.array(d365KnowledgeTopicSchema).optional(),
 });
 
+// ── Trace Insight tools (docs/ERP-Trace-Insight-Service-Concept-2026-09-11.md §4) ──
+
+export const insightSnapshotSchema = z.object({
+  build_date: z.string().nullish(),
+  records: z.number().nullish(),
+  investigations: z.number().nullish(),
+  calls: z.number().nullish(),
+  services: z.array(z.string()).optional(),
+  not_covered: z.array(z.string()),
+});
+
+const insightRecipeStepSchema = z.object({
+  seq: z.number(),
+  tool: z.string(),
+  service: z.string().nullish(),
+  args: z.record(z.string(), z.unknown()),
+  kind: z.string().nullish(),
+  step_intent: z.string().optional(),
+});
+
+const insightTouchedSchema = z.object({
+  kind: z.string(),
+  name: z.string(),
+  owner: z.string().nullish(),
+  functional_entity: z.string().nullish(),
+});
+
+export const d365PriorArtHitSchema = z.object({
+  request_key: z.string(),
+  match: z.string(),
+  interpreted: z.string().nullish(),
+  runs: z.number(),
+  erps: z.array(z.string()),
+  outcomes: z.record(z.string(), z.number()),
+  best: z.object({
+    investigation_id: z.string().nullish(),
+    calls: z.number().nullish(),
+    bytes: z.number().nullish(),
+    est_tokens: z.number().nullish(),
+    duration_ms: z.number().nullish(),
+    ts: z.string().nullish(),
+  }),
+  median_calls: z.number().nullish(),
+  entities: z.array(z.string()),
+  recipe: z.array(insightRecipeStepSchema),
+  touched: z.array(insightTouchedSchema),
+  waste: z.record(z.string(), z.number()),
+});
+
+export const d365PriorArtOutput = z.object({
+  request_key: z.string().optional(),
+  text: z.string().optional(),
+  hit_count: z.number(),
+  hits: z.array(d365PriorArtHitSchema),
+  insight_snapshot: insightSnapshotSchema,
+  ...coverage('partial_build'),
+});
+
+const insightUsageRowSchema = z.object({
+  object_kind: z.string(),
+  object_name: z.string(),
+  field_name: z.string().nullish(),
+  investigations: z.number(),
+  calls: z.number(),
+  last_seen: z.string().nullish(),
+  contexts: z.array(z.string()),
+});
+
+const insightFieldSchema = z.object({
+  table_name: z.string(),
+  field_name: z.string(),
+  field_type: z.string().nullish(),
+  edt: z.string().nullish(),
+  mandatory: z.string().nullish(),
+  label: z.string().nullish(),
+  description: z.string().nullish(),
+  is_key: z.boolean(),
+  usage_calls: z.number(),
+  usage_investigations: z.number(),
+});
+
+export const d365EntityInsightOutput = z.object({
+  entity_id: z.string(),
+  name: z.string().nullish(),
+  process: z.string().nullish(),
+  description: z.string().nullish(),
+  aliases: z.array(z.string()),
+  matched_by: z.string(),
+  sections: z.array(z.string()),
+  d365fo: z.object({
+    module: z.string().nullish(),
+    data_entities: z.array(z.string()),
+    primary_tables: z.array(z.string()),
+    key_fields: z.array(z.string()),
+  }),
+  confirmed_mappings: z.array(z.object({ object_type: z.string(), object_name: z.string(), role: z.string(), confidence: z.number(), verified: z.boolean() })).optional(),
+  usage_totals: z.object({ investigations: z.number(), calls: z.number(), last_seen: z.string().nullish(), objects: z.number(), fields_touched: z.number() }),
+  fields: z.array(insightFieldSchema).optional(),
+  usage: z.array(insightUsageRowSchema).optional(),
+  truncated: z.boolean().optional(),
+  never_touched_count: z.number().optional(),
+  recipes: z.array(z.object({ request_key: z.string(), runs: z.number(), best_calls: z.number().nullish(), interpreted: z.string().nullish() })).optional(),
+  insight_snapshot: insightSnapshotSchema,
+  ...coverage('partial_build'),
+});
+
 // ── XRef tools (15) ──────────────────────────────────────────────────────────
 
 // Common: a reference row shared by several xref list tools.
