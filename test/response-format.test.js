@@ -40,6 +40,7 @@ const TOOL_FILES = [
   'custom-fields-tools.js',
   // Authoring-loop read tools (#123–#128), registered from registerKbTools().
   'authoring-tools.js',
+  'insight-tools.js',
 ];
 
 // P6-01: every directory under src/ must not contain a `/* ignore */`

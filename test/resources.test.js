@@ -130,7 +130,7 @@ describe('resources — over the wire, registered by registerServiceTools', () =
       assert.equal(s.tool_count, stats.registered, 'tool_count is what this registration actually registered');
       // 21 kb/isv/custom-fields tools + the 4 semantic-layer tools (W7, #111)
       // + the 6 authoring-loop tools (#123–#128, 2026-09-03).
-      assert.equal(s.tool_count, 32);
+      assert.equal(s.tool_count, 34);
       assert.equal(s.isv_scanned, false);
 
       const mods = JSON.parse((await client.readResource({ uri: RESOURCE_URIS.modules })).contents[0].text);

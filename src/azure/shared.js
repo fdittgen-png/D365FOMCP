@@ -172,6 +172,35 @@ export function getLabelsDb() {
  * XRef snapshot is not on this host (a labels-only stdio server): the tools then
  * say so instead of crashing at registration.
  */
+/**
+ * d365fo_insight.sqlite — the Trace Insight snapshot (docs/ERP-Trace-Insight-Service-
+ * Concept-2026-09-11.md), read by the two insight tools on the KB server. Null
+ * when no snapshot is on this host: the tools then name the build instead of
+ * crashing at registration. Resolution: INSIGHT_DB_PATH → ~/.claude/… (stdio) →
+ * /home/data/… (Azure).
+ */
+let insightDb = null;
+export function insightDbPath() {
+  if (process.env.INSIGHT_DB_PATH) return process.env.INSIGHT_DB_PATH;
+  const home = process.env.USERPROFILE || process.env.HOME;
+  const local = home ? `${home}/.claude/d365fo_insight.sqlite` : null;
+  if (local && existsSync(local)) return local;
+  return '/home/data/d365fo_insight.sqlite';
+}
+export function tryGetInsightDb() {
+  if (insightDb) return insightDb;
+  const dbPath = insightDbPath();
+  if (!existsSync(dbPath)) return null;
+  try { insightDb = openDb(dbPath); return insightDb; } catch { return null; }
+}
+
+/** The Labels handle when the snapshot is on this host, else null (a read-through decoration, never a hard dependency). */
+export function tryGetLabelsDb() {
+  const dbPath = process.env.LABELS_DB_PATH || '/home/data/d365fo_labels.sqlite';
+  if (!existsSync(dbPath)) return null;
+  try { return getLabelsDb(); } catch { return null; }
+}
+
 export function tryGetXrefDb() {
   const dbPath = process.env.XREF_DB_PATH || '/home/data/d365fo_xref.sqlite';
   if (!existsSync(dbPath)) return null;
@@ -517,7 +546,7 @@ export function summaryText(typed, markdownText) {
  */
 export function readBuildDate(db) {
   if (!db || typeof db.prepare !== 'function') return null;
-  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata', 'labels_metadata']) {
+  for (const table of ['kb_metadata', 'xref_metadata', 'sec_metadata', 'labels_metadata', 'insight_metadata']) {
     try {
       const row = db.prepare(`SELECT value FROM ${table} WHERE key = 'build_date'`).get();
       if (row?.value) {

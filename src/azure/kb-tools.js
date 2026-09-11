@@ -38,6 +38,7 @@ import { isCustomFieldName } from './custom-fields.js';
 import { hasIsvData } from './isv-schema.js';
 import { registerEffectiveSchemaTools, queryTableFields } from './effective-schema-tools.js';
 import { registerAuthoringTools } from './authoring-tools.js';
+import { registerInsightTools } from './insight-tools.js';
 import { cursorParam, decodeCursor, pageMeta, pageNote, probeLimit, takePage } from './pagination.js';
 import {
   resolveCustomFieldChecks,
@@ -2499,4 +2500,7 @@ export function registerKbTools(server, db, opts = {}) {
 
   // ── 19–24. Authoring-loop read tools (#123–#128) — same wiring. ──────────
   registerAuthoringTools(server, db, { semanticDb });
+
+  // ── 25–26. Trace Insight — the MCP on the traces (concept 2026-09-11) — same wiring.
+  registerInsightTools(server, db, { semanticDb });
 }

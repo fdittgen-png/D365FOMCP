@@ -24,7 +24,16 @@ export const CONTRACT_DIR = join(ROOT, 'src', 'trace', 'contract');
 export const COPIED = Object.freeze([
   'identifiers.js', 'privacy.js', 'arg-policies.js', 'vocabulary-match.js', 'sanitize.js', 'record.js',
   'validate.js', 'trace-record.v1.schema.json',
+  // Not a contract module: the vocabulary DATA the sink's report needs to resolve a touched
+  // object to its functional entity (entity hit rate, entity usage). Same generator, same
+  // manifest, so it cannot drift from config/semantic-vocabulary.json.
+  'vocabulary.json',
 ]);
+
+/** Copied files that do NOT live in `src/trace/contract/`: name -> path from the repo root. */
+export const EXTERNAL_SOURCES = Object.freeze({
+  'vocabulary.json': ['config', 'semantic-vocabulary.json'],
+});
 export const MANIFEST = 'CONTRACT.sha256';
 
 export function resolveTargetDir(env = process.env) {
@@ -39,7 +48,7 @@ export function manifestText(hashes) {
 
 /** Contract file as LF text — the hash must not depend on the checkout's autocrlf setting. */
 export function contractText(f) {
-  return readFileSync(join(CONTRACT_DIR, f), 'utf8').replace(/\r\n/g, '\n');
+  return readFileSync(EXTERNAL_SOURCES[f] ? join(ROOT, ...EXTERNAL_SOURCES[f]) : join(CONTRACT_DIR, f), 'utf8').replace(/\r\n/g, '\n');
 }
 
 export function generate({ write = true, env = process.env } = {}) {
